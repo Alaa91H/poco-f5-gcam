@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "device": {
+    "name": "POCO F5 5G",
+    "codename": "marble",
+    "rom": "Evolution X"
+  },
+  "android": {
+    "version": 17,
+    "api_level": 37
+  },
+  "source": {
+    "provider": "APKMirror",
+    "product_url": "https://www.apkmirror.com/apk/google-inc/camera/"
+  },
+  "compatibility": {
+    "package_name": "com.google.android.GoogleCamera",
+    "architectures": ["arm64-v8a"],
+    "dpis": ["nodpi"],
+    "max_min_api": 37,
+    "allow_bundles": true
+  },
+  "selection": {
+    "strategy": "highest-version-compatible",
+    "notes": "Select the numerically newest APKMirror Pixel Camera release whose variant metadata is compatible with Android API 37, arm64-v8a, and nodpi."
+  }
+}
