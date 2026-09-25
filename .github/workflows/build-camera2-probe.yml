@@ -52,9 +52,42 @@ jobs:
         run: |
           gradle -p tools/camera2-probe :app:assembleDebug :app:lintDebug --stacktrace
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: camera2-probe-debug
-          path: tools/camera2-probe/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+      - name: Send debug APK to Telegram
+        if: success() && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          APK_PATH="tools/camera2-probe/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK not found at $APK_PATH"
+            exit 1
+          fi
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            echo "::error::Missing GitHub Actions secret: TELEGRAM_BOT_TOKEN"
+            exit 1
+          fi
+
+          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::error::Missing GitHub Actions secret: TELEGRAM_CHAT_ID"
+            exit 1
+          fi
+
+          CAPTION="✅ Build succeeded
+Repository: ${GITHUB_REPOSITORY}
+Branch: ${GITHUB_REF_NAME}
+Commit: ${GITHUB_SHA:0:7}"
+
+          curl --silent --show-error --fail-with-body --retry 3 \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form "document=@${APK_PATH};type=application/vnd.android.package-archive" \
+            --form "caption=${CAPTION}"
+
+          echo "APK sent to Telegram successfully."
