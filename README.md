@@ -45,7 +45,47 @@ It does **not** include or redistribute proprietary Google Camera APKs, Google-o
 
 ## Development status
 
-Initial repository bootstrap. Hardware capabilities, sensor IDs, supported GCam bases, and tuning profiles will be documented only after validation on the target device.
+**Phase 1 — Device baseline is in progress.**
+
+The repository now includes a Windows 11 ADB collector that captures camera-service, vendor-property, Android-feature, and media-codec information from the target POCO F5 without intentionally storing the ADB serial.
+
+Hardware capabilities, sensor IDs, supported GCam bases, and tuning profiles will be documented only after validation on a real target device.
+
+## Quick start: collect the first POCO F5 baseline
+
+Requirements:
+
+- POCO F5 with USB debugging enabled
+- Android SDK Platform-Tools / `adb`
+- Windows PowerShell
+
+From the repository root:
+
+```powershell
+adb devices
+powershell -ExecutionPolicy Bypass -File .\scripts\collect-camera-baseline.ps1
+```
+
+The generated capture is written under:
+
+```text
+device/marble/baseline/captures/YYYYMMDD-HHMMSS/
+```
+
+Review the generated files before publishing them. See [docs/DEVICE_BASELINE.md](docs/DEVICE_BASELINE.md) for the full procedure and privacy checklist.
+
+## Development roadmap
+
+See [docs/ROADMAP.md](docs/ROADMAP.md).
+
+The immediate sequence is:
+
+1. Capture and review a real POCO F5 baseline.
+2. Normalize exposed camera IDs and capabilities.
+3. Validate physical lens mappings.
+4. Add a dedicated Camera2 characteristics probe where `dumpsys` is incomplete.
+5. Build a tested GCam compatibility matrix.
+6. Begin reproducible image/video tuning profiles.
 
 ## Contributing
 
