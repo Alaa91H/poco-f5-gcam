@@ -800,7 +800,7 @@ jobs:
           TELEGRAM_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
 
           if [ "$SIZE" -gt "$TELEGRAM_MAX_BYTES" ]; then
-            echo "::error::Final APK is too large for single-file Telegram delivery: $SIZE bytes."
+            echo "::error::Original Pixel Camera bundle is too large for single-file Telegram delivery: $SIZE bytes."
             exit 1
           fi
 
