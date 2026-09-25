@@ -270,6 +270,17 @@ def _countdown_seconds(raw_html: str) -> int | None:
     return max(0, min(int(match.group(1)), 30))
 
 
+def _is_download_handler_url(url: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    return (
+        (host == "apkmirror.com" or host.endswith(".apkmirror.com"))
+        and parsed.path.lower().endswith("/wp-content/themes/apkmirror/download.php")
+        and "id=" in parsed.query.lower()
+        and "key=" in parsed.query.lower()
+    )
+
+
 def _followup_download_url(raw_html: str, base_url: str) -> str | None:
     candidates: list[tuple[int, str]] = []
     for href, text in _anchors(raw_html):
@@ -287,11 +298,7 @@ def _followup_download_url(raw_html: str, base_url: str) -> str | None:
         if IMAGE_URL_RE.search(parsed.path):
             continue
 
-        is_download_handler = (
-            parsed.path.lower().endswith("/wp-content/themes/apkmirror/download.php")
-            and "id=" in parsed.query.lower()
-            and "key=" in parsed.query.lower()
-        )
+        is_download_handler = _is_download_handler_url(absolute)
 
         if (
             not is_download_handler
@@ -419,6 +426,9 @@ def resolve_direct_url(
             break
         seen.add(current_url)
 
+        if _is_download_handler_url(current_url):
+            return current_url
+
         direct_url, page = _resolve_trigger_once(
             cookie_jar, current_url, referer
         )
@@ -435,6 +445,8 @@ def resolve_direct_url(
         last_page = page
         followup = _followup_download_url(page, current_url)
         if followup and followup not in seen:
+            if _is_download_handler_url(followup):
+                return followup
             referer = current_url
             current_url = followup
             continue
