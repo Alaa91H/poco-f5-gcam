@@ -42,6 +42,10 @@ IMAGE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 DOWNLOAD_LABEL_RE = re.compile(r"(?:Download|click\s+here)", re.IGNORECASE)
+WAIT_SECONDS_RE = re.compile(
+    r"wait\s+(\d+)\s+(?:more\s+)?sec",
+    re.IGNORECASE,
+)
 SHA256_RE = re.compile(r"\b([0-9a-f]{64})\b", re.IGNORECASE)
 FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
 
@@ -203,6 +207,13 @@ def extract_bundle_sha256(variant_html: str) -> str | None:
     return None
 
 
+def _countdown_seconds(raw_html: str) -> int | None:
+    match = WAIT_SECONDS_RE.search(_visible_text(raw_html))
+    if not match:
+        return None
+    return max(0, min(int(match.group(1)), 30))
+
+
 def _direct_url_from_html(html: str, base_url: str) -> str | None:
     candidates: list[tuple[int, str]] = []
 
@@ -243,14 +254,13 @@ def _direct_url_from_html(html: str, base_url: str) -> str | None:
     return None
 
 
-def resolve_direct_url(
+def _resolve_trigger_once(
     cookie_jar: http.cookiejar.CookieJar,
     trigger_url: str,
-    variant_url: str,
-) -> str | None:
-    # Fresh APKMirror nonces may immediately redirect to the binary CDN.
+    referer: str,
+) -> tuple[str | None, str | None]:
     no_redirect_opener = _build_opener(cookie_jar, no_redirect=True)
-    request = urllib.request.Request(trigger_url, headers=_headers(variant_url))
+    request = urllib.request.Request(trigger_url, headers=_headers(referer))
 
     try:
         with no_redirect_opener.open(
@@ -258,32 +268,56 @@ def resolve_direct_url(
         ) as response:
             content_type = response.headers.get_content_type()
             if content_type != "text/html":
-                return response.geturl()
+                return response.geturl(), None
 
             page = response.read().decode(
                 response.headers.get_content_charset() or "utf-8",
                 errors="replace",
             )
-            return _direct_url_from_html(page, trigger_url)
+            return _direct_url_from_html(page, trigger_url), page
     except urllib.error.HTTPError as exc:
         if exc.code not in (301, 302, 303, 307, 308):
             raise
 
         location = exc.headers.get("Location")
         if not location:
-            return None
+            return None, None
 
         absolute = urllib.parse.urljoin(trigger_url, location)
         host = urllib.parse.urlsplit(absolute).hostname or ""
         if DIRECT_HOST_RE.fullmatch(host):
-            return absolute
+            return absolute, None
 
         page_opener = _build_opener(cookie_jar)
         try:
             page = _read_html(page_opener, absolute, trigger_url)
         except Exception:
-            return None
-        return _direct_url_from_html(page, absolute)
+            return None, None
+        return _direct_url_from_html(page, absolute), page
+
+
+def resolve_direct_url(
+    cookie_jar: http.cookiejar.CookieJar,
+    trigger_url: str,
+    variant_url: str,
+) -> str | None:
+    direct_url, page = _resolve_trigger_once(
+        cookie_jar, trigger_url, variant_url
+    )
+    if direct_url:
+        return direct_url
+
+    if page:
+        wait_seconds = _countdown_seconds(page)
+        if wait_seconds is not None:
+            time.sleep(wait_seconds + 1)
+            direct_url, _ = _resolve_trigger_once(
+                cookie_jar, trigger_url, variant_url
+            )
+            if direct_url:
+                return direct_url
+
+    return None
 
 
 def resolve_target(lock_path: Path) -> DownloadTarget:
