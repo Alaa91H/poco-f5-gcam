@@ -499,7 +499,8 @@ jobs:
           curl --fail --location --silent --show-error --retry 3 \
             "$URL" --output "$JAR"
           echo "$EXPECTED_SHA256  $JAR" | sha256sum --check --strict
-          java -jar "$JAR" -version
+          java -jar "$JAR" -h >/dev/null
+          echo "Verified APKEditor 1.4.9 checksum and executable entry point."
 
           echo "APKEDITOR_JAR=$JAR" >> "$GITHUB_ENV"
 
