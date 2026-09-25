@@ -87,6 +87,28 @@ function Invoke-PixelCameraInstall {
 
     try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+        $rootFullPath = [System.IO.Path]::GetFullPath(
+            $extractRoot + [System.IO.Path]::DirectorySeparatorChar
+        )
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($resolvedPath)
+        try {
+            foreach ($entry in $archive.Entries) {
+                $destination = [System.IO.Path]::GetFullPath(
+                    (Join-Path $extractRoot $entry.FullName)
+                )
+                if (-not $destination.StartsWith(
+                    $rootFullPath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                    throw "Unsafe path detected inside APKM bundle: $($entry.FullName)"
+                }
+            }
+        }
+        finally {
+            $archive.Dispose()
+        }
+
         [System.IO.Compression.ZipFile]::ExtractToDirectory(
             $resolvedPath,
             $extractRoot
