@@ -10,6 +10,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
       - "device/marble/apkm-audit-policy.json"
@@ -24,6 +25,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
       - "device/marble/apkm-audit-policy.json"
@@ -100,7 +102,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_build_standalone_pixel_camera.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -305,6 +307,7 @@ jobs:
           python -m unittest tests.test_resolve_apkmirror_gcam -v
           python -m unittest tests.test_download_latest_pixel_camera -v
           python -m unittest tests.test_inspect_apkm -v
+          python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
 
       - name: Resolve newest compatible Pixel Camera
@@ -356,7 +359,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -383,7 +385,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -399,7 +400,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -407,22 +407,78 @@ jobs:
 
           PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
           EXPECTED_SIGNER="$(python -c 'import json; print(json.load(open("device/marble/apkm-audit-policy.json"))["allowed_signer_sha256"][0])')"
-          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          APKSIGNER="$BUILD_TOOLS/apksigner"
+          ZIPALIGN="$BUILD_TOOLS/zipalign"
+          APKANALYZER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer -perm -111 -print -quit)"
           REPORT="$RUNNER_TEMP/pixel-camera-audit.json"
+
+          if [ -z "$APKANALYZER" ]; then
+            echo "::error::apkanalyzer was not found in the Android SDK."
+            exit 1
+          fi
 
           python scripts/inspect_apkm.py "$PACKAGE_PATH" \
             --output "$REPORT" \
             --apksigner "$APKSIGNER" \
+            --apkanalyzer "$APKANALYZER" \
+            --zipalign "$ZIPALIGN" \
             --allowed-signer-sha256 "$EXPECTED_SIGNER" \
             --require-signature-verification >/dev/null
 
           python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
 
+      - name: Validate split dependency graph
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REPORT="$RUNNER_TEMP/pixel-camera-audit.json"
+          PLAN="$RUNNER_TEMP/pixel-camera-split-plan.json"
+
+          python scripts/plan_device_splits.py "$REPORT" --output "$PLAN" >/dev/null
+
+          python - "$PLAN" <<'PY'
+          import json
+          import sys
+
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          missing = int(plan.get("missing_dependency_count") or 0)
+          if missing:
+              raise SystemExit(
+                  f"split dependency graph is incomplete: {missing} declared dependencies are missing"
+              )
+          PY
+
+          echo "PIXEL_CAMERA_SPLIT_PLAN=$PLAN" >> "$GITHUB_ENV"
+
+          python - "$PLAN" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("\n### Split dependency plan\n\n")
+              out.write(
+                  f"- Manifest metadata complete: `{plan['manifest_metadata_complete']}`\n"
+              )
+              out.write(
+                  f"- Missing declared dependencies: `{plan['missing_dependency_count']}`\n"
+              )
+              out.write(
+                  f"- Device-validation candidate bytes: `{plan['validation_candidate_bytes']}`\n"
+              )
+              out.write("- Automatic feature removal: `false`\n")
+          PY
+
       - name: Download pinned APKEditor
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -451,7 +507,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         env:
@@ -506,7 +561,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -563,7 +617,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
@@ -571,6 +624,7 @@ jobs:
           path: |
             ${{ env.STANDALONE_APK }}
             ${{ env.STANDALONE_REPORT }}
+            ${{ env.PIXEL_CAMERA_SPLIT_PLAN }}
           compression-level: 0
           if-no-files-found: error
 
@@ -822,7 +876,6 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
