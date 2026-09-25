@@ -2,19 +2,16 @@ plugins {
     id "com.android.application"
 }
 
-def probeApplicationId = providers.gradleProperty("probeApplicationId")
-        .getOrElse("dev.alaa.pocof5.camera2probe")
-
 android {
-    namespace "dev.alaa.pocof5.camera2probe"
+    namespace "dev.alaa.pocof5.lensverifier"
     compileSdk 35
 
     defaultConfig {
-        applicationId probeApplicationId
+        applicationId "dev.alaa.pocof5.lensverifier"
         minSdk 23
         targetSdk 35
         versionCode 1
-        versionName "0.2.0"
+        versionName "0.1.0"
     }
 
     buildTypes {

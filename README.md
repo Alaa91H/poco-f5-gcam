@@ -45,7 +45,7 @@ It does **not** include or redistribute proprietary Google Camera APKs, Google-o
 
 ## Development status
 
-**Phase 1 — Device baseline is in progress.**
+**Phase 1 — Device baseline and Camera2 capability tooling are available. Phase 2 — physical lens mapping and package-specific exposure testing is now implemented.**
 
 The repository now includes a Windows 11 ADB collector that captures camera-service, vendor-property, Android-feature, and media-codec information from the target POCO F5 without intentionally storing the ADB serial.
 
@@ -81,11 +81,11 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 The immediate sequence is:
 
 1. Capture and review a real POCO F5 baseline.
-2. Normalize exposed camera IDs and capabilities.
-3. Validate physical lens mappings.
-4. Add a dedicated Camera2 characteristics probe where `dumpsys` is incomplete.
-5. Build a tested GCam compatibility matrix.
-6. Begin reproducible image/video tuning profiles.
+2. Run the Camera2 Probe and generate the capability matrix.
+3. Validate physical lens mappings with the live Lens Verifier.
+4. Compare package-specific Camera2 exposure where auxiliary cameras are restricted.
+5. Fill the exact-build GCam compatibility matrix.
+6. Begin reproducible image/video tuning profiles only after the compatible base is established.
 
 ## Contributing
 
@@ -94,3 +94,16 @@ Keep changes device-focused, reproducible, and documented. When adding a configu
 ## Disclaimer
 
 Google Camera is a Google product. This is an independent community project and is not affiliated with or endorsed by Google, Xiaomi, or POCO.
+
+
+## Lens mapping and GCam compatibility
+
+The repository includes an interactive Lens Verifier that opens each exposed Camera ID and lets the tester identify the physical lens by live preview and lens occlusion.
+
+On Windows 11:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-lens-verifier.ps1 -Build
+```
+
+For package-specific auxiliary-camera exposure tests, the Camera2 Probe can also be built with a custom Android application ID. See [docs/LENS_MAPPING_AND_COMPATIBILITY.md](docs/LENS_MAPPING_AND_COMPATIBILITY.md).

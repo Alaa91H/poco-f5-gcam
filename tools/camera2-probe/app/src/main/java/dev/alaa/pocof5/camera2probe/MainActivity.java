@@ -102,6 +102,7 @@ public final class MainActivity extends Activity {
             JSONObject root = new JSONObject();
             root.put("schemaVersion", 1);
             root.put("generatedAtUtc", utcNow());
+            root.put("packageName", context.getPackageName());
             root.put("device", buildDeviceInfo());
 
             CameraManager manager =
