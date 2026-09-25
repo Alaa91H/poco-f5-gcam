@@ -1,7 +1,9 @@
 # Pixel Camera upstream tracking
 
-The repository tracks the newest **APKMirror Pixel Camera** release whose published
-variant metadata matches the POCO F5 target policy.
+The repository tracks the newest **APKMirror Pixel Camera** releases whose published
+variant metadata matches the POCO F5 target policy. Discovery and runtime approval
+are deliberately separate: a newer APKMirror candidate cannot replace the
+last-known-good POCO F5 runtime until the on-device promotion gate passes.
 
 ## Current target
 
@@ -25,8 +27,9 @@ be started manually. It:
 3. Enumerates published variant families.
 4. Rejects variants whose minimum API is newer than API 37.
 5. Rejects non-`arm64-v8a` and non-`nodpi` variants.
-6. Selects the numerically newest remaining release.
-7. Updates the lock file only when the selected release actually changes.
+6. Sorts compatible releases newest-first and retains an ordered fallback set.
+7. Updates the discovery lock only when the candidate set actually changes.
+8. Leaves the last-known-good runtime state untouched.
 
 If APKMirror changes its page structure and no safe match can be parsed, the
 resolver exits with an error instead of silently selecting an unverified build.
@@ -52,3 +55,26 @@ python scripts/resolve_apkmirror_gcam.py
 ```
 
 The repository intentionally does not commit proprietary APK/APKM files.
+
+
+## Runtime approval and fallback
+
+The discovery lock is not the runtime approval source.
+
+- `device/marble/upstream/pixel-camera.json` tracks metadata-compatible candidates.
+- `device/marble/upstream/pixel-camera-approved.json` tracks the effective
+  last-known-good runtime.
+
+Use the Windows on-device gate before promoting a candidate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
+  -ApkPath "C:\path\to\PixelCamera.apk" `
+  -ConfirmMainPreview `
+  -ConfirmMainCapture `
+  -ConfirmFrontPreview
+```
+
+If the candidate fails, the gate records the rejection, keeps the previous
+last-known-good version effective, and exposes the next older compatible
+candidate. See [Runtime Compatibility Gate](RUNTIME_COMPATIBILITY_GATE.md).

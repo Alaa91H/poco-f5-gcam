@@ -91,6 +91,43 @@ class ResolverTests(unittest.TestCase):
 
         self.assertEqual(selected.version, "11.0.073.972752740.32")
 
+    def test_tracks_ordered_fallback_candidates_with_limit(self):
+        self.policy["selection"] = {"candidate_limit": 2}
+        html = "".join(
+            [
+                variant(
+                    "%7B%22arches_slug%22%3A%5B%22arm64-v8a%22%5D%2C"
+                    "%22dpis_slug%22%3A%5B%22nodpi%22%5D%2C"
+                    "%22minapi_slug%22%3A%22minapi-37%22%7D",
+                    "11.0.3",
+                    "pixel-camera-11-0-3",
+                ),
+                variant(
+                    "%7B%22arches_slug%22%3A%5B%22arm64-v8a%22%5D%2C"
+                    "%22dpis_slug%22%3A%5B%22nodpi%22%5D%2C"
+                    "%22minapi_slug%22%3A%22minapi-37%22%7D",
+                    "11.0.2",
+                    "pixel-camera-11-0-2",
+                ),
+                variant(
+                    "%7B%22arches_slug%22%3A%5B%22arm64-v8a%22%5D%2C"
+                    "%22dpis_slug%22%3A%5B%22nodpi%22%5D%2C"
+                    "%22minapi_slug%22%3A%22minapi-37%22%7D",
+                    "11.0.1",
+                    "pixel-camera-11-0-1",
+                ),
+            ]
+        )
+
+        ordered = resolver.compatible_candidates(
+            self.policy,
+            resolver.discover_candidates(
+                html, "https://www.apkmirror.com/apk/google-inc/camera/"
+            ),
+        )
+
+        self.assertEqual([item.version for item in ordered], ["11.0.3", "11.0.2"])
+
     def test_fails_closed_when_no_compatible_variant_exists(self):
         html = variant(
             "%7B%22arches_slug%22%3A%5B%22arm64-v8a%22%5D%2C"

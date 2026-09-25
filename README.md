@@ -107,3 +107,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-lens-verifier.ps1 -Build
 ```
 
 For package-specific auxiliary-camera exposure tests, the Camera2 Probe can also be built with a custom Android application ID. See [docs/LENS_MAPPING_AND_COMPATIBILITY.md](docs/LENS_MAPPING_AND_COMPATIBILITY.md).
+
+
+## Automatic compatibility gate and fallback
+
+The newest APKMirror release is treated as a **candidate**, not automatically as
+the working version. Runtime promotion on POCO F5 requires the strict Android 17
+device gate. A failed update preserves the last-known-good version and points to
+the next compatible fallback candidate.
+
+See [docs/RUNTIME_COMPATIBILITY_GATE.md](docs/RUNTIME_COMPATIBILITY_GATE.md).
