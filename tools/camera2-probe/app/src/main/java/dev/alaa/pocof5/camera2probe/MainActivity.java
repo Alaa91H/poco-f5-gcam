@@ -28,7 +28,6 @@ import java.lang.reflect.Array;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
@@ -469,10 +468,12 @@ public final class MainActivity extends Activity {
 
             if (value instanceof Set) {
                 JSONArray array = new JSONArray();
-                String[] values = ((Set<?>) value).stream()
-                        .map(String::valueOf)
-                        .sorted()
-                        .toArray(String[]::new);
+                String[] values = new String[((Set<?>) value).size()];
+                int index = 0;
+                for (Object item : (Set<?>) value) {
+                    values[index++] = String.valueOf(item);
+                }
+                Arrays.sort(values);
                 for (String item : values) {
                     array.put(item);
                 }
