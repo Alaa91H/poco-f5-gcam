@@ -13,6 +13,7 @@ on:
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
       - "tests/test_analyze_pixel_camera_device_gate.py"
+      - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -29,6 +30,7 @@ on:
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
       - "tests/test_analyze_pixel_camera_device_gate.py"
+      - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -320,6 +322,7 @@ jobs:
           python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
           python -m unittest tests.test_analyze_pixel_camera_device_gate -v
+          python -m unittest tests.test_patch_pixel_camera_device_gate -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -945,8 +948,9 @@ jobs:
           git push
 
 
+
   device_gate_analysis:
-    name: Analyze Pixel Camera POCO F5 device gate
+    name: Build POCO F5 patched Pixel Camera splits
     if: >-
       github.event_name == 'pull_request' &&
       github.head_ref == 'feat/patch-pixel-camera-device-gate'
@@ -967,8 +971,21 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Test device-gate analyzer
-        run: python -m unittest tests.test_analyze_pixel_camera_device_gate -v
+      - name: Test device-gate tooling
+        run: |
+          python -m unittest tests.test_analyze_pixel_camera_device_gate -v
+          python -m unittest tests.test_patch_pixel_camera_device_gate -v
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "build-tools;35.0.0"
 
       - name: Download selected Pixel Camera bundle
         shell: bash
@@ -980,17 +997,36 @@ jobs:
             --output-dir "$RUNNER_TEMP/pixel-camera" \
             --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
 
-      - name: Download and verify Apktool 3.0.3
+      - name: Download and verify bytecode tools
         shell: bash
         run: |
           set -euo pipefail
+
           APKTOOL="$RUNNER_TEMP/apktool_3.0.3.jar"
           curl --fail --location --silent --show-error --retry 3 \
             "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" \
             --output "$APKTOOL"
           echo "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  $APKTOOL" \
             | sha256sum --check --strict
+
+          BAKSMALI="$RUNNER_TEMP/baksmali-3.0.10-fat.jar"
+          SMALI="$RUNNER_TEMP/smali-3.0.10-fat.jar"
+
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/baksmali/smali/releases/download/v3.0.10/baksmali-3.0.10-fat.jar" \
+            --output "$BAKSMALI"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/baksmali/smali/releases/download/v3.0.10/smali-3.0.10-fat.jar" \
+            --output "$SMALI"
+
+          echo "37ae4a41a8886e15c20b8362fa4250f96bbdb55e1a608199ad8b5dff068b588f  $BAKSMALI" \
+            | sha256sum --check --strict
+          echo "32fa0e88a6c397b3922201adf5f3e534fbaed5a663c71d0c558c3ddce0af844a  $SMALI" \
+            | sha256sum --check --strict
+
           echo "APKTOOL_JAR=$APKTOOL" >> "$GITHUB_ENV"
+          echo "BAKSMALI_JAR=$BAKSMALI" >> "$GITHUB_ENV"
+          echo "SMALI_JAR=$SMALI" >> "$GITHUB_ENV"
 
       - name: Locate unsupported-device guard
         shell: bash
@@ -1009,30 +1045,96 @@ jobs:
 
           report = json.load(open(sys.argv[1], encoding="utf-8"))
           with open(sys.argv[2], "a", encoding="utf-8") as out:
-              out.write("\n### Pixel Camera device gate\n\n")
+              out.write("\n### Pixel Camera device compatibility gate\n\n")
               out.write(f"- Exact matches: {report['match_count']}\n")
               for index, match in enumerate(report["matches"], 1):
                   out.write(f"- Match {index}: {match['file']}:{match['marker_line']}\n")
-                  out.write(f"- Method: {match['method_header']}\n\n")
-                  out.write("~~~smali\n")
-                  out.write(match["method_smali"])
-                  out.write("\n~~~\n")
+                  out.write(f"- Method: {match['method_header']}\n")
           PY
 
-          python - "$REPORT" <<'PY'
+      - name: Prepare ephemeral test signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/poco-f5-pixel-camera-patch-test.jks"
+          KEY_ALIAS="poco-f5-pixel-camera-test"
+          KS_PASS="poco-f5-pixel-camera-ci-test"
+          KEY_PASS="poco-f5-pixel-camera-ci-test"
+
+          keytool -genkeypair \
+            -keystore "$KEYSTORE" \
+            -storetype JKS \
+            -storepass "$KS_PASS" \
+            -keypass "$KEY_PASS" \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 4096 \
+            -validity 10000 \
+            -dname "CN=POCO F5 Pixel Camera Compatibility Test, OU=CI, O=Community, C=DE" \
+            -noprompt >/dev/null
+
+          echo "::add-mask::$KS_PASS"
+          echo "::add-mask::$KEY_PASS"
+          echo "PATCH_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "PATCH_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "GCMOD_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+          echo "GCMOD_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+
+      - name: Patch latest Pixel Camera and preserve split layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          VERSION="$(python -c 'import json; print(json.load(open("device/marble/upstream/pixel-camera.json"))["selected"]["version"])')"
+          OUTPUT="$RUNNER_TEMP/PixelCamera-\${VERSION}-POCO-F5-device-gate-patched.apks"
+          REPORT="$RUNNER_TEMP/PixelCamera-\${VERSION}-POCO-F5-device-gate-patched.json"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          python scripts/patch_pixel_camera_device_gate.py "$PACKAGE_PATH" \
+            --output "$OUTPUT" \
+            --report "$REPORT" \
+            --baksmali "$BAKSMALI_JAR" \
+            --smali "$SMALI_JAR" \
+            --zipalign "$BUILD_TOOLS/zipalign" \
+            --apksigner "$BUILD_TOOLS/apksigner" \
+            --keystore "$PATCH_KEYSTORE" \
+            --key-alias "$PATCH_KEY_ALIAS" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-patch-result.json"
+
+          test -s "$OUTPUT"
+          test -s "$REPORT"
+
+          echo "PATCHED_PIXEL_CAMERA=$OUTPUT" >> "$GITHUB_ENV"
+          echo "PATCHED_PIXEL_CAMERA_REPORT=$REPORT" >> "$GITHUB_ENV"
+
+          python - "$REPORT" "$GITHUB_STEP_SUMMARY" <<'PY'
           import json
           import sys
+
           report = json.load(open(sys.argv[1], encoding="utf-8"))
-          for index, match in enumerate(report["matches"], 1):
-              print(f"===== DEVICE GATE MATCH {index} =====")
-              print(f"{match['file']}:{match['marker_line']}")
-              print(match["method_smali"])
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("\n### POCO F5 compatibility patch\n\n")
+              out.write(f"- Source APK count: {report['source']['apk_count']}\n")
+              out.write(f"- Output APK count: {report['output']['apk_count']}\n")
+              out.write(f"- Modified APKs: {', '.join(report['patch']['modified_apks'])}\n")
+              out.write(f"- Modified dex: {', '.join(report['patch']['modified_dex_entries'])}\n")
+              out.write(f"- Original instruction: {report['patch']['original_instruction']}\n")
+              out.write(f"- Patched instruction: {report['patch']['patched_instruction']}\n")
+              out.write(f"- Split layout preserved: {report['patch']['split_layout_preserved']}\n")
+              out.write(f"- PairIP bypass: {report['patch']['pairip_bypass_performed']}\n")
+              out.write("- Runtime validation: REQUIRED on real POCO F5\n")
           PY
 
-      - name: Upload device-gate analysis
+      - name: Upload patched POCO F5 test bundle
         uses: actions/upload-artifact@v7
         with:
-          name: pixel-camera-device-gate-analysis
-          path: \${{ runner.temp }}/pixel-camera-device-gate.json
-          if-no-files-found: error
+          name: poco-f5-pixel-camera-device-gate-patched-test
+          path: |
+            ${{ env.PATCHED_PIXEL_CAMERA }}
+            ${{ env.PATCHED_PIXEL_CAMERA_REPORT }}
+            ${{ runner.temp }}/pixel-camera-device-gate.json
+            scripts/install-pixel-camera-splits.ps1
+            scripts/test-pixel-camera-runtime.ps1
+          compression-level: 0
           retention-days: 7
+          if-no-files-found: error
