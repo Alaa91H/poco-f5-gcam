@@ -1,70 +1,116 @@
-# Standalone POCO F5 Pixel Camera APK
+# Pixel Camera packaging on POCO F5
 
-The build pipeline can transform the selected APKMirror Pixel Camera bundle into
-one standalone APK for the POCO F5 / Android 17 target.
+Pixel Camera 11 is distributed as a base APK plus split/configuration/feature
+APKs. The project now treats preservation of that split layout and Google's
+original signing identity as the default runtime-safe path.
 
-## Pipeline
+## Preferred path: original Google-signed splits
 
-1. Download the newest compatible APK/APKM and verify the published SHA-256.
-2. Verify every original APK/split signature against the approved Google signer.
-3. Download the pinned APKEditor release and verify its SHA-256.
-4. Merge the split bundle into one standalone APK without dropping feature
-   splits.
-5. Remove obsolete split/signature metadata created by the bundle container.
-6. Align native libraries for 16 KiB page-size devices with Android `zipalign`.
-7. Sign the transformed APK with the project signing key.
-8. Verify the final signature, ZIP alignment, package name, SDK level, and ABI.
-9. Write a JSON provenance report and upload the APK/report as workflow
-   artifacts.
-10. When Telegram credentials are configured, deliver the final APK through the
-    local Bot API path.
+The upstream APK/APKM is downloaded, checksum-verified, and every contained APK
+is verified against the approved Google signing certificate. No APK bytes are
+edited before installation.
 
-The policy is stored in `device/marble/standalone-apk-policy.json` and the
-builder is `scripts/build_standalone_pixel_camera.py`.
+On Windows 11 with Android Platform-Tools:
 
-## Signing
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-pixel-camera-splits.ps1 -PackagePath .\PixelCamera.apkm
+```
 
-Any merge or binary modification invalidates Google's original APK signature.
-The final APK therefore uses a project-owned key.
+The installer:
 
-For stable upgradeable builds configure these repository secrets:
+1. Requires an attached `marble`/`marblein` device.
+2. Extracts APK entries to a temporary directory without modifying them.
+3. Uses `adb install-multiple -r` for split bundles.
+4. Keeps Google's original signatures intact.
+5. Verifies that Android resolves `com.google.android.GoogleCamera` after
+   installation.
+6. Removes temporary extracted files after installation.
 
-- `GCMOD_KEYSTORE_B64`
-- `GCMOD_KEY_ALIAS`
-- `GCMOD_KEYSTORE_PASSWORD`
-- `GCMOD_KEY_PASSWORD`
+If a previously installed experimental merged APK uses the project signing key,
+Android will reject an in-place update with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`. In that case, uninstall that experimental
+build first or rerun the installer with `-UninstallExisting`.
 
-`GCMOD_KEYSTORE_B64` is the base64-encoded binary keystore. The workflow never
-commits the keystore or passwords.
+## Required runtime smoke test
 
-Pull-request validation may use an ephemeral CI key when those secrets are
-absent. Scheduled and manually dispatched production builds fail closed unless
-all four stable signing secrets are configured, preventing non-upgradeable APKs
-from being distributed as production outputs.
+A package is not considered runtime-compatible merely because it installs.
 
-## Safety and compatibility rules
+Run:
 
-The build is fail-closed when the original Google signature gate fails, the
-pinned APKEditor checksum changes, the final package name changes unexpectedly,
-the output contains a non-target native ABI, signature verification fails, or
-16 KiB ZIP alignment verification fails.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-pixel-camera-runtime.ps1 -Strict
+```
 
-The pipeline does **not** remove PairIP, bypass application protection, or
-automatically delete feature splits. Those operations are deliberately excluded
-from the standalone policy.
+The smoke test:
 
-The final package keeps `com.google.android.GoogleCamera`. Because the project
-signature differs from Google's signature, it cannot update an already
-installed Google-signed package with the same application ID.
+- validates the connected POCO F5 codename;
+- verifies that Pixel Camera is installed;
+- force-stops the package and clears logcat;
+- launches the launcher activity;
+- observes whether the process remains alive;
+- checks whether the package owns the resumed activity;
+- scans logcat for package-associated fatal exceptions, native loader failures,
+  resource/class failures, verifier errors, fatal signals, and abort messages;
+- writes a JSON report under `device/marble/runtime/`.
 
-## CI production hardening
+A strict run exits non-zero when the launcher fails, the process dies during the
+observation window, or package-associated fatal crash evidence is detected.
 
-Feature branches are validated through pull-request workflows instead of running
-duplicate push and pull-request jobs. Large standalone APK artifacts use a
-14-day retention period. Telegram single-file delivery fails early if the APK
-exceeds 2 GiB.
+## Experimental merged single APK
 
-The Telegram Local Bot API source is pinned to
-`e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1` so the delivery toolchain is
-reproducible and its compiled binary cache remains stable until the pin is
-intentionally updated.
+The repository still contains
+`scripts/build_standalone_pixel_camera.py` for controlled investigation of a
+single-file package.
+
+That path:
+
+1. merges the split bundle with pinned APKEditor;
+2. sanitizes split metadata during the merge;
+3. aligns native libraries for 16 KiB page-size devices;
+4. replaces Google's signing identity with the project signing key;
+5. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
+
+Those checks prove package structure and installability only. They do **not**
+prove Pixel Camera runtime behavior after dynamic-feature fusion.
+
+For that reason the merged output is now explicitly recorded as:
+
+- `runtime_validation.status = not_run`;
+- `runtime_validation.required_for_distribution = true`;
+- `distribution.status = experimental-unvalidated`;
+- `distribution.automatic_delivery_allowed = false`.
+
+GitHub Actions no longer automatically builds or sends this merged APK during
+scheduled upstream refreshes. A manual workflow run must explicitly enable
+`build_experimental_standalone` to produce it, and the artifact name includes
+`experimental-unvalidated`.
+
+## CI behavior
+
+Scheduled or manually dispatched upstream refreshes continue to:
+
+1. resolve the newest API-37/arm64 compatible Pixel Camera release;
+2. download and checksum-verify the original package;
+3. audit all APK signatures and the split dependency graph;
+4. upload the original Google-signed package together with the audit report,
+   split plan, and installation/runtime-test scripts;
+5. when Telegram credentials are available, deliver the original Google-signed
+   bundle rather than the merged project-signed APK.
+
+Pull requests run static/unit validation without downloading or redistributing
+the proprietary upstream package.
+
+## Signing and compatibility
+
+The original split installation retains Google's certificate.
+
+Any merged or otherwise modified APK cannot retain the original Google
+signature. A stable repository signing key is still required for upgrade
+compatibility between experimental project-signed builds, but a stable project
+key does not make the merged package equivalent to Google's original runtime
+layout.
+
+## Protection policy
+
+PairIP is report-only. This pipeline does not remove PairIP, bypass application
+protections, or claim that feature modules are safe to delete.
