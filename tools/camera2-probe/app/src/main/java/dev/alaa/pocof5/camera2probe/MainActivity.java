@@ -602,6 +602,8 @@ public final class MainActivity extends Activity {
                     return "RAW10";
                 case ImageFormat.RAW12:
                     return "RAW12";
+                case ImageFormat.RAW14:
+                    return "RAW14";
                 case ImageFormat.PRIVATE:
                     return "PRIVATE";
                 case ImageFormat.DEPTH16:
