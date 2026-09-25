@@ -311,11 +311,19 @@ def resolve_direct_url(
         wait_seconds = _countdown_seconds(page)
         if wait_seconds is not None:
             time.sleep(wait_seconds + 1)
-            direct_url, _ = _resolve_trigger_once(
+            direct_url, page = _resolve_trigger_once(
                 cookie_jar, trigger_url, variant_url
             )
             if direct_url:
                 return direct_url
+
+        summary = _visible_text(page)[:700] if page else ""
+        if summary:
+            print(
+                "APKMirror trigger diagnostics: "
+                + summary.replace("\n", " "),
+                file=sys.stderr,
+            )
 
     return None
 
