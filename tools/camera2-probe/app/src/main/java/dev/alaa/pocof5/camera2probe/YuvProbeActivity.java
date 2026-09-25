@@ -1,6 +1,7 @@
 package dev.alaa.pocof5.camera2probe;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -197,7 +198,7 @@ public final class YuvProbeActivity extends Activity {
         return root;
     }
 
-    @SuppressWarnings("MissingPermission")
+    @SuppressLint("MissingPermission")
     private JSONObject probeCamera(
             CameraManager manager,
             String cameraId,
