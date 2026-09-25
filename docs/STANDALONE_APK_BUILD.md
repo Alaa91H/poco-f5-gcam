@@ -1,14 +1,17 @@
 # Pixel Camera packaging on POCO F5
 
 Pixel Camera 11 is distributed as a base APK plus split/configuration/feature
-APKs. The project now treats preservation of that split layout and Google's
-original signing identity as the default runtime-safe path.
+APKs. The project preserves that original layout as the upstream baseline, but
+the current 11.0.073 build reaches the launcher on POCO F5 and then is rejected
+by Pixel Camera's explicit unsupported-device constructor guard.
 
-## Preferred path: original Google-signed splits
+## Baseline path: original Google-signed splits
 
 The upstream APK/APKM is downloaded, checksum-verified, and every contained APK
 is verified against the approved Google signing certificate. No APK bytes are
-edited before installation.
+edited before installation. This is useful as a clean baseline, but it is not a
+working POCO F5 runtime path for the current Pixel Camera 11.0.073 release because
+the application rejects the device during provider startup.
 
 On Windows 11 with Android Platform-Tools:
 
