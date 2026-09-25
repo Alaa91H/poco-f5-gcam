@@ -36,7 +36,12 @@ USER_AGENT = (
 )
 
 DIRECT_HOST_RE = re.compile(r"^downloadr\d+\.apkmirror\.com$", re.IGNORECASE)
-DOWNLOAD_LABEL_RE = re.compile(r"Download\s+(?:APK\s+Bundle|APK)", re.IGNORECASE)
+PACKAGE_URL_RE = re.compile(r"\.(?:apk|apkm|xapk)(?:$|[?#])", re.IGNORECASE)
+IMAGE_URL_RE = re.compile(
+    r"\.(?:png|jpe?g|webp|gif|svg)(?:$|[?#])",
+    re.IGNORECASE,
+)
+DOWNLOAD_LABEL_RE = re.compile(r"(?:Download|click\s+here)", re.IGNORECASE)
 SHA256_RE = re.compile(r"\b([0-9a-f]{64})\b", re.IGNORECASE)
 FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
 
@@ -199,14 +204,37 @@ def extract_bundle_sha256(variant_html: str) -> str | None:
 
 
 def _direct_url_from_html(html: str, base_url: str) -> str | None:
-    for href, _ in _anchors(html):
+    candidates: list[tuple[int, str]] = []
+
+    for href, text in _anchors(html):
         absolute = urllib.parse.urljoin(base_url, href)
-        host = urllib.parse.urlsplit(absolute).hostname or ""
-        if DIRECT_HOST_RE.fullmatch(host):
-            return absolute
+        parsed = urllib.parse.urlsplit(absolute)
+        host = parsed.hostname or ""
+        if not DIRECT_HOST_RE.fullmatch(host):
+            continue
+
+        if IMAGE_URL_RE.search(parsed.path):
+            continue
+
+        score = 0
+        if PACKAGE_URL_RE.search(absolute):
+            score += 100
+        if DOWNLOAD_LABEL_RE.search(text):
+            score += 40
+        if "key=" in parsed.query.lower():
+            score += 20
+
+        if score >= 40:
+            candidates.append((score, absolute))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
 
     match = re.search(
-        r"https?://downloadr\d+\.apkmirror\.com/[^\"'<>\\\s]+",
+        r"https?://downloadr\d+\.apkmirror\.com/"
+        r"[^\"'<>\\\s]+\.(?:apk|apkm|xapk)"
+        r"(?:\?[^\"'<>\\\s]*)?",
         html,
         re.IGNORECASE,
     )
