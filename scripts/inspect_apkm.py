@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import zipfile
@@ -34,9 +35,11 @@ CERT_SHA256_RE = re.compile(
 )
 MANIFEST_ATTR_RE = re.compile(r'\b(package|split)="([^"]*)"')
 USES_SPLIT_RE = re.compile(
-    r"<uses-split\\b[^>]*android:name=\\x22([^\\x22]+)\\x22",
+    r'<uses-split\b[^>]*android:name="([^"]+)"',
     re.IGNORECASE,
 )
+CONFIG_FOR_SPLIT_RE = re.compile(r'\bandroid:configForSplit="([^"]+)"')
+FEATURE_SPLIT_RE = re.compile(r'\bandroid:isFeatureSplit="([^"]+)"')
 
 
 def sha256_path(path: Path) -> str:
@@ -60,6 +63,109 @@ def _category(name: str) -> str:
     if normalized.startswith("META-INF/") or normalized == "AndroidManifest.xml":
         return "metadata"
     return "other"
+
+
+def _inspect_elf_load_alignment(data: bytes) -> dict[str, Any]:
+    if len(data) < 64 or data[:4] != b"\x7fELF":
+        return {
+            "available": False,
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+    elf_class = data[4]
+    endian_id = data[5]
+    if endian_id == 1:
+        endian = "<"
+    elif endian_id == 2:
+        endian = ">"
+    else:
+        return {
+            "available": False,
+            "error": f"unknown ELF endianness {endian_id}",
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+    try:
+        if elf_class == 1:
+            phoff = struct.unpack_from(endian + "I", data, 28)[0]
+            phentsize = struct.unpack_from(endian + "H", data, 42)[0]
+            phnum = struct.unpack_from(endian + "H", data, 44)[0]
+            align_offset = 28
+            elf_bits = 32
+            align_format = "I"
+        elif elf_class == 2:
+            phoff = struct.unpack_from(endian + "Q", data, 32)[0]
+            phentsize = struct.unpack_from(endian + "H", data, 54)[0]
+            phnum = struct.unpack_from(endian + "H", data, 56)[0]
+            align_offset = 48
+            elf_bits = 64
+            align_format = "Q"
+        else:
+            return {
+                "available": False,
+                "error": f"unknown ELF class {elf_class}",
+                "load_alignments": [],
+                "min_load_alignment": None,
+                "compatible_16kb": None,
+            }
+
+        alignments: list[int] = []
+        for index in range(phnum):
+            entry = phoff + index * phentsize
+            if entry + phentsize > len(data):
+                raise ValueError("program header extends beyond ELF payload")
+            p_type = struct.unpack_from(endian + "I", data, entry)[0]
+            if p_type != 1:
+                continue
+            alignment = struct.unpack_from(
+                endian + align_format,
+                data,
+                entry + align_offset,
+            )[0]
+            alignments.append(int(alignment))
+
+        minimum = min(alignments) if alignments else None
+        compatible = (
+            all(alignment >= 16384 for alignment in alignments)
+            if alignments
+            else None
+        )
+        return {
+            "available": True,
+            "elf_class_bits": elf_bits,
+            "load_alignments": alignments,
+            "min_load_alignment": minimum,
+            "compatible_16kb": compatible,
+        }
+    except (struct.error, ValueError) as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+
+def verify_zip_alignment(apk_path: Path, zipalign: str | None) -> dict[str, Any]:
+    if not zipalign:
+        return {
+            "available": False,
+            "verified_16kb": None,
+        }
+
+    code, output = _run_text(
+        [zipalign, "-c", "-P", "16", "-v", "4", str(apk_path)]
+    )
+    return {
+        "available": True,
+        "verified_16kb": code == 0,
+        "output_tail": "\n".join(output.strip().splitlines()[-20:]),
+    }
 
 
 def _stream_contains_ascii(
@@ -122,6 +228,8 @@ def inspect_manifest(apk_path: Path, apkanalyzer: str | None) -> dict[str, Any]:
             "package": None,
             "split": None,
             "uses_splits": [],
+            "config_for_split": None,
+            "is_feature_split": None,
         }
 
     code, output = _run_text([apkanalyzer, "manifest", "print", str(apk_path)])
@@ -132,14 +240,25 @@ def inspect_manifest(apk_path: Path, apkanalyzer: str | None) -> dict[str, Any]:
             "package": None,
             "split": None,
             "uses_splits": [],
+            "config_for_split": None,
+            "is_feature_split": None,
         }
 
     attrs = dict(MANIFEST_ATTR_RE.findall(output))
+    config_match = CONFIG_FOR_SPLIT_RE.search(output)
+    feature_match = FEATURE_SPLIT_RE.search(output)
+    feature_value = feature_match.group(1).lower() if feature_match else None
     return {
         "available": True,
         "package": attrs.get("package"),
         "split": attrs.get("split") or None,
         "uses_splits": sorted(set(USES_SPLIT_RE.findall(output))),
+        "config_for_split": config_match.group(1) if config_match else None,
+        "is_feature_split": (
+            feature_value == "true"
+            if feature_value in {"true", "false"}
+            else None
+        ),
     }
 
 
@@ -173,6 +292,7 @@ def inspect_apk(
     logical_name: str,
     apksigner: str | None,
     apkanalyzer: str | None,
+    zipalign: str | None,
 ) -> dict[str, Any]:
     if not zipfile.is_zipfile(apk_path):
         raise ValueError(f"{logical_name} is not a valid APK ZIP payload")
@@ -181,7 +301,7 @@ def inspect_apk(
         lambda: {"compressed_bytes": 0, "uncompressed_bytes": 0, "files": 0}
     )
     abis: set[str] = set()
-    native_libraries: list[str] = []
+    native_libraries: list[dict[str, Any]] = []
 
     with zipfile.ZipFile(apk_path, "r") as archive:
         infos = [info for info in archive.infolist() if not info.is_dir()]
@@ -193,13 +313,34 @@ def inspect_apk(
 
             parts = info.filename.split("/")
             if len(parts) >= 3 and parts[0] == "lib" and parts[-1].endswith(".so"):
-                abis.add(parts[1])
-                native_libraries.append(info.filename)
+                abi = parts[1]
+                abis.add(abi)
+                elf = _inspect_elf_load_alignment(archive.read(info))
+                native_libraries.append({
+                    "name": info.filename,
+                    "abi": abi,
+                    "compressed_bytes": info.compress_size,
+                    "uncompressed_bytes": info.file_size,
+                    "elf": elf,
+                })
 
         pairip = _pairip_indicators(archive, infos)
 
         compressed_payload = sum(info.compress_size for info in infos)
         uncompressed_payload = sum(info.file_size for info in infos)
+
+    checked_native = [
+        item
+        for item in native_libraries
+        if item["elf"].get("available") is True
+        and item["elf"].get("compatible_16kb") is not None
+    ]
+    incompatible_native = [
+        item["name"]
+        for item in checked_native
+        if item["elf"].get("compatible_16kb") is False
+    ]
+    zip_alignment = verify_zip_alignment(apk_path, zipalign)
 
     return {
         "name": logical_name,
@@ -213,6 +354,18 @@ def inspect_apk(
         "categories": dict(sorted(categories.items())),
         "abis": sorted(abis),
         "native_library_count": len(native_libraries),
+        "native_libraries": native_libraries,
+        "native_16kb": {
+            "checked_library_count": len(checked_native),
+            "incompatible_library_count": len(incompatible_native),
+            "incompatible_libraries": incompatible_native,
+            "all_compatible": (
+                len(incompatible_native) == 0
+                if checked_native
+                else None
+            ),
+        },
+        "zip_alignment_16kb": zip_alignment,
         "pairip": {
             "detected": bool(pairip),
             "indicators": pairip,
@@ -285,6 +438,7 @@ def inspect_package(
     package_path: Path,
     apksigner: str | None = None,
     apkanalyzer: str | None = None,
+    zipalign: str | None = None,
     allowed_signers: set[str] | None = None,
 ) -> dict[str, Any]:
     package_path = package_path.resolve()
@@ -306,6 +460,7 @@ def inspect_package(
                 package_path.name,
                 apksigner,
                 apkanalyzer,
+                zipalign,
             )
         )
         kind = "apk"
@@ -351,6 +506,7 @@ def inspect_package(
                             info.filename,
                             apksigner,
                             apkanalyzer,
+                            zipalign,
                         )
                     )
 
@@ -364,6 +520,26 @@ def inspect_package(
 
     signature = _signature_summary(apk_results, allowed_signers)
     pairip_apks = [apk["name"] for apk in apk_results if apk["pairip"]["detected"]]
+
+    native_checked = sum(
+        int(apk["native_16kb"]["checked_library_count"])
+        for apk in apk_results
+    )
+    native_incompatible = [
+        f'{apk["name"]}:{library}'
+        for apk in apk_results
+        for library in apk["native_16kb"]["incompatible_libraries"]
+    ]
+    zip_checked = [
+        apk
+        for apk in apk_results
+        if apk["zip_alignment_16kb"].get("available") is True
+    ]
+    zip_failures = [
+        apk["name"]
+        for apk in zip_checked
+        if apk["zip_alignment_16kb"].get("verified_16kb") is False
+    ]
 
     report = {
         "schema_version": 1,
@@ -387,6 +563,26 @@ def inspect_package(
             ],
             "pairip_detected": bool(pairip_apks),
             "pairip_apks": pairip_apks,
+            "native_16kb": {
+                "checked_library_count": native_checked,
+                "incompatible_library_count": len(native_incompatible),
+                "incompatible_libraries": native_incompatible,
+                "all_compatible": (
+                    len(native_incompatible) == 0
+                    if native_checked
+                    else None
+                ),
+            },
+            "zip_alignment_16kb": {
+                "checked_apk_count": len(zip_checked),
+                "failed_apk_count": len(zip_failures),
+                "failed_apks": zip_failures,
+                "all_verified": (
+                    len(zip_failures) == 0
+                    if zip_checked
+                    else None
+                ),
+            },
             "signature": signature,
         },
         "apks": apk_results,
@@ -419,6 +615,10 @@ def main() -> int:
         help="Path/name of apkanalyzer. Auto-detected from PATH when omitted.",
     )
     parser.add_argument(
+        "--zipalign",
+        help="Path/name of zipalign. Auto-detected from PATH when omitted.",
+    )
+    parser.add_argument(
         "--allowed-signer-sha256",
         action="append",
         default=[],
@@ -439,6 +639,7 @@ def main() -> int:
     try:
         apksigner = _resolve_tool(args.apksigner, "apksigner")
         apkanalyzer = _resolve_tool(args.apkanalyzer, "apkanalyzer")
+        zipalign = _resolve_tool(args.zipalign, "zipalign")
         allowed = {
             item.lower().replace(":", "")
             for item in args.allowed_signer_sha256
@@ -449,6 +650,7 @@ def main() -> int:
             args.package,
             apksigner=apksigner,
             apkanalyzer=apkanalyzer,
+            zipalign=zipalign,
             allowed_signers=allowed,
         )
 
