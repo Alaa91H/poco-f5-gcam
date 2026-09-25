@@ -12,6 +12,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -27,6 +28,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -38,7 +40,7 @@ on:
   workflow_dispatch:
     inputs:
       build_experimental_standalone:
-        description: "Also build the unvalidated merged single APK (not distributed)"
+        description: "Build the POCO F5 compatibility-patched single APK (runtime validation required)"
         required: false
         type: boolean
         default: false
@@ -110,7 +112,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -317,6 +319,7 @@ jobs:
           python -m unittest tests.test_inspect_apkm -v
           python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
+          python -m unittest tests.test_patch_pixel_camera_device_gate -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -532,6 +535,56 @@ jobs:
 
           echo "APKEDITOR_JAR=$JAR" >> "$GITHUB_ENV"
 
+      - name: Download pinned smali toolchain
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          policy = json.load(open("device/marble/standalone-apk-policy.json"))
+          tool = policy["toolchain"]["smali"]
+          print(tool["version"])
+          print(tool["baksmali_url"])
+          print(tool["baksmali_sha256"])
+          print(tool["smali_url"])
+          print(tool["smali_sha256"])
+          PY
+          )
+
+          VERSION="${TOOL[0]}"
+          BAKSMALI_URL="${TOOL[1]}"
+          BAKSMALI_SHA256="${TOOL[2]}"
+          SMALI_URL="${TOOL[3]}"
+          SMALI_SHA256="${TOOL[4]}"
+          BAKSMALI_JAR="$RUNNER_TEMP/baksmali.jar"
+          SMALI_JAR="$RUNNER_TEMP/smali.jar"
+
+          curl --fail --location --silent --show-error --retry 3 "$BAKSMALI_URL" --output "$BAKSMALI_JAR"
+          curl --fail --location --silent --show-error --retry 3 "$SMALI_URL" --output "$SMALI_JAR"
+          echo "$BAKSMALI_SHA256  $BAKSMALI_JAR" | sha256sum --check --strict
+          echo "$SMALI_SHA256  $SMALI_JAR" | sha256sum --check --strict
+
+          BAKSMALI_HELP="$(java -jar "$BAKSMALI_JAR" --help 2>&1 || true)"
+          SMALI_HELP="$(java -jar "$SMALI_JAR" --help 2>&1 || true)"
+          if ! grep -qi "baksmali" <<< "$BAKSMALI_HELP"; then
+            echo "::error::Pinned baksmali $VERSION did not expose the expected CLI."
+            printf '%s\n' "$BAKSMALI_HELP"
+            exit 1
+          fi
+          if ! grep -qi "smali" <<< "$SMALI_HELP"; then
+            echo "::error::Pinned smali $VERSION did not expose the expected CLI."
+            printf '%s\n' "$SMALI_HELP"
+            exit 1
+          fi
+
+          echo "Verified smali/baksmali $VERSION checksums and CLI entry points."
+          echo "BAKSMALI_JAR=$BAKSMALI_JAR" >> "$GITHUB_ENV"
+          echo "SMALI_JAR=$SMALI_JAR" >> "$GITHUB_ENV"
+
       - name: Prepare standalone APK signing key
         if: >-
           github.event_name == 'workflow_dispatch' &&
@@ -610,6 +663,8 @@ jobs:
             --input "$SOURCE" \
             --output "$APK" \
             --apkeditor "$APKEDITOR_JAR" \
+            --baksmali "$BAKSMALI_JAR" \
+            --smali "$SMALI_JAR" \
             --zipalign "$BUILD_TOOLS/zipalign" \
             --apksigner "$BUILD_TOOLS/apksigner" \
             --aapt2 "$BUILD_TOOLS/aapt2" \
@@ -632,7 +687,7 @@ jobs:
 
           {
             echo ""
-            echo "### Experimental standalone POCO F5 APK"
+            echo "### POCO F5 compatibility-patched Pixel Camera APK"
             echo ""
             printf -- '- File: `%s`\n' "$(basename "$APK")"
             printf -- '- Size: `%s bytes`\n' "$APK_SIZE"
@@ -641,6 +696,8 @@ jobs:
             echo "- Native library alignment: `16 KiB`"
             echo "- PairIP bypass: `false`"
             echo "- Feature splits removed: `false`"
+            echo "- Unsupported-device gate: `patched (fail-closed)`"
+            echo "- Patch target: `constructor common finalization path`"
             echo "- On-device runtime validation: `NOT RUN`"
             echo "- Distribution status: `BLOCKED` until real-device runtime validation passes"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -651,7 +708,7 @@ jobs:
           inputs.build_experimental_standalone == true
         uses: actions/upload-artifact@v7
         with:
-          name: experimental-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
+          name: compatibility-patched-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
           path: |
             ${{ env.STANDALONE_APK }}
             ${{ env.STANDALONE_REPORT }}
