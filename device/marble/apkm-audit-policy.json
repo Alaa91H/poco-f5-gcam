@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "package_name": "com.google.android.GoogleCamera",
+  "allowed_signer_sha256": [
+    "f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83"
+  ],
+  "signature_policy": {
+    "require_all_apks_verified": true,
+    "require_consistent_signer_across_splits": true,
+    "fail_closed_on_unknown_signer": true
+  },
+  "inspection_policy": {
+    "pairip_mode": "report-only",
+    "modify_signed_apks": false,
+    "strip_splits_automatically": false
+  },
+  "notes": [
+    "The pinned SHA-256 is the Google certificate used by the currently selected APKMirror Pixel Camera Android 17 bundle (signature family 3891).",
+    "If upstream legitimately changes signing certificates, CI must fail closed until the new signer is independently reviewed and added.",
+    "PairIP detection is diagnostic only. This project does not remove or bypass PairIP."
+  ]
+}
