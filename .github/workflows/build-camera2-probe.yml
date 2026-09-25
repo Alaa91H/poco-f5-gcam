@@ -75,14 +75,9 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            echo "::error::Missing GitHub Actions secret: TELEGRAM_BOT_TOKEN"
-            exit 1
-          fi
-
-          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-            echo "::error::Missing GitHub Actions secret: TELEGRAM_CHAT_ID"
-            exit 1
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::warning::Telegram delivery skipped because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured."
+            exit 0
           fi
 
           CAPTION="$(printf '✅ Build succeeded\nRepository: %s\nBranch: %s\nCommit: %s' \
@@ -90,14 +85,16 @@ jobs:
             "$GITHUB_REF_NAME" \
             "${GITHUB_SHA:0:7}")"
 
-          curl --silent --show-error --fail-with-body --retry 3 \
+          if curl --silent --show-error --fail-with-body --retry 3 \
             --request POST \
             --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             --form "chat_id=${TELEGRAM_CHAT_ID}" \
             --form "document=@${APK_PATH};type=application/vnd.android.package-archive" \
-            --form "caption=${CAPTION}"
-
-          echo "APK sent to Telegram successfully."
+            --form "caption=${CAPTION}"; then
+            echo "APK sent to Telegram successfully."
+          else
+            echo "::warning::Telegram delivery failed; keeping the successful build and continuing CI."
+          fi
 
       - name: Verify custom package build
         shell: bash
