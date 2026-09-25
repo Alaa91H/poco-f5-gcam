@@ -34,7 +34,7 @@ CERT_SHA256_RE = re.compile(
 )
 MANIFEST_ATTR_RE = re.compile(r'\b(package|split)="([^"]*)"')
 USES_SPLIT_RE = re.compile(
-    r"<uses-split\b[^>]*android:name="([^"]+)"",
+    r"<uses-split\\b[^>]*android:name=\\x22([^\\x22]+)\\x22",
     re.IGNORECASE,
 )
 
