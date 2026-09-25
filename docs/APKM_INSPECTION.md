@@ -1,6 +1,6 @@
 # APKM inspection and integrity gate
 
-The project treats downloaded Pixel Camera APK/APKM files as immutable signed artifacts. It does not rewrite, strip, resign, zipalign, or otherwise patch Google-owned binaries.
+The inspection stage treats downloaded Pixel Camera APK/APKM files as immutable signed artifacts. It never rewrites, strips, resigns, or otherwise mutates the Google-signed inputs. A separate post-verification standalone-build stage may transform a verified bundle into a project-signed APK; see [STANDALONE_APK_BUILD.md](STANDALONE_APK_BUILD.md).
 
 ## Goals
 
@@ -56,8 +56,9 @@ When `zipalign` is available, every base/split APK is also checked with:
 zipalign -c -P 16 -v 4
 ```
 
-Both checks are diagnostic. The project does not realign or rewrite the
-Google-signed APKs.
+Both checks are diagnostic for the original Google-signed inputs. The later
+standalone-build stage operates only after this audit passes and writes a new,
+project-signed output instead of mutating the audited source files.
 
 ## Conservative split dependency planner
 
