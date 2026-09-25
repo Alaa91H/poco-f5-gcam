@@ -410,6 +410,13 @@ $checks["front-preview-confirmed"] = Get-VisualConfirmation `
     -PresetConfirmation $ConfirmFrontPreview.IsPresent `
     -NonInteractiveMode $NonInteractive.IsPresent
 
+$confirmationMode = if ($NonInteractive) {
+    "non-interactive-explicit"
+}
+else {
+    "interactive-post-launch"
+}
+
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 $resultPath = Join-Path $OutputRoot "$timestamp-$CandidateVersion.json"
@@ -421,7 +428,7 @@ $result = [ordered]@{
     installed_version = $installedVersion
     install_mode = [string]$installResult.Mode
     install_payload_count = [int]$installResult.PayloadCount
-    confirmation_mode = if ($NonInteractive) { "non-interactive-explicit" } else { "interactive-post-launch" }
+    confirmation_mode = $confirmationMode
     candidate_release_url = [string]$candidate.release_url
     device = [ordered]@{
         manufacturer = $manufacturer
