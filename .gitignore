@@ -35,3 +35,6 @@ tmp/
 # Local test captures
 captures/
 samples/private/
+
+# Locally downloaded proprietary upstream packages
+downloads/

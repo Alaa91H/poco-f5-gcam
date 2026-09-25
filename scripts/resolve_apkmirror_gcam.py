@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Resolve compatible APKMirror Pixel Camera candidates for POCO F5.
+"""Resolve the newest APKMirror Pixel Camera release compatible with POCO F5.
 
-Only metadata is stored. Proprietary APK/APKM files are never committed.
-The newest metadata-compatible release becomes the *candidate*, not the
-last-known-good runtime release.
+Only metadata is committed. Proprietary APK/APKM files are downloaded separately
+and remain outside Git tracking.
 """
 
 from __future__ import annotations
@@ -400,9 +399,9 @@ def build_lock(
             "device, android, compatibility and source must be objects"
         )
 
-    candidate = candidates[0]
+    selected = candidates[0]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "source": {
             "provider": source["provider"],
             "product_url": source["product_url"],
@@ -415,11 +414,8 @@ def build_lock(
             "architectures": list(_as_tuple(compatibility.get("architectures"))),
             "dpis": list(_as_tuple(compatibility.get("dpis"))),
         },
-        "candidate": candidate.to_lock_dict(),
-        "candidates": [item.to_lock_dict() for item in candidates],
-        "selected": candidate.to_lock_dict(),
-        "runtime_validation": "pending-on-device",
-        "promotion_state": "candidate-only",
+        "selection": "latest-compatible",
+        "selected": selected.to_lock_dict(),
         "resolved_at": datetime.now(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
@@ -429,29 +425,16 @@ def build_lock(
 
 def _stable_identity(lock: dict[str, object]) -> tuple[object, ...]:
     target = lock.get("target")
-    candidates = lock.get("candidates")
-    if not isinstance(target, dict):
+    selected = lock.get("selected")
+    if not isinstance(target, dict) or not isinstance(selected, dict):
         return ()
-    if not isinstance(candidates, list):
-        selected = lock.get("selected")
-        candidates = [selected] if isinstance(selected, dict) else []
-
-    candidate_ids: list[tuple[object, ...]] = []
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        candidate_ids.append(
-            (
-                item.get("version"),
-                item.get("min_api"),
-                tuple(item.get("architectures", [])),
-                tuple(item.get("dpis", [])),
-                item.get("release_url"),
-            )
-        )
 
     return (
-        tuple(candidate_ids),
+        selected.get("version"),
+        selected.get("min_api"),
+        tuple(selected.get("architectures", [])),
+        tuple(selected.get("dpis", [])),
+        selected.get("release_url"),
         target.get("api_level"),
         tuple(target.get("architectures", [])),
         tuple(target.get("dpis", [])),
@@ -518,11 +501,13 @@ def resolve(
 
     if output_path.exists():
         current_lock = json.loads(output_path.read_text(encoding="utf-8"))
-        if _stable_identity(current_lock) == _stable_identity(new_lock):
+        if (
+            current_lock.get("schema_version") == new_lock.get("schema_version")
+            and _stable_identity(current_lock) == _stable_identity(new_lock)
+        ):
             print(
                 f"Pixel Camera {ordered[0].version} remains the newest "
-                f"metadata-compatible candidate; {len(ordered)} fallback "
-                "candidate(s) are tracked."
+                "compatible release."
             )
             return False
 
@@ -532,9 +517,8 @@ def resolve(
         encoding="utf-8",
     )
     print(
-        f"Candidate Pixel Camera {ordered[0].version} "
-        f"(min API {ordered[0].min_api}); "
-        f"tracking {len(ordered)} compatible candidate(s)."
+        f"Selected latest compatible Pixel Camera {ordered[0].version} "
+        f"(min API {ordered[0].min_api})."
     )
     return True
 

@@ -1,80 +1,85 @@
 # Pixel Camera upstream tracking
 
-The repository tracks the newest **APKMirror Pixel Camera** releases whose published
-variant metadata matches the POCO F5 target policy. Discovery and runtime approval
-are deliberately separate: a newer APKMirror candidate cannot replace the
-last-known-good POCO F5 runtime until the on-device promotion gate passes.
+The repository selects and downloads the newest **APKMirror Pixel Camera**
+release whose published variant metadata matches the POCO F5 target policy.
 
-## Current target
+## Target
 
 - Device: POCO F5 5G (`marble`)
 - ROM: Evolution X
 - Android: 17 / API 37
 - ABI: `arm64-v8a`
-- DPI class: `nodpi`
+- DPI: `nodpi`
 - Package family: `com.google.android.GoogleCamera`
 
-The policy lives in `device/marble/upstream-policy.json`. The currently selected
-upstream release is stored in `device/marble/upstream/pixel-camera.json`.
+The policy is stored in:
 
-## Automatic refresh
-
-`.github/workflows/refresh-pixel-camera-upstream.yml` runs every day and can also
-be started manually. It:
-
-1. Runs parser/selection unit tests.
-2. Reads the Pixel Camera product page on APKMirror.
-3. Enumerates published variant families.
-4. Rejects variants whose minimum API is newer than API 37.
-5. Rejects non-`arm64-v8a` and non-`nodpi` variants.
-6. Sorts compatible releases newest-first and retains an ordered fallback set.
-7. Updates the discovery lock only when the candidate set actually changes.
-8. Leaves the last-known-good runtime state untouched.
-
-If APKMirror changes its page structure and no safe match can be parsed, the
-resolver exits with an error instead of silently selecting an unverified build.
-
-## Important compatibility distinction
-
-"Compatible" here means **upstream package metadata compatibility**: Android
-minimum API, CPU architecture, and DPI. It does not claim that Google's stock
-Pixel Camera will run correctly on a POCO F5. Google may gate Pixel-only
-features or the entire app based on device-specific behavior.
-
-For this project, the selected release is the upstream base candidate. Runtime
-camera, lens switching, HDR, Night Sight, video, stabilization, and auxiliary
-camera behavior must still pass the project's POCO F5 compatibility tests before
-being marked validated.
-
-## Manual resolution
-
-From the repository root:
-
-```bash
-python scripts/resolve_apkmirror_gcam.py
+```text
+device/marble/upstream-policy.json
 ```
 
-The repository intentionally does not commit proprietary APK/APKM files.
+The selected release metadata is stored in:
 
+```text
+device/marble/upstream/pixel-camera.json
+```
 
-## Runtime approval and fallback
+## Selection behavior
 
-The discovery lock is not the runtime approval source.
+The resolver:
 
-- `device/marble/upstream/pixel-camera.json` tracks metadata-compatible candidates.
-- `device/marble/upstream/pixel-camera-approved.json` tracks the effective
-  last-known-good runtime.
+1. reads the current Pixel Camera releases from APKMirror
+2. rejects releases requiring an API newer than API 37
+3. rejects variants that do not match `arm64-v8a`
+4. rejects variants that do not match `nodpi`
+5. sorts compatible releases numerically
+6. selects only the newest compatible release
 
-Use the Windows on-device gate before promoting a candidate:
+If APKMirror changes its page structure and the metadata cannot be verified
+safely, the resolver fails closed rather than selecting an unknown file.
+
+## Download
+
+Run from the repository root:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
-  -ApkPath "C:\path\to\PixelCamera.apk" `
-  -ConfirmMainPreview `
-  -ConfirmMainCapture `
-  -ConfirmFrontPreview
+python .\scripts\resolve_apkmirror_gcam.py
+python .\scripts\download_latest_pixel_camera.py
 ```
 
-If the candidate fails, the gate records the rejection, keeps the previous
-last-known-good version effective, and exposes the next older compatible
-candidate. See [Runtime Compatibility Gate](RUNTIME_COMPATIBILITY_GATE.md).
+The downloaded APK/APKM is written under:
+
+```text
+downloads/pixel-camera/
+```
+
+The downloader follows APKMirror's official download flow, including the
+`download.php` handler, and verifies SHA-256 when APKMirror publishes a bundle
+hash.
+
+The proprietary Google binary is intentionally excluded from Git.
+
+## GitHub Actions
+
+`.github/workflows/refresh-pixel-camera-upstream.yml`:
+
+- runs every day
+- can be started manually
+- runs resolver/downloader unit tests
+- resolves the current newest compatible release
+- verifies the live APKMirror download path
+- on a scheduled run, downloads only when the selected version changes
+- on a manual run, always downloads the current selected release
+- commits only the metadata lock when the selected version changes
+
+The downloaded binary exists only in the ephemeral runner unless a later build
+step consumes it. It is not committed or published by this repository.
+
+## Meaning of compatible
+
+Here, **compatible** means the upstream package metadata matches Android 17 /
+API 37, `arm64-v8a`, and `nodpi`.
+
+This selection does not claim every Pixel-only camera feature will work on the
+POCO F5. Device-specific camera compatibility remains a separate development
+concern from choosing the upstream version.

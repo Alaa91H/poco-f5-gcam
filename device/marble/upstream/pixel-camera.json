@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "source": {
     "provider": "APKMirror",
     "product_url": "https://www.apkmirror.com/apk/google-inc/camera/"
@@ -16,80 +16,7 @@
       "nodpi"
     ]
   },
-  "candidate": {
-    "version": "11.0.073.972752740.32",
-    "min_api": 37,
-    "min_android": "17",
-    "architectures": [
-      "arm64-v8a"
-    ],
-    "dpis": [
-      "nodpi"
-    ],
-    "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-972752740-32-release/"
-  },
-  "candidates": [
-    {
-      "version": "11.0.073.972752740.32",
-      "min_api": 37,
-      "min_android": "17",
-      "architectures": [
-        "arm64-v8a"
-      ],
-      "dpis": [
-        "nodpi"
-      ],
-      "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-972752740-32-release/"
-    },
-    {
-      "version": "11.0.073.967434166.31",
-      "min_api": 37,
-      "min_android": "17",
-      "architectures": [
-        "arm64-v8a"
-      ],
-      "dpis": [
-        "nodpi"
-      ],
-      "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-967434166-31-release/"
-    },
-    {
-      "version": "11.0.073.961838058.30",
-      "min_api": 37,
-      "min_android": "17",
-      "architectures": [
-        "arm64-v8a"
-      ],
-      "dpis": [
-        "nodpi"
-      ],
-      "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-961838058-30-release/"
-    },
-    {
-      "version": "10.4.117.936816638.14",
-      "min_api": 37,
-      "min_android": "17",
-      "architectures": [
-        "arm64-v8a"
-      ],
-      "dpis": [
-        "nodpi"
-      ],
-      "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-10-4-117-936816638-14-release/"
-    },
-    {
-      "version": "10.4.117.925010332.12",
-      "min_api": 37,
-      "min_android": "17",
-      "architectures": [
-        "arm64-v8a"
-      ],
-      "dpis": [
-        "nodpi"
-      ],
-      "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-10-4-117-925010332-12-release/"
-    }
-  ],
+  "selection": "latest-compatible",
   "selected": {
     "version": "11.0.073.972752740.32",
     "min_api": 37,
@@ -102,7 +29,5 @@
     ],
     "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-972752740-32-release/"
   },
-  "runtime_validation": "pending-on-device",
-  "promotion_state": "candidate-only",
-  "resolved_at": "2026-09-25T11:29:14Z"
+  "resolved_at": "2026-09-25T12:02:52Z"
 }

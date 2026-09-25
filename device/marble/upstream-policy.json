@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "device": {
     "name": "POCO F5 5G",
     "codename": "marble",
@@ -26,22 +26,13 @@
   },
   "selection": {
     "strategy": "highest-version-compatible",
-    "candidate_limit": 5,
-    "fallback_strategy": "last-known-good",
-    "notes": "Track the newest compatible candidates, but never replace the last-known-good runtime version until the on-device promotion gate passes."
+    "candidate_limit": 1,
+    "notes": "Always select the numerically newest APKMirror Pixel Camera release compatible with Android API 37, arm64-v8a, and nodpi."
   },
-  "validation": {
-    "promotion_policy": "strict",
-    "required_checks": [
-      "install",
-      "package-match",
-      "version-match",
-      "launchable",
-      "process-stable",
-      "no-fatal-crash",
-      "main-preview-confirmed",
-      "main-capture-confirmed",
-      "front-preview-confirmed"
-    ]
+  "download": {
+    "enabled": true,
+    "output_directory": "downloads/pixel-camera",
+    "retain_in_git": false,
+    "verify_sha256_when_published": true
   }
 }
