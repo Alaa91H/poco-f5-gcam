@@ -46,16 +46,33 @@ class DownloaderParsingTests(unittest.TestCase):
         )
         self.assertEqual(downloader.extract_bundle_sha256(html), sha)
 
-    def test_direct_url_parser_accepts_apkmirror_cdn_only(self):
+    def test_direct_url_parser_accepts_apkmirror_package_link(self):
         html = (
             '<a href="https://downloadr2.apkmirror.com/wp-content/uploads/'
-            'file.apkm?key=abc">download</a>'
+            'camera-screenshot.png">image</a>'
+            '<a href="https://downloadr2.apkmirror.com/wp-content/uploads/'
+            'PixelCamera.apkm?key=abc">click here to download</a>'
         )
         url = downloader._direct_url_from_html(
             html,
             "https://www.apkmirror.com/download/",
         )
-        self.assertTrue(url.startswith("https://downloadr2.apkmirror.com/"))
+        self.assertEqual(
+            url,
+            "https://downloadr2.apkmirror.com/wp-content/uploads/"
+            "PixelCamera.apkm?key=abc",
+        )
+
+    def test_direct_url_parser_ignores_screenshot_only(self):
+        html = (
+            '<a href="https://downloadr2.apkmirror.com/wp-content/uploads/'
+            'camera.png">download</a>'
+        )
+        self.assertIsNone(
+            downloader._direct_url_from_html(
+                html, "https://www.apkmirror.com/download/"
+            )
+        )
 
     def test_direct_url_parser_rejects_unrelated_host(self):
         html = '<a href="https://example.com/file.apkm">download</a>'
