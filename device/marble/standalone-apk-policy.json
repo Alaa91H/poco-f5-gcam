@@ -31,13 +31,14 @@
   },
   "signing": {
     "preferred_mode": "repository-keystore",
-    "ephemeral_ci_fallback": "pull-request-only",
+    "ephemeral_ci_fallback": true,
     "required_secrets": [
       "GCMOD_KEYSTORE_B64",
       "GCMOD_KEY_ALIAS",
       "GCMOD_KEYSTORE_PASSWORD",
       "GCMOD_KEY_PASSWORD"
-    ]
+    ],
+    "ephemeral_ci_fallback_scope": "pull-request-only"
   },
   "notes": [
     "The original Google signature cannot survive bundle merging or any later modification.",
