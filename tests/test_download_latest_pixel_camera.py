@@ -74,6 +74,20 @@ class DownloaderParsingTests(unittest.TestCase):
             )
         )
 
+    def test_follows_click_here_download_link(self):
+        html = (
+            '<a href="/apk/google-inc/camera/release/variant/final/?key=next">'
+            'If not, please click here</a>'
+        )
+        url = downloader._followup_download_url(
+            html,
+            "https://www.apkmirror.com/apk/google-inc/camera/release/variant/download/?key=first",
+        )
+        self.assertEqual(
+            url,
+            "https://www.apkmirror.com/apk/google-inc/camera/release/variant/final/?key=next",
+        )
+
     def test_extracts_apkmirror_wait_countdown(self):
         html = "<div>Whoa there! You'll have to wait 15 more sec.</div>"
         self.assertEqual(downloader._countdown_seconds(html), 15)
