@@ -350,7 +350,7 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -376,7 +376,7 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -391,7 +391,7 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -410,25 +410,56 @@ jobs:
 
           python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
 
-      - name: Deliver complete Pixel Camera payload to Telegram
+      - name: Build official Telegram Local Bot API server
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gperf libssl-dev zlib1g-dev
+
+          SRC="$RUNNER_TEMP/telegram-bot-api-src"
+          rm -rf "$SRC"
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/tdlib/telegram-bot-api.git "$SRC"
+
+          TELEGRAM_BOT_API_SOURCE_SHA="$(git -C "$SRC" rev-parse HEAD)"
+          echo "Telegram Bot API source: $TELEGRAM_BOT_API_SOURCE_SHA"
+
+          cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$SRC/build" --target telegram-bot-api --parallel 2
+
+          BIN="$(find "$SRC/build" -type f -name telegram-bot-api -perm -111 -print -quit)"
+          if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+            echo "::error::telegram-bot-api binary was not produced."
+            exit 1
+          fi
+
+          echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "TELEGRAM_BOT_API_SOURCE_SHA=$TELEGRAM_BOT_API_SOURCE_SHA" >> "$GITHUB_ENV"
+
+      - name: Deliver original Pixel Camera file through Local Bot API
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           set -euo pipefail
 
-          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-            echo "::error::TELEGRAM_BOT_TOKEN repository secret is not configured."
-            exit 1
-          fi
-          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-            echo "::error::TELEGRAM_CHAT_ID repository secret is not configured."
-            exit 1
-          fi
+          for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required repository secret $name is not configured."
+              exit 1
+            fi
+          done
 
           META="$RUNNER_TEMP/pixel-camera-download.json"
           PACKAGE_PATH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
@@ -436,102 +467,138 @@ jobs:
           SIZE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["size_bytes"])' "$META")"
           SHA256="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$META")"
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
-          PART_DIR="$RUNNER_TEMP/telegram-parts"
-          mkdir -p "$PART_DIR"
 
-          python - "$PACKAGE_PATH" "$PART_DIR" <<'PY'
-          import hashlib
+          if [ ! -f "$PACKAGE_PATH" ]; then
+            echo "::error::Downloaded Pixel Camera payload not found: $PACKAGE_PATH"
+            exit 1
+          fi
+
+          ACTUAL_SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
+          ACTUAL_SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
+          [ "$ACTUAL_SIZE" = "$SIZE" ] || {
+            echo "::error::Payload size changed before Telegram delivery."
+            exit 1
+          }
+          [ "$ACTUAL_SHA256" = "$SHA256" ] || {
+            echo "::error::Payload SHA-256 changed before Telegram delivery."
+            exit 1
+          }
+
+          # Required by Telegram when moving a bot from the cloud Bot API to a
+          # local Bot API server. Failure here is tolerated only because a bot
+          # may already be logged out from the cloud after a previous test.
+          curl --silent --show-error --max-time 30 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
+            > "$RUNNER_TEMP/telegram-cloud-logout.json" || true
+
+          RUNTIME="$RUNNER_TEMP/telegram-bot-api-runtime"
+          mkdir -p "$RUNTIME"
+          cd "$RUNTIME"
+
+          "$TELEGRAM_BOT_API_BIN" \
+            --local \
+            --http-ip-address=127.0.0.1 \
+            --http-port=8081 \
+            > "$RUNNER_TEMP/telegram-bot-api.log" 2>&1 &
+          TG_PID=$!
+
+          cleanup() {
+            curl --silent --max-time 15 \
+              "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/logOut" \
+              >/dev/null 2>&1 || true
+            kill "$TG_PID" >/dev/null 2>&1 || true
+            wait "$TG_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=false
+          for attempt in $(seq 1 90); do
+            if ! kill -0 "$TG_PID" >/dev/null 2>&1; then
+              echo "::error::Telegram Bot API server exited before becoming ready."
+              cat "$RUNNER_TEMP/telegram-bot-api.log" || true
+              exit 1
+            fi
+
+            if curl --silent --show-error --max-time 5 \
+              "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/getMe" \
+              > "$RUNNER_TEMP/telegram-getme.json"; then
+              if python - "$RUNNER_TEMP/telegram-getme.json" <<'PY'
           import json
           import sys
-          from pathlib import Path
+          try:
+              response = json.load(open(sys.argv[1], encoding="utf-8"))
+          except Exception:
+              raise SystemExit(1)
+          raise SystemExit(0 if response.get("ok") is True else 1)
+          PY
+              then
+                READY=true
+                break
+              fi
+            fi
+            sleep 1
+          done
 
-          package = Path(sys.argv[1])
-          part_dir = Path(sys.argv[2])
-          chunk_size = 45 * 1024 * 1024
+          if [ "$READY" != true ]; then
+            echo "::error::Telegram Local Bot API did not become ready."
+            cat "$RUNNER_TEMP/telegram-bot-api.log" || true
+            exit 1
+          fi
 
-          def digest(path):
-              h = hashlib.sha256()
-              with path.open("rb") as handle:
-                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                      h.update(chunk)
-              return h.hexdigest()
+          CAPTION="$(printf '✅ Pixel Camera E2E\nVersion: %s\nSize: %s bytes\nSHA-256: %s' "$VERSION" "$SIZE" "$SHA256")"
 
-          parts = []
-          if package.stat().st_size <= chunk_size:
-              parts.append(package)
-          else:
-              with package.open("rb") as source:
-                  index = 1
-                  while True:
-                      data = source.read(chunk_size)
-                      if not data:
-                          break
-                      part = part_dir / f"{package.name}.part{index:03d}"
-                      part.write_bytes(data)
-                      parts.append(part)
-                      index += 1
+          curl --silent --show-error --fail-with-body \
+            --retry 3 --retry-all-errors --max-time 1800 \
+            --request POST \
+            --url "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form "document=@${PACKAGE_PATH};type=application/octet-stream" \
+            --form-string "caption=${CAPTION}" \
+            > "$RUNNER_TEMP/telegram-send-response.json"
 
-          manifest = {
-              "original_name": package.name,
-              "original_size_bytes": package.stat().st_size,
-              "original_sha256": digest(package),
-              "part_count": len(parts),
-              "parts": [
-                  {
-                      "path": str(p),
-                      "name": p.name,
-                      "size_bytes": p.stat().st_size,
-                      "sha256": digest(p),
-                  }
-                  for p in parts
-              ],
-          }
-          (part_dir / "telegram-delivery-manifest.json").write_text(
-              json.dumps(manifest, indent=2), encoding="utf-8"
-          )
+          python - "$RUNNER_TEMP/telegram-send-response.json" "$SIZE" "$PACKAGE_NAME" <<'PY'
+          import json
+          import sys
+
+          response = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected_size = int(sys.argv[2])
+          expected_name = sys.argv[3]
+
+          if response.get("ok") is not True:
+              raise SystemExit(f"Telegram rejected the document: {response}")
+
+          document = response.get("result", {}).get("document") or {}
+          delivered_size = document.get("file_size")
+          delivered_name = document.get("file_name")
+
+          if delivered_size is not None and int(delivered_size) != expected_size:
+              raise SystemExit(
+                  f"Telegram file size mismatch: expected {expected_size}, got {delivered_size}"
+              )
+          if delivered_name and delivered_name != expected_name:
+              raise SystemExit(
+                  f"Telegram file name mismatch: expected {expected_name}, got {delivered_name}"
+              )
+
+          print(f"Telegram accepted one document: {delivered_name or expected_name}")
+          print(f"Telegram reported size: {delivered_size or expected_size} bytes")
           PY
 
-          MANIFEST="$PART_DIR/telegram-delivery-manifest.json"
-          PART_COUNT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["part_count"])' "$MANIFEST")"
-
-          INTRO="$(printf '✅ Real E2E Pixel Camera delivery\nVersion: %s\nOriginal: %s\nSize: %s bytes\nSHA-256: %s\nPayload files: %s' "$VERSION" "$PACKAGE_NAME" "$SIZE" "$SHA256" "$PART_COUNT")"
-          curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
-            --request POST \
-            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${INTRO}" \
-            | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
-
-          python -c 'import json,sys; [print(p["path"]) for p in json.load(open(sys.argv[1]))["parts"]]' "$MANIFEST" > "$RUNNER_TEMP/telegram-files.txt"
-
-          index=0
-          while IFS= read -r file; do
-            index=$((index + 1))
-            base="$(basename "$file")"
-            CAPTION="$(printf 'Pixel Camera %s — %s/%s\n%s' "$VERSION" "$index" "$PART_COUNT" "$base")"
-            curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
-              --request POST \
-              --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-              --form "chat_id=${TELEGRAM_CHAT_ID}" \
-              --form "document=@${file};type=application/octet-stream" \
-              --form-string "caption=${CAPTION}" \
-              | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
-          done < "$RUNNER_TEMP/telegram-files.txt"
-
-          curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
-            --request POST \
-            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-            --form "chat_id=${TELEGRAM_CHAT_ID}" \
-            --form "document=@${MANIFEST};type=application/json" \
-            --form-string "caption=Verification manifest. Reassembled SHA-256 must equal: ${SHA256}" \
-            | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
-
-          echo "Full Pixel Camera payload delivered through Telegram."
+          {
+            echo ""
+            echo "### Telegram Local Bot API E2E"
+            echo ""
+            echo "- Delivery: one original file (no splitting)"
+            echo "- File: `$PACKAGE_NAME`"
+            echo "- Size: `$SIZE bytes`"
+            echo "- SHA-256: `$SHA256`"
+            echo "- Local Bot API source: `$TELEGRAM_BOT_API_SOURCE_SHA`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Pixel Camera audit report
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
