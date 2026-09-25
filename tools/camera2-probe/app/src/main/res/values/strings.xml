@@ -4,5 +4,6 @@
     <string name="title">POCO F5 Camera2 Probe</string>
     <string name="description">Exports Camera2 characteristics for every camera ID exposed by the current Android build.</string>
     <string name="generate_report">Generate report</string>
-    <string name="status_idle">Ready. No camera permission or root access is required.</string>
+    <string name="run_yuv_probe">Run YUV runtime probe</string>
+    <string name="status_idle">Ready. Static reporting needs no camera permission; the optional YUV runtime probe requests camera access.</string>
 </resources>

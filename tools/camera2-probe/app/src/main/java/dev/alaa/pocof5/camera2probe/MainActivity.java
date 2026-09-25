@@ -2,6 +2,7 @@ package dev.alaa.pocof5.camera2probe;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.graphics.SurfaceTexture;
@@ -50,6 +51,9 @@ public final class MainActivity extends Activity {
         statusText = findViewById(R.id.statusText);
         generateButton = findViewById(R.id.generateButton);
         generateButton.setOnClickListener(v -> generateReport());
+        Button yuvProbeButton = findViewById(R.id.yuvProbeButton);
+        yuvProbeButton.setOnClickListener(v ->
+                startActivity(new Intent(this, YuvProbeActivity.class)));
 
         if (getIntent() != null && getIntent().getBooleanExtra("autoGenerate", false)) {
             generateReport();
