@@ -4,7 +4,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from scripts.inspect_apkm import inspect_package
+from scripts.inspect_apkm import _inspect_elf_load_alignment, inspect_package
 
 
 def write_apk(path: Path, *, pairip: bool = False, abi: str = "arm64-v8a") -> None:
@@ -16,6 +16,21 @@ def write_apk(path: Path, *, pairip: bool = False, abi: str = "arm64-v8a") -> No
         archive.writestr("assets/model.bin", b"x" * 2048)
         archive.writestr("res/raw/config.bin", b"y" * 512)
         archive.writestr("resources.arsc", b"z" * 256)
+
+
+def make_elf64(load_alignment: int) -> bytes:
+    data = bytearray(128)
+    data[0:4] = b"\x7fELF"
+    data[4] = 2
+    data[5] = 1
+    data[6] = 1
+    import struct
+    struct.pack_into("<Q", data, 32, 64)
+    struct.pack_into("<H", data, 54, 56)
+    struct.pack_into("<H", data, 56, 1)
+    struct.pack_into("<I", data, 64, 1)
+    struct.pack_into("<Q", data, 64 + 48, load_alignment)
+    return bytes(data)
 
 
 class InspectApkmTests(unittest.TestCase):
@@ -79,6 +94,16 @@ class InspectApkmTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "contains no APK members"):
                 inspect_package(path)
+
+    def test_elf_16kb_alignment_detection(self):
+        compatible = _inspect_elf_load_alignment(make_elf64(16384))
+        incompatible = _inspect_elf_load_alignment(make_elf64(4096))
+
+        self.assertTrue(compatible["available"])
+        self.assertTrue(compatible["compatible_16kb"])
+        self.assertEqual(compatible["min_load_alignment"], 16384)
+        self.assertFalse(incompatible["compatible_16kb"])
+        self.assertEqual(incompatible["min_load_alignment"], 4096)
 
 
 if __name__ == "__main__":
