@@ -136,14 +136,26 @@ latest compatible release.
 
 See [docs/PIXEL_CAMERA_UPSTREAM.md](docs/PIXEL_CAMERA_UPSTREAM.md).
 
-## Standalone POCO F5 APK build
+## Pixel Camera installation and runtime validation
 
-After the original APK/APKM passes checksum and Google-signature verification,
-the CI pipeline can produce one standalone APK for POCO F5 on Android 17. The
-bundle is merged without automatically removing feature splits, aligned for
-16 KiB native-library pages, re-signed with the project key, verified, uploaded
-as a workflow artifact, and delivered to Telegram when the required credentials
-are configured.
+The preferred installation path now preserves the original Google-signed split
+APKs. This avoids changing the dynamic-feature layout or application signing
+identity before runtime compatibility is proven on the real POCO F5.
 
-The original Google-signed input remains ephemeral and is never committed to the
-repository. See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
+On Windows 11 with ADB:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-pixel-camera-splits.ps1 -PackagePath .\PixelCamera.apkm
+powershell -ExecutionPolicy Bypass -File .\scripts\test-pixel-camera-runtime.ps1 -Strict
+```
+
+The runtime test launches Pixel Camera, waits for the process to remain alive,
+checks the resumed activity, and captures package-associated fatal crash evidence
+from logcat into a JSON report.
+
+The merged single-APK path is still available for controlled experiments, but it
+is marked **experimental / runtime-unvalidated**, is not automatically delivered,
+and must not be promoted until the real-device smoke test passes on POCO F5
+(Android 17 / API 37).
+
+See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
