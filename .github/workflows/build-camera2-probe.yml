@@ -78,10 +78,7 @@ jobs:
             exit 1
           fi
 
-          CAPTION="✅ Build succeeded
-Repository: ${GITHUB_REPOSITORY}
-Branch: ${GITHUB_REF_NAME}
-Commit: ${GITHUB_SHA:0:7}"
+          CAPTION="$(printf '✅ Build succeeded\nRepository: %s\nBranch: %s\nCommit: %.7s' "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME" "$GITHUB_SHA")"
 
           curl --silent --show-error --fail-with-body --retry 3 \
             --request POST \
