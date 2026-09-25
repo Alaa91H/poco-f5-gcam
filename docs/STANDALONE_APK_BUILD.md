@@ -37,9 +37,10 @@ For stable upgradeable builds configure these repository secrets:
 `GCMOD_KEYSTORE_B64` is the base64-encoded binary keystore. The workflow never
 commits the keystore or passwords.
 
-If those secrets are absent, CI generates an ephemeral validation key. Such a
-build is installable, but a later build signed by a different ephemeral key
-cannot update it in place.
+Pull-request validation may use an ephemeral CI key when those secrets are
+absent. Scheduled and manually dispatched production builds fail closed unless
+all four stable signing secrets are configured, preventing non-upgradeable APKs
+from being distributed as production outputs.
 
 ## Safety and compatibility rules
 
@@ -55,3 +56,15 @@ from the standalone policy.
 The final package keeps `com.google.android.GoogleCamera`. Because the project
 signature differs from Google's signature, it cannot update an already
 installed Google-signed package with the same application ID.
+
+## CI production hardening
+
+Feature branches are validated through pull-request workflows instead of running
+duplicate push and pull-request jobs. Large standalone APK artifacts use a
+14-day retention period. Telegram single-file delivery fails early if the APK
+exceeds 2 GiB.
+
+The Telegram Local Bot API source is pinned to
+`e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1` so the delivery toolchain is
+reproducible and its compiled binary cache remains stable until the pin is
+intentionally updated.

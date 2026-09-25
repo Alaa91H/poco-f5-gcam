@@ -2,6 +2,8 @@ name: Unified build and validation
 
 on:
   push:
+    branches:
+      - main
     paths:
       - "tools/camera2-probe/**"
       - "tools/lens-verifier/**"
@@ -534,13 +536,13 @@ jobs:
             KS_PASS="$SECRET_KEYSTORE_PASSWORD"
             KEY_PASS="$SECRET_KEY_PASSWORD"
             SIGNING_MODE="repository-keystore"
-          else
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             KEY_ALIAS="poco-f5-ci"
             KS_PASS="poco-f5-ci-ephemeral"
             KEY_PASS="poco-f5-ci-ephemeral"
             SIGNING_MODE="ephemeral-ci"
 
-            echo "::warning::Stable GCMOD signing secrets are not configured. The APK will be installable for validation but will not be upgrade-compatible with another ephemeral build."
+            echo "::warning::Using an ephemeral signing key for pull-request validation only."
             keytool -genkeypair \
               -keystore "$KEYSTORE" \
               -storetype JKS \
@@ -552,6 +554,9 @@ jobs:
               -validity 10000 \
               -dname "CN=POCO F5 GCam CI, OU=Build, O=Community, C=DE" \
               -noprompt >/dev/null
+          else
+            echo "::error::Production standalone APK builds require the four GCMOD signing secrets so future APKs remain upgrade-compatible."
+            exit 1
           fi
 
           test -s "$KEYSTORE"
@@ -632,6 +637,7 @@ jobs:
             ${{ env.STANDALONE_REPORT }}
             ${{ env.PIXEL_CAMERA_SPLIT_PLAN }}
           compression-level: 0
+          retention-days: 14
           if-no-files-found: error
 
       - name: Prepare official Telegram Bot API source
@@ -645,11 +651,19 @@ jobs:
           set -euo pipefail
 
           SRC="$RUNNER_TEMP/telegram-bot-api-src"
+          SOURCE_SHA="$(python -c 'import json; print(json.load(open("device/marble/standalone-apk-policy.json"))["toolchain"]["telegram_bot_api"]["source_sha"])')"
           rm -rf "$SRC"
-          git clone --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/tdlib/telegram-bot-api.git "$SRC"
+          git init -q "$SRC"
+          git -C "$SRC" remote add origin https://github.com/tdlib/telegram-bot-api.git
+          git -C "$SRC" fetch --depth 1 origin "$SOURCE_SHA"
+          git -C "$SRC" checkout -q --detach FETCH_HEAD
+          git -C "$SRC" submodule update --init --recursive --depth 1
 
-          SOURCE_SHA="$(git -C "$SRC" rev-parse HEAD)"
+          ACTUAL_SHA="$(git -C "$SRC" rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::Telegram Bot API source pin mismatch."
+            exit 1
+          fi
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "Telegram Bot API source: $SOURCE_SHA"
 
@@ -769,6 +783,12 @@ jobs:
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
           SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
           SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
+          TELEGRAM_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
+
+          if [ "$SIZE" -gt "$TELEGRAM_MAX_BYTES" ]; then
+            echo "::error::Final APK is too large for single-file Telegram delivery: $SIZE bytes."
+            exit 1
+          fi
 
           curl --silent --show-error --max-time 30 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
