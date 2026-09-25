@@ -226,6 +226,11 @@ def _followup_download_url(raw_html: str, base_url: str) -> str | None:
 
         if parsed.scheme not in ("http", "https"):
             continue
+
+        host = (parsed.hostname or "").lower()
+        if not (host == "apkmirror.com" or host.endswith(".apkmirror.com")):
+            continue
+
         if IMAGE_URL_RE.search(parsed.path):
             continue
 
