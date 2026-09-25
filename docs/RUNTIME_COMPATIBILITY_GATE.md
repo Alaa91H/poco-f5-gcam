@@ -51,8 +51,8 @@ automation.
 
 ## Run on POCO F5
 
-Use an APK obtained locally for the candidate version. Proprietary APK files are
-not committed to this repository.
+Use an APK or APKMirror APKM bundle obtained locally for the candidate version.
+Proprietary APK/APKM files are not committed to this repository.
 
 From Windows PowerShell:
 
@@ -60,7 +60,7 @@ From Windows PowerShell:
 git pull
 
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
-  -ApkPath "C:\path\to\PixelCamera.apk" `
+  -ApkPath "C:\path\to\PixelCamera.apkm" `
   -ConfirmMainPreview `
   -ConfirmMainCapture `
   -ConfirmFrontPreview
@@ -72,7 +72,7 @@ functions during the same validation run.
 The script:
 
 1. selects the current discovery candidate unless `-CandidateVersion` is given
-2. installs the APK using ADB
+2. installs a single APK with `adb install` or an APKM split bundle with `adb install-multiple`
 3. verifies package and version
 4. launches the application
 5. checks process stability and crash markers
@@ -159,3 +159,18 @@ Automated upstream discovery is allowed to modify only
 
 It must never modify `pixel-camera-approved.json`. Runtime promotion requires
 on-device evidence from the POCO F5.
+
+
+## APKMirror bundle support
+
+Current Pixel Camera releases may be distributed as APKMirror bundles rather
+than one standalone APK. The validator supports both:
+
+- `.apk` — installed with `adb install -r`
+- `.apkm` — extracted to a temporary directory and installed with
+  `adb install-multiple -r`
+
+The APKM archive is checked for unsafe extraction paths before extraction. The
+temporary directory is removed immediately after the install attempt.
+
+The repository ignores both APK and APKM binaries by default.
