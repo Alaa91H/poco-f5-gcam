@@ -214,6 +214,40 @@ def _countdown_seconds(raw_html: str) -> int | None:
     return max(0, min(int(match.group(1)), 30))
 
 
+def _followup_download_url(raw_html: str, base_url: str) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    for href, text in _anchors(raw_html):
+        normalized = " ".join(text.split()).lower()
+        if "click here" not in normalized and "download" not in normalized:
+            continue
+
+        absolute = urllib.parse.urljoin(base_url, href)
+        parsed = urllib.parse.urlsplit(absolute)
+
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if IMAGE_URL_RE.search(parsed.path):
+            continue
+
+        score = 0
+        if "click here" in normalized:
+            score += 100
+        if "/download/" in parsed.path:
+            score += 40
+        if "key=" in parsed.query.lower():
+            score += 20
+        if DIRECT_HOST_RE.fullmatch(parsed.hostname or ""):
+            score += 80
+
+        candidates.append((score, absolute))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 def _direct_url_from_html(html: str, base_url: str) -> str | None:
     candidates: list[tuple[int, str]] = []
 
@@ -301,23 +335,48 @@ def resolve_direct_url(
     trigger_url: str,
     variant_url: str,
 ) -> str | None:
-    direct_url, page = _resolve_trigger_once(
-        cookie_jar, trigger_url, variant_url
-    )
-    if direct_url:
-        return direct_url
+    current_url = trigger_url
+    referer = variant_url
+    seen: set[str] = set()
+    waited: set[str] = set()
+    last_page: str | None = None
 
-    if page:
-        wait_seconds = _countdown_seconds(page)
-        if wait_seconds is not None:
-            time.sleep(wait_seconds + 1)
-            direct_url, page = _resolve_trigger_once(
-                cookie_jar, trigger_url, variant_url
-            )
-            if direct_url:
+    for _ in range(5):
+        if current_url in seen:
+            break
+        seen.add(current_url)
+
+        direct_url, page = _resolve_trigger_once(
+            cookie_jar, current_url, referer
+        )
+        if direct_url:
+            parsed = urllib.parse.urlsplit(direct_url)
+            if PACKAGE_URL_RE.search(direct_url) or DIRECT_HOST_RE.fullmatch(
+                parsed.hostname or ""
+            ):
                 return direct_url
 
-        summary = _visible_text(page)[:700] if page else ""
+        if not page:
+            break
+
+        last_page = page
+        followup = _followup_download_url(page, current_url)
+        if followup and followup not in seen:
+            referer = current_url
+            current_url = followup
+            continue
+
+        wait_seconds = _countdown_seconds(page)
+        if wait_seconds is not None and current_url not in waited:
+            waited.add(current_url)
+            time.sleep(wait_seconds + 1)
+            seen.discard(current_url)
+            continue
+
+        break
+
+    if last_page:
+        summary = _visible_text(last_page)[:700]
         if summary:
             print(
                 "APKMirror trigger diagnostics: "
