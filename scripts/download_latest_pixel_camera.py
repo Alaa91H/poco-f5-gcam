@@ -77,6 +77,25 @@ class AnchorCollector(HTMLParser):
             self._text = []
 
 
+class DownloadHintCollector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hints: list[tuple[str, str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {name.lower(): value for name, value in attrs if value}
+        for name, value in attrs_dict.items():
+            lowered = value.lower()
+            if (
+                name in {"href", "src", "action", "content", "data-url", "data-href"}
+                or name.startswith("data-")
+            ) and any(
+                token in lowered
+                for token in ("download", "key=", "token", ".apk", ".apkm", "mirror")
+            ):
+                self.hints.append((tag.lower(), name, value))
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -191,6 +210,43 @@ def _visible_text(raw_html: str) -> str:
     text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", " ", text)
     return " ".join(html_lib.unescape(text).split())
+
+
+def _download_hints(raw_html: str, base_url: str) -> list[str]:
+    collector = DownloadHintCollector()
+    collector.feed(raw_html)
+
+    hints: list[str] = []
+    for tag, name, value in collector.hints:
+        normalized = value.strip()
+        if name in {"href", "src", "action", "data-url", "data-href"}:
+            try:
+                normalized = urllib.parse.urljoin(base_url, normalized)
+            except Exception:
+                pass
+        hints.append(f"{tag}.{name}={normalized}")
+
+    script_patterns = [
+        r"(?:window\.)?location(?:\.href)?\s*=\s*['\"]([^'\"]+)['\"]",
+        r"setTimeout\s*\([^)]{0,500}\)",
+        r"https?://downloadr\d+\.apkmirror\.com/[^\"'<>\\\s]+",
+        r"[^\"'<>\\\s]+\.(?:apk|apkm|xapk)(?:\?[^\"'<>\\\s]*)?",
+    ]
+    for pattern in script_patterns:
+        for match in re.finditer(pattern, raw_html, re.I | re.S):
+            value = match.group(1) if match.lastindex else match.group(0)
+            value = html_lib.unescape(" ".join(value.split()))
+            hints.append(f"script={value[:500]}")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for hint in hints:
+        if hint not in seen:
+            seen.add(hint)
+            deduped.append(hint)
+        if len(deduped) >= 40:
+            break
+    return deduped
 
 
 def extract_bundle_sha256(variant_html: str) -> str | None:
@@ -388,6 +444,12 @@ def resolve_direct_url(
                 + summary.replace("\n", " "),
                 file=sys.stderr,
             )
+
+        hints = _download_hints(last_page, current_url)
+        if hints:
+            print("APKMirror download hints:", file=sys.stderr)
+            for hint in hints:
+                print(f"  {hint}", file=sys.stderr)
 
     return None
 
