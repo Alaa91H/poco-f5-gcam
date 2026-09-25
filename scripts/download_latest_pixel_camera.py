@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html as html_lib
 import http.cookiejar
 import json
 import os
 import re
-import shutil
 import sys
 import time
 import urllib.error
@@ -95,9 +95,13 @@ def _headers(referer: str | None = None) -> dict[str, str]:
     return result
 
 
-def _build_opener(no_redirect: bool = False) -> urllib.request.OpenerDirector:
+def _build_opener(
+    cookie_jar: http.cookiejar.CookieJar | None = None,
+    no_redirect: bool = False,
+) -> urllib.request.OpenerDirector:
+    jar = cookie_jar or http.cookiejar.CookieJar()
     handlers: list[urllib.request.BaseHandler] = [
-        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        urllib.request.HTTPCookieProcessor(jar)
     ]
     if no_redirect:
         handlers.append(NoRedirect())
@@ -173,10 +177,18 @@ def choose_download_trigger(variant_html: str, variant_url: str) -> str:
     )
 
 
+def _visible_text(raw_html: str) -> str:
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", raw_html, flags=re.I | re.S)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(html_lib.unescape(text).split())
+
+
 def extract_bundle_sha256(variant_html: str) -> str | None:
+    text = _visible_text(variant_html)
     marker = re.search(
         r"APK\s+bundle\s+file\s+hashes(?P<body>.{0,1200})",
-        variant_html,
+        text,
         re.IGNORECASE | re.DOTALL,
     )
     if marker:
@@ -204,47 +216,46 @@ def _direct_url_from_html(html: str, base_url: str) -> str | None:
 
 
 def resolve_direct_url(
-    cookie_opener: urllib.request.OpenerDirector,
+    cookie_jar: http.cookiejar.CookieJar,
     trigger_url: str,
     variant_url: str,
 ) -> str | None:
-    # First attempt without redirects. Fresh APKMirror nonces may immediately
-    # redirect to the binary CDN.
-    opener = _build_opener(no_redirect=True)
-    opener.handlers = [
-        urllib.request.HTTPCookieProcessor(cookie_opener.handlers[0].cookiejar),
-        NoRedirect(),
-        urllib.request.HTTPHandler(),
-        urllib.request.HTTPSHandler(),
-        urllib.request.HTTPDefaultErrorHandler(),
-    ]
-
+    # Fresh APKMirror nonces may immediately redirect to the binary CDN.
+    no_redirect_opener = _build_opener(cookie_jar, no_redirect=True)
     request = urllib.request.Request(trigger_url, headers=_headers(variant_url))
+
     try:
-        with opener.open(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+        with no_redirect_opener.open(
+            request, timeout=DEFAULT_TIMEOUT_SECONDS
+        ) as response:
             content_type = response.headers.get_content_type()
             if content_type != "text/html":
                 return response.geturl()
-            html = response.read().decode(
+
+            page = response.read().decode(
                 response.headers.get_content_charset() or "utf-8",
                 errors="replace",
             )
-            return _direct_url_from_html(html, trigger_url)
+            return _direct_url_from_html(page, trigger_url)
     except urllib.error.HTTPError as exc:
-        if exc.code in (301, 302, 303, 307, 308):
-            location = exc.headers.get("Location")
-            if location:
-                absolute = urllib.parse.urljoin(trigger_url, location)
-                host = urllib.parse.urlsplit(absolute).hostname or ""
-                if DIRECT_HOST_RE.fullmatch(host):
-                    return absolute
+        if exc.code not in (301, 302, 303, 307, 308):
+            raise
 
-                try:
-                    page = _read_html(cookie_opener, absolute, trigger_url)
-                except Exception:
-                    return None
-                return _direct_url_from_html(page, absolute)
-        raise
+        location = exc.headers.get("Location")
+        if not location:
+            return None
+
+        absolute = urllib.parse.urljoin(trigger_url, location)
+        host = urllib.parse.urlsplit(absolute).hostname or ""
+        if DIRECT_HOST_RE.fullmatch(host):
+            return absolute
+
+        page_opener = _build_opener(cookie_jar)
+        try:
+            page = _read_html(page_opener, absolute, trigger_url)
+        except Exception:
+            return None
+        return _direct_url_from_html(page, absolute)
 
 
 def resolve_target(lock_path: Path) -> DownloadTarget:
@@ -256,13 +267,14 @@ def resolve_target(lock_path: Path) -> DownloadTarget:
     version = str(selected["version"])
     release_url = str(selected["release_url"])
 
-    opener = _build_opener()
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = _build_opener(cookie_jar)
     release_html = _read_html(opener, release_url)
     variant_url = choose_variant_url(release_html, release_url, version)
     variant_html = _read_html(opener, variant_url, release_url)
     trigger_url = choose_download_trigger(variant_html, variant_url)
     expected_sha256 = extract_bundle_sha256(variant_html)
-    direct_url = resolve_direct_url(opener, trigger_url, variant_url)
+    direct_url = resolve_direct_url(cookie_jar, trigger_url, variant_url)
 
     return DownloadTarget(
         version=version,
@@ -301,11 +313,14 @@ def download(
 ) -> tuple[Path, str, int]:
     if not target.direct_url:
         # Get a fresh nonce immediately before the full download.
-        opener = _build_opener()
-        release_html = _read_html(opener, target.release_url)
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = _build_opener(cookie_jar)
+        _read_html(opener, target.release_url)
         variant_html = _read_html(opener, target.variant_url, target.release_url)
         trigger_url = choose_download_trigger(variant_html, target.variant_url)
-        direct_url = resolve_direct_url(opener, trigger_url, target.variant_url)
+        direct_url = resolve_direct_url(
+            cookie_jar, trigger_url, target.variant_url
+        )
         if not direct_url:
             raise RuntimeError(
                 "APKMirror did not expose a direct binary URL. "
