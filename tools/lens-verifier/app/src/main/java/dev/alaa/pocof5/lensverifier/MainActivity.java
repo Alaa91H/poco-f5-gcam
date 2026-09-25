@@ -12,6 +12,8 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.OutputConfiguration;
+import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.os.Build;
 import android.os.Bundle;
@@ -32,6 +34,7 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -377,7 +380,8 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
     private void createPreviewSession() {
         CameraDevice device = cameraDevice;
         SurfaceTexture texture = previewTexture.getSurfaceTexture();
-        if (device == null || texture == null) {
+        Handler handler = backgroundHandler;
+        if (device == null || texture == null || handler == null) {
             return;
         }
 
@@ -389,8 +393,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
             builder.addTarget(surface);
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
 
-            device.createCaptureSession(
-                    Arrays.asList(surface),
+            CameraCaptureSession.StateCallback callback =
                     new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
@@ -404,7 +407,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                                 session.setRepeatingRequest(
                                         builder.build(),
                                         null,
-                                        backgroundHandler
+                                        handler
                                 );
                                 String id = currentCameraId();
                                 runOnUiThread(() ->
@@ -427,12 +430,36 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
                                             "Preview session could not be configured."
                                     ));
                         }
-                    },
-                    backgroundHandler
-            );
+                    };
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                OutputConfiguration output = new OutputConfiguration(surface);
+                SessionConfiguration configuration = new SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        Collections.singletonList(output),
+                        command -> handler.post(command),
+                        callback
+                );
+                device.createCaptureSession(configuration);
+            } else {
+                createLegacyCaptureSession(device, surface, callback, handler);
+            }
         } catch (CameraAccessException e) {
             statusText.setText("Preview setup failed: " + e.getMessage());
         }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void createLegacyCaptureSession(
+            CameraDevice device,
+            Surface surface,
+            CameraCaptureSession.StateCallback callback,
+            Handler handler) throws CameraAccessException {
+        device.createCaptureSession(
+                Collections.singletonList(surface),
+                callback,
+                handler
+        );
     }
 
     private Size choosePreviewSize(CameraCharacteristics c) {
