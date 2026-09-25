@@ -9,7 +9,9 @@ on:
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
+      - "tests/test_build_standalone_pixel_camera.py"
       - "device/marble/upstream-policy.json"
+      - "device/marble/standalone-apk-policy.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
@@ -21,7 +23,9 @@ on:
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
+      - "tests/test_build_standalone_pixel_camera.py"
       - "device/marble/upstream-policy.json"
+      - "device/marble/standalone-apk-policy.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
@@ -96,7 +100,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_build_standalone_pixel_camera.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -296,11 +300,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run resolver and downloader tests
+      - name: Run Pixel Camera pipeline tests
         run: |
           python -m unittest tests.test_resolve_apkmirror_gcam -v
           python -m unittest tests.test_download_latest_pixel_camera -v
           python -m unittest tests.test_inspect_apkm -v
+          python -m unittest tests.test_build_standalone_pixel_camera -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -350,7 +355,8 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -376,7 +382,8 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -391,7 +398,8 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -410,11 +418,168 @@ jobs:
 
           python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
 
+      - name: Download pinned APKEditor
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          policy = json.load(open("device/marble/standalone-apk-policy.json"))
+          tool = policy["toolchain"]["apkeditor"]
+          print(tool["url"])
+          print(tool["sha256"])
+          PY
+          )
+          URL="${TOOL[0]}"
+          EXPECTED_SHA256="${TOOL[1]}"
+          JAR="$RUNNER_TEMP/APKEditor.jar"
+
+          curl --fail --location --silent --show-error --retry 3 \
+            "$URL" --output "$JAR"
+          echo "$EXPECTED_SHA256  $JAR" | sha256sum --check --strict
+          java -jar "$JAR" -version
+
+          echo "APKEDITOR_JAR=$JAR" >> "$GITHUB_ENV"
+
+      - name: Prepare standalone APK signing key
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        env:
+          SECRET_KEYSTORE_B64: ${{ secrets.GCMOD_KEYSTORE_B64 }}
+          SECRET_KEY_ALIAS: ${{ secrets.GCMOD_KEY_ALIAS }}
+          SECRET_KEYSTORE_PASSWORD: ${{ secrets.GCMOD_KEYSTORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.GCMOD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          KEYSTORE="$RUNNER_TEMP/poco-f5-gcam-signing.jks"
+
+          if [ -n "${SECRET_KEYSTORE_B64:-}" ] &&
+             [ -n "${SECRET_KEY_ALIAS:-}" ] &&
+             [ -n "${SECRET_KEYSTORE_PASSWORD:-}" ] &&
+             [ -n "${SECRET_KEY_PASSWORD:-}" ]; then
+            printf '%s' "$SECRET_KEYSTORE_B64" | base64 --decode > "$KEYSTORE"
+            KEY_ALIAS="$SECRET_KEY_ALIAS"
+            KS_PASS="$SECRET_KEYSTORE_PASSWORD"
+            KEY_PASS="$SECRET_KEY_PASSWORD"
+            SIGNING_MODE="repository-keystore"
+          else
+            KEY_ALIAS="poco-f5-ci"
+            KS_PASS="poco-f5-ci-ephemeral"
+            KEY_PASS="poco-f5-ci-ephemeral"
+            SIGNING_MODE="ephemeral-ci"
+
+            echo "::warning::Stable GCMOD signing secrets are not configured. The APK will be installable for validation but will not be upgrade-compatible with another ephemeral build."
+            keytool -genkeypair \
+              -keystore "$KEYSTORE" \
+              -storetype JKS \
+              -storepass "$KS_PASS" \
+              -keypass "$KEY_PASS" \
+              -alias "$KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 4096 \
+              -validity 10000 \
+              -dname "CN=POCO F5 GCam CI, OU=Build, O=Community, C=DE" \
+              -noprompt >/dev/null
+          fi
+
+          test -s "$KEYSTORE"
+          echo "::add-mask::$KS_PASS"
+          echo "::add-mask::$KEY_PASS"
+          echo "GCMOD_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "GCMOD_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "GCMOD_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+          echo "GCMOD_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
+          echo "GCMOD_SIGNING_MODE=$SIGNING_MODE" >> "$GITHUB_ENV"
+
+      - name: Build standalone POCO F5 Pixel Camera APK
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          META="$RUNNER_TEMP/pixel-camera-download.json"
+          SOURCE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
+          VERSION="${{ steps.selected.outputs.version }}"
+          OUT_DIR="$RUNNER_TEMP/poco-f5-standalone"
+          APK="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.apk"
+          REPORT="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.build.json"
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          mkdir -p "$OUT_DIR"
+
+          python scripts/build_standalone_pixel_camera.py \
+            --input "$SOURCE" \
+            --output "$APK" \
+            --apkeditor "$APKEDITOR_JAR" \
+            --zipalign "$BUILD_TOOLS/zipalign" \
+            --apksigner "$BUILD_TOOLS/apksigner" \
+            --aapt2 "$BUILD_TOOLS/aapt2" \
+            --keystore "$GCMOD_KEYSTORE_PATH" \
+            --key-alias "$GCMOD_KEY_ALIAS" \
+            --expected-package com.google.android.GoogleCamera \
+            --expected-abi arm64-v8a \
+            --expected-min-sdk 37 \
+            --report "$REPORT" \
+            --json
+
+          test -s "$APK"
+          test -s "$REPORT"
+
+          echo "STANDALONE_APK=$APK" >> "$GITHUB_ENV"
+          echo "STANDALONE_REPORT=$REPORT" >> "$GITHUB_ENV"
+
+          APK_SIZE="$(stat -c '%s' "$APK")"
+          APK_SHA256="$(sha256sum "$APK" | awk '{print $1}')"
+
+          {
+            echo ""
+            echo "### Standalone POCO F5 APK"
+            echo ""
+            printf -- '- File: `%s`\n' "$(basename "$APK")"
+            printf -- '- Size: `%s bytes`\n' "$APK_SIZE"
+            printf -- '- SHA-256: `%s`\n' "$APK_SHA256"
+            printf -- '- Signing mode: `%s`\n' "$GCMOD_SIGNING_MODE"
+            echo "- Native library alignment: `16 KiB`"
+            echo "- PairIP bypass: `false`"
+            echo "- Feature splits removed: `false`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload standalone Pixel Camera APK
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        uses: actions/upload-artifact@v7
+        with:
+          name: poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
+          path: |
+            ${{ env.STANDALONE_APK }}
+            ${{ env.STANDALONE_REPORT }}
+          compression-level: 0
+          if-no-files-found: error
+
       - name: Prepare official Telegram Bot API source
         id: telegram-source
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -432,7 +597,8 @@ jobs:
         id: telegram-cache
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/telegram-bot-api-bin
@@ -442,7 +608,8 @@ jobs:
         if: >-
           (
             github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -472,7 +639,8 @@ jobs:
         if: >-
           (
             github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -483,7 +651,8 @@ jobs:
       - name: Select Telegram Bot API binary
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.telegram-source.outputs.sha }}
@@ -499,10 +668,11 @@ jobs:
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
           echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      - name: Deliver original Pixel Camera file through Local Bot API
+      - name: Deliver standalone POCO F5 APK through Local Bot API
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -514,13 +684,11 @@ jobs:
 
           for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::Required repository secret $name is not configured."
-              exit 1
+              echo "::warning::Telegram delivery skipped because $name is not configured."
+              exit 0
             fi
           done
 
-          # GitHub Secrets can accidentally include a trailing newline or
-          # surrounding whitespace when values are pasted into repository settings.
           TELEGRAM_BOT_TOKEN="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '\r\n')"
           TELEGRAM_CHAT_ID="$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')"
           TELEGRAM_API_ID="$(printf '%s' "$TELEGRAM_API_ID" | tr -d '[:space:]')"
@@ -528,41 +696,20 @@ jobs:
           export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH
 
           if ! [[ "$TELEGRAM_API_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::TELEGRAM_API_ID must contain digits only after whitespace is removed."
+            echo "::error::TELEGRAM_API_ID must contain digits only."
             exit 1
           fi
-
           if ! [[ "$TELEGRAM_API_HASH" =~ ^[0-9A-Fa-f]{32}$ ]]; then
-            echo "::error::TELEGRAM_API_HASH must be the 32-character hexadecimal api_hash from my.telegram.org."
+            echo "::error::TELEGRAM_API_HASH must be a 32-character hexadecimal api_hash."
             exit 1
           fi
 
-          META="$RUNNER_TEMP/pixel-camera-download.json"
-          PACKAGE_PATH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
-          VERSION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$META")"
-          SIZE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["size_bytes"])' "$META")"
-          SHA256="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$META")"
+          PACKAGE_PATH="$STANDALONE_APK"
+          VERSION="${{ steps.selected.outputs.version }}"
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
+          SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
+          SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
 
-          if [ ! -f "$PACKAGE_PATH" ]; then
-            echo "::error::Downloaded Pixel Camera payload not found: $PACKAGE_PATH"
-            exit 1
-          fi
-
-          ACTUAL_SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
-          ACTUAL_SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
-          [ "$ACTUAL_SIZE" = "$SIZE" ] || {
-            echo "::error::Payload size changed before Telegram delivery."
-            exit 1
-          }
-          [ "$ACTUAL_SHA256" = "$SHA256" ] || {
-            echo "::error::Payload SHA-256 changed before Telegram delivery."
-            exit 1
-          }
-
-          # Required by Telegram when moving a bot from the cloud Bot API to a
-          # local Bot API server. Failure here is tolerated only because a bot
-          # may already be logged out from the cloud after a previous test.
           curl --silent --show-error --max-time 30 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
             > "$RUNNER_TEMP/telegram-cloud-logout.json" || true
@@ -623,14 +770,14 @@ jobs:
             exit 1
           fi
 
-          CAPTION="$(printf '✅ Pixel Camera E2E\nVersion: %s\nSize: %s bytes\nSHA-256: %s' "$VERSION" "$SIZE" "$SHA256")"
+          CAPTION="$(printf '✅ POCO F5 Pixel Camera APK\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
 
           curl --silent --show-error --fail-with-body \
             --retry 3 --retry-all-errors --max-time 1800 \
             --request POST \
             --url "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             --form "chat_id=${TELEGRAM_CHAT_ID}" \
-            --form "document=@${PACKAGE_PATH};type=application/octet-stream" \
+            --form "document=@${PACKAGE_PATH};type=application/vnd.android.package-archive" \
             --form-string "caption=${CAPTION}" \
             > "$RUNNER_TEMP/telegram-send-response.json"
 
@@ -658,25 +805,24 @@ jobs:
                   f"Telegram file name mismatch: expected {expected_name}, got {delivered_name}"
               )
 
-          print(f"Telegram accepted one document: {delivered_name or expected_name}")
+          print(f"Telegram accepted final APK: {delivered_name or expected_name}")
           print(f"Telegram reported size: {delivered_size or expected_size} bytes")
           PY
 
           {
             echo ""
-            echo "### Telegram Local Bot API E2E"
+            echo "### Telegram standalone APK delivery"
             echo ""
-            echo "- Delivery: one original file (no splitting)"
-            echo "- File: `$PACKAGE_NAME`"
-            echo "- Size: `$SIZE bytes`"
-            echo "- SHA-256: `$SHA256`"
-            echo "- Local Bot API source: `$TELEGRAM_BOT_API_SOURCE_SHA`"
+            printf -- '- File: `%s`\n' "$PACKAGE_NAME"
+            printf -- '- Size: `%s bytes`\n' "$SIZE"
+            printf -- '- SHA-256: `%s`\n' "$SHA256"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Pixel Camera audit report
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery') ||
+          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
