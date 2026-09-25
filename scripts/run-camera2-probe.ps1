@@ -3,6 +3,7 @@ param(
     [string]$Serial,
     [string]$ApkPath = "tools/camera2-probe/app/build/outputs/apk/debug/app-debug.apk",
     [string]$OutputRoot = "device/marble/camera2/captures",
+    [string]$Package = "dev.alaa.pocof5.camera2probe",
     [switch]$Build,
     [int]$TimeoutSeconds = 30
 )
@@ -10,7 +11,6 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$Package = "dev.alaa.pocof5.camera2probe"
 $Activity = ".MainActivity"
 $ReportRelativePath = "files/camera2-report.json"
 
@@ -29,7 +29,7 @@ if ($Build) {
     }
 
     Write-Host "Building Camera2 probe..."
-    & gradle -p "tools/camera2-probe" ":app:assembleDebug"
+    & gradle -p "tools/camera2-probe" ":app:assembleDebug" "-PprobeApplicationId=$Package"
     if ($LASTEXITCODE -ne 0) {
         Fail "Camera2 probe build failed."
     }
@@ -64,7 +64,7 @@ else {
 
 $adbPrefix = @("-s", $Serial)
 
-Write-Host "Installing Camera2 probe..."
+Write-Host "Installing Camera2 probe as package $Package..."
 & adb @adbPrefix install -r $ApkPath
 if ($LASTEXITCODE -ne 0) {
     Fail "APK installation failed."
