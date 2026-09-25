@@ -36,6 +36,12 @@ on:
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
+    inputs:
+      build_experimental_standalone:
+        description: "Also build the unvalidated merged single APK (not distributed)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -360,7 +366,6 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -375,6 +380,9 @@ jobs:
           echo "Downloaded files:"
           ls -lh "$RUNNER_TEMP/pixel-camera"
 
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          echo "PIXEL_CAMERA_SOURCE=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
           {
             echo ""
             echo "### Download"
@@ -386,7 +394,6 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -401,7 +408,6 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -433,7 +439,6 @@ jobs:
       - name: Validate split dependency graph
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -477,11 +482,27 @@ jobs:
               out.write("- Automatic feature removal: `false`\n")
           PY
 
-      - name: Download pinned APKEditor
+      - name: Upload original Google-signed Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        uses: actions/upload-artifact@v7
+        with:
+          name: poco-f5-pixel-camera-original-splits-${{ steps.selected.outputs.version }}
+          path: |
+            ${{ env.PIXEL_CAMERA_SOURCE }}
+            ${{ runner.temp }}/pixel-camera-audit.json
+            ${{ env.PIXEL_CAMERA_SPLIT_PLAN }}
+            scripts/install-pixel-camera-splits.ps1
+            scripts/test-pixel-camera-runtime.ps1
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Download pinned APKEditor
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -513,9 +534,8 @@ jobs:
 
       - name: Prepare standalone APK signing key
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         env:
           SECRET_KEYSTORE_B64: ${{ secrets.GCMOD_KEYSTORE_B64 }}
@@ -570,9 +590,8 @@ jobs:
 
       - name: Build standalone POCO F5 Pixel Camera APK
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -613,7 +632,7 @@ jobs:
 
           {
             echo ""
-            echo "### Standalone POCO F5 APK"
+            echo "### Experimental standalone POCO F5 APK"
             echo ""
             printf -- '- File: `%s`\n' "$(basename "$APK")"
             printf -- '- Size: `%s bytes`\n' "$APK_SIZE"
@@ -622,16 +641,17 @@ jobs:
             echo "- Native library alignment: `16 KiB`"
             echo "- PairIP bypass: `false`"
             echo "- Feature splits removed: `false`"
+            echo "- On-device runtime validation: `NOT RUN`"
+            echo "- Distribution status: `BLOCKED` until real-device runtime validation passes"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload standalone Pixel Camera APK
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         uses: actions/upload-artifact@v7
         with:
-          name: poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
+          name: experimental-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
           path: |
             ${{ env.STANDALONE_APK }}
             ${{ env.STANDALONE_REPORT }}
@@ -644,7 +664,6 @@ jobs:
         id: telegram-source
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -671,7 +690,6 @@ jobs:
         id: telegram-cache
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/cache/restore@v6
         with:
@@ -682,7 +700,6 @@ jobs:
         if: >-
           (
             github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
@@ -713,7 +730,6 @@ jobs:
         if: >-
           (
             github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
@@ -725,7 +741,6 @@ jobs:
       - name: Select Telegram Bot API binary
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         env:
@@ -742,10 +757,9 @@ jobs:
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
           echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      - name: Deliver standalone POCO F5 APK through Local Bot API
+      - name: Deliver original Google-signed Pixel Camera bundle through Local Bot API
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         env:
@@ -778,7 +792,7 @@ jobs:
             exit 1
           fi
 
-          PACKAGE_PATH="$STANDALONE_APK"
+          PACKAGE_PATH="$PIXEL_CAMERA_SOURCE"
           VERSION="${{ steps.selected.outputs.version }}"
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
           SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
@@ -850,7 +864,7 @@ jobs:
             exit 1
           fi
 
-          CAPTION="$(printf '✅ POCO F5 Pixel Camera APK\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
+          CAPTION="$(printf '✅ POCO F5 Pixel Camera original split bundle\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: original Google certificate\nInstall: APKMirror Installer/SAI or scripts/install-pixel-camera-splits.ps1' "$VERSION" "$SIZE" "$SHA256")"
 
           curl --silent --show-error --fail-with-body \
             --retry 3 --retry-all-errors --max-time 1800 \
@@ -891,7 +905,7 @@ jobs:
 
           {
             echo ""
-            echo "### Telegram standalone APK delivery"
+            echo "### Telegram original split-bundle delivery"
             echo ""
             printf -- '- File: `%s`\n' "$PACKAGE_NAME"
             printf -- '- Size: `%s bytes`\n' "$SIZE"
@@ -901,7 +915,6 @@ jobs:
       - name: Upload Pixel Camera audit report
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'pull_request' && github.head_ref == 'feat/standalone-poco-f5-apk') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
