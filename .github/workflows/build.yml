@@ -1,0 +1,387 @@
+name: Unified build and validation
+
+on:
+  push:
+    paths:
+      - "tools/camera2-probe/**"
+      - "tools/lens-verifier/**"
+      - "scripts/**"
+      - "tests/test_resolve_apkmirror_gcam.py"
+      - "tests/test_download_latest_pixel_camera.py"
+      - "device/marble/upstream-policy.json"
+      - "device/marble/upstream/pixel-camera.json"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "tools/camera2-probe/**"
+      - "tools/lens-verifier/**"
+      - "scripts/**"
+      - "tests/test_resolve_apkmirror_gcam.py"
+      - "tests/test_download_latest_pixel_camera.py"
+      - "device/marble/upstream-policy.json"
+      - "device/marble/upstream/pixel-camera.json"
+      - ".github/workflows/build.yml"
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unified-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect affected components
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+      powershell: ${{ steps.filter.outputs.powershell }}
+      upstream: ${{ steps.filter.outputs.upstream }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA="$PR_BASE_SHA"
+          else
+            BASE_SHA="$BEFORE_SHA"
+          fi
+
+          if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            CHANGED_FILES="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
+          else
+            CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+          fi
+
+          printf '%s\n' "$CHANGED_FILES"
+
+          android=false
+          powershell=false
+          upstream=false
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            case "$file" in
+              tools/camera2-probe/*|tools/lens-verifier/*|.github/workflows/build.yml)
+                android=true
+                ;;
+            esac
+
+            case "$file" in
+              scripts/*|.github/workflows/build.yml)
+                powershell=true
+                ;;
+            esac
+
+            case "$file" in
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|device/marble/upstream-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+                upstream=true
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          echo "android=$android" >> "$GITHUB_OUTPUT"
+          echo "powershell=$powershell" >> "$GITHUB_OUTPUT"
+          echo "upstream=$upstream" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Affected components"
+            echo ""
+            echo "- Android tools: `$android`"
+            echo "- PowerShell tooling: `$powershell`"
+            echo "- Pixel Camera upstream: `$upstream`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  android:
+    name: Build ${{ matrix.name }}
+    needs: changes
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (needs.changes.result == 'success' && needs.changes.outputs.android == 'true')
+      )
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Camera2 probe
+            id: camera2-probe
+            project: tools/camera2-probe
+            artifact: camera2-probe-debug
+          - name: Lens verifier
+            id: lens-verifier
+            project: tools/lens-verifier
+            artifact: lens-verifier-debug
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
+          fi
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "SDKMANAGER=$SDKMANAGER"
+          "$SDKMANAGER" --version
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build and lint
+        shell: bash
+        run: |
+          gradle -p "${{ matrix.project }}" :app:assembleDebug :app:lintDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.project }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Send Camera2 probe APK to Telegram
+        if: matrix.id == 'camera2-probe' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          APK_PATH="${{ matrix.project }}/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::APK not found at $APK_PATH"
+            exit 1
+          fi
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::warning::Telegram delivery skipped because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured."
+            exit 0
+          fi
+
+          CAPTION="$(printf '✅ Build succeeded\nRepository: %s\nBranch: %s\nCommit: %s' \
+            "$GITHUB_REPOSITORY" \
+            "$GITHUB_REF_NAME" \
+            "${GITHUB_SHA:0:7}")"
+
+          if curl --silent --show-error --fail-with-body --retry 3 \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form "document=@${APK_PATH};type=application/vnd.android.package-archive" \
+            --form "caption=${CAPTION}"; then
+            echo "APK sent to Telegram successfully."
+          else
+            echo "::warning::Telegram delivery failed; keeping the successful build and continuing CI."
+          fi
+
+      - name: Verify Camera2 custom package build
+        if: matrix.id == 'camera2-probe'
+        shell: bash
+        run: |
+          gradle -p "${{ matrix.project }}" :app:assembleDebug \
+            -PprobeApplicationId=dev.alaa.pocof5.camera2probe.compatcheck \
+            --stacktrace
+
+  powershell:
+    name: Validate PowerShell tooling
+    needs: changes
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (needs.changes.result == 'success' && needs.changes.outputs.powershell == 'true')
+      )
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Parse all PowerShell scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+
+          Get-ChildItem -Path (Join-Path $PWD "scripts") -Filter "*.ps1" -File -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              foreach ($parseError in $errors) {
+                Write-Error ("{0}:{1}:{2}: {3}" -f $_.FullName, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
+              }
+            }
+            else {
+              Write-Host ("PASS: {0}" -f $_.FullName)
+            }
+          }
+
+          if ($failed) {
+            exit 1
+          }
+
+          Write-Host "All PowerShell scripts passed syntax validation."
+
+  upstream:
+    name: Refresh latest compatible Pixel Camera
+    needs: changes
+    if: >-
+      always() &&
+      (
+        github.event_name == 'schedule' ||
+        github.event_name == 'workflow_dispatch' ||
+        (needs.changes.result == 'success' && needs.changes.outputs.upstream == 'true')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run resolver and downloader tests
+        run: |
+          python -m unittest tests.test_resolve_apkmirror_gcam -v
+          python -m unittest tests.test_download_latest_pixel_camera -v
+
+      - name: Resolve newest compatible Pixel Camera
+        if: github.event_name != 'pull_request'
+        run: |
+          python scripts/resolve_apkmirror_gcam.py \
+            --policy device/marble/upstream-policy.json \
+            --output device/marble/upstream/pixel-camera.json
+
+      - name: Read selected release state
+        id: selected
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="$(python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("device/marble/upstream/pixel-camera.json").read_text())
+          print(data["selected"]["version"])
+          PY
+          )"
+
+          if git diff --quiet -- device/marble/upstream/pixel-camera.json; then
+            CHANGED=false
+          else
+            CHANGED=true
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Pixel Camera selection"
+            echo ""
+            echo "- Version: `$VERSION`"
+            echo "- Target: Android 17 / API 37, arm64-v8a, nodpi"
+            echo "- Selection changed: `$CHANGED`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify live APKMirror download path
+        run: |
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --resolve-only \
+            --json
+
+      - name: Download latest compatible Pixel Camera
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
+
+          echo "Downloaded files:"
+          ls -lh "$RUNNER_TEMP/pixel-camera"
+
+          {
+            echo ""
+            echo "### Download"
+            echo ""
+            echo "Latest compatible Pixel Camera was downloaded and SHA-256 verified on the ephemeral GitHub runner."
+            echo "The proprietary APK/APKM is not committed to this repository."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit selected-version lock update
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- device/marble/upstream/pixel-camera.json; then
+            echo "Already tracking the newest compatible Pixel Camera."
+            exit 0
+          fi
+
+          VERSION="${{ steps.selected.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add device/marble/upstream/pixel-camera.json
+          git commit -m "chore(upstream): select Pixel Camera ${VERSION}"
+          git push
