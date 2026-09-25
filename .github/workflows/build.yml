@@ -9,6 +9,8 @@ on:
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
+      - "tests/test_plan_device_splits.py"
+      - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
@@ -96,7 +98,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -301,6 +303,7 @@ jobs:
           python -m unittest tests.test_resolve_apkmirror_gcam -v
           python -m unittest tests.test_download_latest_pixel_camera -v
           python -m unittest tests.test_inspect_apkm -v
+          python -m unittest tests.test_plan_device_splits -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -384,7 +387,7 @@ jobs:
             SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
           fi
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "build-tools;35.0.0"
+          "$SDKMANAGER" "build-tools;37.0.0" --channel=3
 
       - name: Audit downloaded Pixel Camera bundle
         if: >-
@@ -396,16 +399,24 @@ jobs:
 
           PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
           EXPECTED_SIGNER="$(python -c 'import json; print(json.load(open("device/marble/apkm-audit-policy.json"))["allowed_signer_sha256"][0])')"
-          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          ZIPALIGN="$ANDROID_HOME/build-tools/37.0.0/zipalign"
+          APKANALYZER="$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
           REPORT="$RUNNER_TEMP/pixel-camera-audit.json"
+          SPLIT_PLAN="$RUNNER_TEMP/pixel-camera-split-plan.json"
 
           python scripts/inspect_apkm.py "$PACKAGE_PATH" \
             --output "$REPORT" \
             --apksigner "$APKSIGNER" \
+            --apkanalyzer "$APKANALYZER" \
+            --zipalign "$ZIPALIGN" \
             --allowed-signer-sha256 "$EXPECTED_SIGNER" \
             --require-signature-verification >/dev/null
 
-          python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
+          python scripts/plan_device_splits.py "$REPORT" \
+            --output "$SPLIT_PLAN" >/dev/null
+
+          python -c 'import json,os; root=os.environ["RUNNER_TEMP"]; r=json.load(open(root+"/pixel-camera-audit.json")); p=json.load(open(root+"/pixel-camera-split-plan.json")); s=r["summary"]; sig=s["signature"]; native=s["native_16kb"]; za=s["zip_alignment_16kb"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.write("- Native libraries checked for 16KB LOAD alignment: %s\\n" % native["checked_library_count"]); out.write("- 16KB-incompatible native libraries: %s\\n" % native["incompatible_library_count"]); out.write("- APKs failing 16KB ZIP alignment check: %s\\n" % za["failed_apk_count"]); out.write("- Splits requiring device validation before any exclusion: %s\\n" % len(p["validation_candidates"])); out.write("- Validation candidate pool (not safe savings): %.2f MiB\\n" % (p["validation_candidate_bytes"]/1048576)); out.close()'
 
       - name: Upload Pixel Camera audit report
         if: >-
@@ -414,7 +425,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pixel-camera-audit-${{ steps.selected.outputs.version }}
-          path: ${{ runner.temp }}/pixel-camera-audit.json
+          path: |
+            ${{ runner.temp }}/pixel-camera-audit.json
+            ${{ runner.temp }}/pixel-camera-split-plan.json
           if-no-files-found: error
 
       - name: Commit selected-version lock update
