@@ -330,7 +330,7 @@ def build_standalone(
             "target_api": 37,
         },
         "distribution": {
-            "status": "experimental-unvalidated",
+            "status": "compatibility-patched-unvalidated",
             "automatic_delivery_allowed": False,
         },
         "tooling": {
