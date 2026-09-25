@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "status": "unvalidated",
+  "effective": null,
+  "last_known_good": null,
+  "approved_at": null,
+  "validation_result": null,
+  "rejected": [],
+  "next_candidate": null
+}
