@@ -311,35 +311,47 @@ def download(
     target: DownloadTarget,
     output_dir: Path,
 ) -> tuple[Path, str, int]:
-    if not target.direct_url:
-        # Get a fresh nonce immediately before the full download.
-        cookie_jar = http.cookiejar.CookieJar()
-        opener = _build_opener(cookie_jar)
-        _read_html(opener, target.release_url)
-        variant_html = _read_html(opener, target.variant_url, target.release_url)
-        trigger_url = choose_download_trigger(variant_html, target.variant_url)
-        direct_url = resolve_direct_url(
-            cookie_jar, trigger_url, target.variant_url
+    # Resolve a fresh nonce and download the binary in the SAME cookie session.
+    # APKMirror's download flow may reject a valid short-lived URL if the
+    # request loses the session that created it.
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = _build_opener(cookie_jar)
+
+    _read_html(opener, target.release_url)
+    variant_html = _read_html(opener, target.variant_url, target.release_url)
+    trigger_url = choose_download_trigger(variant_html, target.variant_url)
+    direct_url = resolve_direct_url(
+        cookie_jar, trigger_url, target.variant_url
+    )
+    if not direct_url:
+        raise RuntimeError(
+            "APKMirror did not expose a direct binary URL. "
+            "The site may have changed its download flow."
         )
-        if not direct_url:
-            raise RuntimeError(
-                "APKMirror did not expose a direct binary URL. "
-                "The site may have changed its download flow."
-            )
-    else:
-        direct_url = target.direct_url
+
+    expected_sha256 = extract_bundle_sha256(variant_html) or target.expected_sha256
 
     output_dir.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(
         direct_url,
         headers={
-            **_headers(target.variant_url),
+            **_headers(trigger_url),
             "Accept": "application/octet-stream,*/*;q=0.8",
         },
     )
 
-    opener = _build_opener()
     with opener.open(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+        content_type = response.headers.get_content_type()
+        final_url = response.geturl()
+
+        if content_type in ("text/html", "text/plain"):
+            preview = response.read(2048).decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "APKMirror returned an HTML/text response instead of the "
+                f"binary payload (content-type={content_type}, url={final_url}). "
+                f"Response preview: {' '.join(preview.split())[:300]}"
+            )
+
         filename = _filename_from_headers(response.headers, target.version)
         destination = output_dir / filename
         temp = destination.with_suffix(destination.suffix + ".part")
@@ -357,12 +369,18 @@ def download(
 
         temp.replace(destination)
 
+    if total < 1024 * 1024:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Downloaded payload is unexpectedly small ({total} bytes)."
+        )
+
     actual_sha256 = digest.hexdigest()
-    if target.expected_sha256 and actual_sha256 != target.expected_sha256:
+    if expected_sha256 and actual_sha256 != expected_sha256:
         destination.unlink(missing_ok=True)
         raise RuntimeError(
             "Downloaded file SHA-256 does not match APKMirror metadata: "
-            f"expected {target.expected_sha256}, got {actual_sha256}"
+            f"expected {expected_sha256}, got {actual_sha256}"
         )
 
     return destination, actual_sha256, total
