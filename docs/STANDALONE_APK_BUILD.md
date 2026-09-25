@@ -56,34 +56,41 @@ The smoke test:
 A strict run exits non-zero when the launcher fails, the process dies during the
 observation window, or package-associated fatal crash evidence is detected.
 
-## Experimental merged single APK
+## POCO F5 compatibility-patched single APK
 
-The repository still contains
-`scripts/build_standalone_pixel_camera.py` for controlled investigation of a
-single-file package.
+The repository contains `scripts/build_standalone_pixel_camera.py` plus
+`scripts/patch_pixel_camera_device_gate.py` for a controlled POCO F5
+single-file compatibility build.
 
 That path:
 
 1. merges the split bundle with pinned APKEditor;
 2. sanitizes split metadata during the merge;
-3. aligns native libraries for 16 KiB page-size devices;
-4. replaces Google's signing identity with the project signing key;
-5. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
+3. locates the exact `Device is not recognized or not supported` constructor guard in one DEX;
+4. disassembles only that DEX with checksum-pinned baksmali;
+5. redirects the rejection block to Pixel Camera's existing common constructor finalization path and fails closed if the bytecode shape is not exactly recognized;
+6. rebuilds the DEX with checksum-pinned smali;
+7. aligns native libraries for 16 KiB page-size devices;
+8. replaces Google's signing identity with the project signing key;
+9. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
 
-Those checks prove package structure and installability only. They do **not**
-prove Pixel Camera runtime behavior after dynamic-feature fusion.
+The patch addresses the concrete startup crash observed on POCO F5, but those
+checks still prove package structure and the targeted bytecode transformation
+only. They do **not** prove the rest of Pixel Camera's runtime behavior on a
+non-Pixel camera HAL.
 
 For that reason the merged output is now explicitly recorded as:
 
 - `runtime_validation.status = not_run`;
 - `runtime_validation.required_for_distribution = true`;
-- `distribution.status = experimental-unvalidated`;
+- `distribution.status = compatibility-patched-unvalidated`;
 - `distribution.automatic_delivery_allowed = false`.
 
-GitHub Actions no longer automatically builds or sends this merged APK during
+GitHub Actions does not automatically distribute this modified APK during
 scheduled upstream refreshes. A manual workflow run must explicitly enable
 `build_experimental_standalone` to produce it, and the artifact name includes
-`experimental-unvalidated`.
+`compatibility-patched-unvalidated`. Real-device validation remains mandatory
+before treating the build as stable.
 
 ## CI behavior
 
@@ -112,5 +119,6 @@ layout.
 
 ## Protection policy
 
-PairIP is report-only. This pipeline does not remove PairIP, bypass application
-protections, or claim that feature modules are safe to delete.
+PairIP remains untouched. The compatibility patch is limited to the explicit
+unsupported-device constructor exception shown by the POCO F5 runtime report.
+The pipeline does not remove PairIP or delete feature modules.
