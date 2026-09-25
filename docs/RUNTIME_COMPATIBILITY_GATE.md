@@ -60,14 +60,13 @@ From Windows PowerShell:
 git pull
 
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
-  -ApkPath "C:\path\to\PixelCamera.apkm" `
-  -ConfirmMainPreview `
-  -ConfirmMainCapture `
-  -ConfirmFrontPreview
+  -ApkPath "C:\path\to\PixelCamera.apkm"
 ```
 
-Only pass the confirmation switches after personally verifying those camera
-functions during the same validation run.
+The default mode is interactive. After Pixel Camera launches, PowerShell pauses
+and asks you to verify the main preview, take and review a main-camera photo, and
+then verify the front-camera preview. Type `YES` only after each check has
+actually succeeded on the phone.
 
 The script:
 
@@ -118,10 +117,7 @@ gate points to the next older compatible candidate. Test it explicitly:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
   -ApkPath "C:\path\to\older-candidate.apk" `
-  -CandidateVersion "VERSION_FROM_NEXT_CANDIDATE" `
-  -ConfirmMainPreview `
-  -ConfirmMainCapture `
-  -ConfirmFrontPreview
+  -CandidateVersion "VERSION_FROM_NEXT_CANDIDATE"
 ```
 
 ## Downgrades
@@ -174,3 +170,23 @@ The APKM archive is checked for unsafe extraction paths before extraction. The
 temporary directory is removed immediately after the install attempt.
 
 The repository ignores both APK and APKM binaries by default.
+
+
+## Interactive confirmations
+
+Interactive post-launch confirmation is the default and recommended mode.
+
+For controlled automation only, prompts can be disabled explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\validate-pixel-camera.ps1 `
+  -ApkPath "C:\path\to\PixelCamera.apkm" `
+  -NonInteractive `
+  -ConfirmMainPreview `
+  -ConfirmMainCapture `
+  -ConfirmFrontPreview
+```
+
+In non-interactive mode, a missing confirmation switch is recorded as a failed
+required check. Confirmation switches do not bypass failed automatic
+install/package/version/launch/stability/crash checks.
