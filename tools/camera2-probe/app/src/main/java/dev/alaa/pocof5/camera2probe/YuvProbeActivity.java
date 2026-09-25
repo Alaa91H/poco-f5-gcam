@@ -208,12 +208,14 @@ public final class YuvProbeActivity extends Activity {
 
         CameraCharacteristics characteristics =
                 manager.getCameraCharacteristics(cameraId);
-        Set<String> physicalIds = characteristics.getPhysicalCameraIds();
         JSONArray physicalArray = new JSONArray();
-        for (String physicalId : physicalIds) {
-            physicalArray.put(new JSONObject()
-                    .put("id", physicalId)
-                    .put("directlyExposed", Arrays.asList(exposedIds).contains(physicalId)));
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            Set<String> physicalIds = characteristics.getPhysicalCameraIds();
+            for (String physicalId : physicalIds) {
+                physicalArray.put(new JSONObject()
+                        .put("id", physicalId)
+                        .put("directlyExposed", Arrays.asList(exposedIds).contains(physicalId)));
+            }
         }
         result.put("physicalCameraIds", physicalArray);
 
