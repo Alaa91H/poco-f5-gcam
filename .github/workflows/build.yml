@@ -410,10 +410,41 @@ jobs:
 
           python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
 
-      - name: Build official Telegram Local Bot API server
+      - name: Prepare official Telegram Bot API source
+        id: telegram-source
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SRC="$RUNNER_TEMP/telegram-bot-api-src"
+          rm -rf "$SRC"
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/tdlib/telegram-bot-api.git "$SRC"
+
+          SOURCE_SHA="$(git -C "$SRC" rev-parse HEAD)"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Telegram Bot API source: $SOURCE_SHA"
+
+      - name: Restore Telegram Bot API binary cache
+        id: telegram-cache
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/telegram-bot-api-bin
+          key: telegram-bot-api-${{ runner.os }}-${{ steps.telegram-source.outputs.sha }}
+
+      - name: Build official Telegram Local Bot API server
+        if: >-
+          (
+            github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          ) &&
+          steps.telegram-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -422,15 +453,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends gperf libssl-dev zlib1g-dev
 
           SRC="$RUNNER_TEMP/telegram-bot-api-src"
-          rm -rf "$SRC"
-          git clone --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/tdlib/telegram-bot-api.git "$SRC"
-
-          TELEGRAM_BOT_API_SOURCE_SHA="$(git -C "$SRC" rev-parse HEAD)"
-          echo "Telegram Bot API source: $TELEGRAM_BOT_API_SOURCE_SHA"
+          BIN_DIR="$RUNNER_TEMP/telegram-bot-api-bin"
+          rm -rf "$SRC/build"
+          mkdir -p "$BIN_DIR"
 
           cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release
-          cmake --build "$SRC/build" --target telegram-bot-api --parallel 2
+          cmake --build "$SRC/build" --target telegram-bot-api --parallel "$(nproc)"
 
           BIN="$(find "$SRC/build" -type f -name telegram-bot-api -perm -111 -print -quit)"
           if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
@@ -438,8 +466,38 @@ jobs:
             exit 1
           fi
 
+          install -m 0755 "$BIN" "$BIN_DIR/telegram-bot-api"
+
+      - name: Save Telegram Bot API binary cache
+        if: >-
+          (
+            github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+          ) &&
+          steps.telegram-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/telegram-bot-api-bin
+          key: telegram-bot-api-${{ runner.os }}-${{ steps.telegram-source.outputs.sha }}
+
+      - name: Select Telegram Bot API binary
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' && github.head_ref == 'test/real-e2e-telegram-delivery')
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.telegram-source.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          BIN="$RUNNER_TEMP/telegram-bot-api-bin/telegram-bot-api"
+          if [ ! -x "$BIN" ]; then
+            echo "::error::Cached/built telegram-bot-api binary is missing."
+            exit 1
+          fi
+
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
-          echo "TELEGRAM_BOT_API_SOURCE_SHA=$TELEGRAM_BOT_API_SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
       - name: Deliver original Pixel Camera file through Local Bot API
         if: >-
@@ -460,6 +518,22 @@ jobs:
               exit 1
             fi
           done
+
+          # GitHub Secrets can accidentally include a trailing newline or
+          # surrounding whitespace when values are pasted from my.telegram.org.
+          TELEGRAM_API_ID="$(printf '%s' "$TELEGRAM_API_ID" | tr -d '[:space:]')"
+          TELEGRAM_API_HASH="$(printf '%s' "$TELEGRAM_API_HASH" | tr -d '[:space:]')"
+          export TELEGRAM_API_ID TELEGRAM_API_HASH
+
+          if ! [[ "$TELEGRAM_API_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::TELEGRAM_API_ID must contain digits only after whitespace is removed."
+            exit 1
+          fi
+
+          if ! [[ "$TELEGRAM_API_HASH" =~ ^[0-9A-Fa-f]{32}$ ]]; then
+            echo "::error::TELEGRAM_API_HASH must be the 32-character hexadecimal api_hash from my.telegram.org."
+            exit 1
+          fi
 
           META="$RUNNER_TEMP/pixel-camera-download.json"
           PACKAGE_PATH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
