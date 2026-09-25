@@ -42,11 +42,87 @@ function Find-Python {
     return $null
 }
 
+function Invoke-PixelCameraInstall {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$AdbPrefix,
+
+        [switch]$AllowDowngrade
+    )
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    $extension = [System.IO.Path]::GetExtension($resolvedPath).ToLowerInvariant()
+
+    $installFlags = @("-r")
+    if ($AllowDowngrade) {
+        $installFlags += "-d"
+    }
+
+    if ($extension -eq ".apk") {
+        $args = @("install") + $installFlags + @($resolvedPath)
+        $output = & adb @AdbPrefix @args 2>&1
+        $exitCode = $LASTEXITCODE
+
+        return [pscustomobject]@{
+            Mode = "single-apk"
+            PayloadCount = 1
+            ExitCode = $exitCode
+            Output = @($output)
+        }
+    }
+
+    if ($extension -ne ".apkm") {
+        throw "Unsupported package format '$extension'. Use a .apk or APKMirror .apkm bundle."
+    }
+
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+        "poco-f5-gcam-apkm-" + [guid]::NewGuid().ToString("N")
+    )
+    $extractRoot = Join-Path $tempRoot "extracted"
+
+    New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory(
+            $resolvedPath,
+            $extractRoot
+        )
+
+        $splitApks = @(
+            Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "*.apk" |
+                Sort-Object FullName
+        )
+
+        if ($splitApks.Count -eq 0) {
+            throw "The APKM bundle did not contain any APK payloads."
+        }
+
+        $apkPaths = @($splitApks | ForEach-Object { $_.FullName })
+        $args = @("install-multiple") + $installFlags + $apkPaths
+        $output = & adb @AdbPrefix @args 2>&1
+        $exitCode = $LASTEXITCODE
+
+        return [pscustomobject]@{
+            Mode = "apkm-install-multiple"
+            PayloadCount = $apkPaths.Count
+            ExitCode = $exitCode
+            Output = @($output)
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
     Fail "adb was not found. Install Android SDK Platform-Tools and add adb to PATH."
 }
 if (-not (Test-Path -LiteralPath $ApkPath)) {
-    Fail "APK not found: $ApkPath"
+    Fail "Package file not found: $ApkPath"
 }
 if (-not (Test-Path -LiteralPath $PolicyPath)) {
     Fail "Policy not found: $PolicyPath"
@@ -127,20 +203,36 @@ Write-Host "Device: $manufacturer $model ($device), Android $android / API $sdk"
 Write-Host "Expected package: $expectedPackage"
 Write-Host ""
 
-$installArgs = @("install", "-r")
-if ($AllowDowngrade) {
-    $installArgs += "-d"
+try {
+    $installResult = Invoke-PixelCameraInstall `
+        -Path $ApkPath `
+        -AdbPrefix $adbPrefix `
+        -AllowDowngrade:$AllowDowngrade
 }
-$installArgs += $ApkPath
+catch {
+    $installResult = [pscustomobject]@{
+        Mode = "package-prepare-failed"
+        PayloadCount = 0
+        ExitCode = 1
+        Output = @($_.Exception.Message)
+    }
+}
 
-$installOutput = & adb @adbPrefix @installArgs 2>&1
-$installOk = ($LASTEXITCODE -eq 0) -and (($installOutput -join "`n") -match "(?i)success")
+$installOutput = @($installResult.Output)
+$installOk = ($installResult.ExitCode -eq 0) -and (
+    ($installOutput -join "`n") -match "(?i)success"
+)
 
 if ($installOk) {
-    $checks["install"] = New-Check "pass" "adb install succeeded."
+    $checks["install"] = New-Check "pass" (
+        "ADB installation succeeded via $($installResult.Mode) " +
+        "with $($installResult.PayloadCount) APK payload(s)."
+    )
 }
 else {
-    $checks["install"] = New-Check "fail" (($installOutput -join " ") -replace "\s+", " ").Trim()
+    $checks["install"] = New-Check "fail" (
+        (($installOutput -join " ") -replace "\s+", " ").Trim()
+    )
 }
 
 $packageList = & adb @adbPrefix shell pm list packages $expectedPackage 2>&1
@@ -249,6 +341,8 @@ $result = [ordered]@{
     candidate_version = $CandidateVersion
     package_name = $expectedPackage
     installed_version = $installedVersion
+    install_mode = [string]$installResult.Mode
+    install_payload_count = [int]$installResult.PayloadCount
     candidate_release_url = [string]$candidate.release_url
     device = [ordered]@{
         manufacturer = $manufacturer
