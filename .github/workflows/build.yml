@@ -354,9 +354,9 @@ jobs:
           {
             echo "### Pixel Camera selection"
             echo ""
-            echo "- Version: `$VERSION`"
+            printf -- '- Version: `%s`\n' "$VERSION"
             echo "- Target: Android 17 / API 37, arm64-v8a, nodpi"
-            echo "- Selection changed: `$CHANGED`"
+            printf -- '- Selection changed: `%s`\n' "$CHANGED"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify live APKMirror download path
