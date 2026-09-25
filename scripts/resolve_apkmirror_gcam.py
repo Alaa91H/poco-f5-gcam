@@ -501,7 +501,10 @@ def resolve(
 
     if output_path.exists():
         current_lock = json.loads(output_path.read_text(encoding="utf-8"))
-        if _stable_identity(current_lock) == _stable_identity(new_lock):
+        if (
+            current_lock.get("schema_version") == new_lock.get("schema_version")
+            and _stable_identity(current_lock) == _stable_identity(new_lock)
+        ):
             print(
                 f"Pixel Camera {ordered[0].version} remains the newest "
                 "compatible release."
