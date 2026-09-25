@@ -1,0 +1,36 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build / temporary output
+build/
+dist/
+out/
+tmp/
+*.log
+
+# Android packages and proprietary binaries
+*.apk
+*.aab
+*.apks
+*.xapk
+*.dex
+*.odex
+*.vdex
+*.oat
+*.so
+
+# Signing material
+*.jks
+*.keystore
+*.pem
+*.pk8
+*.x509.pem
+
+# Local test captures
+captures/
+samples/private/
