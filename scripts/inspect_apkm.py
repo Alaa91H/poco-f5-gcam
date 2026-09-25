@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import zipfile
@@ -34,9 +35,11 @@ CERT_SHA256_RE = re.compile(
 )
 MANIFEST_ATTR_RE = re.compile(r'\b(package|split)="([^"]*)"')
 USES_SPLIT_RE = re.compile(
-    r"<uses-split\\b[^>]*android:name=\\x22([^\\x22]+)\\x22",
+    r'<uses-split\b[^>]*android:name="([^"]+)"',
     re.IGNORECASE,
 )
+CONFIG_FOR_SPLIT_RE = re.compile(r'\bandroid:configForSplit="([^"]+)"')
+FEATURE_SPLIT_RE = re.compile(r'\bandroid:isFeatureSplit="([^"]+)"')
 
 
 def sha256_path(path: Path) -> str:
@@ -60,6 +63,109 @@ def _category(name: str) -> str:
     if normalized.startswith("META-INF/") or normalized == "AndroidManifest.xml":
         return "metadata"
     return "other"
+
+
+def _inspect_elf_load_alignment(data: bytes) -> dict[str, Any]:
+    if len(data) < 64 or data[:4] != b"\x7fELF":
+        return {
+            "available": False,
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+    elf_class = data[4]
+    endian_id = data[5]
+    if endian_id == 1:
+        endian = "<"
+    elif endian_id == 2:
+        endian = ">"
+    else:
+        return {
+            "available": False,
+            "error": f"unknown ELF endianness {endian_id}",
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+    try:
+        if elf_class == 1:
+            phoff = struct.unpack_from(endian + "I", data, 28)[0]
+            phentsize = struct.unpack_from(endian + "H", data, 42)[0]
+            phnum = struct.unpack_from(endian + "H", data, 44)[0]
+            align_offset = 28
+            elf_bits = 32
+            align_format = "I"
+        elif elf_class == 2:
+            phoff = struct.unpack_from(endian + "Q", data, 32)[0]
+            phentsize = struct.unpack_from(endian + "H", data, 54)[0]
+            phnum = struct.unpack_from(endian + "H", data, 56)[0]
+            align_offset = 48
+            elf_bits = 64
+            align_format = "Q"
+        else:
+            return {
+                "available": False,
+                "error": f"unknown ELF class {elf_class}",
+                "load_alignments": [],
+                "min_load_alignment": None,
+                "compatible_16kb": None,
+            }
+
+        alignments: list[int] = []
+        for index in range(phnum):
+            entry = phoff + index * phentsize
+            if entry + phentsize > len(data):
+                raise ValueError("program header extends beyond ELF payload")
+            p_type = struct.unpack_from(endian + "I", data, entry)[0]
+            if p_type != 1:
+                continue
+            alignment = struct.unpack_from(
+                endian + align_format,
+                data,
+                entry + align_offset,
+            )[0]
+            alignments.append(int(alignment))
+
+        minimum = min(alignments) if alignments else None
+        compatible = (
+            all(alignment >= 16384 for alignment in alignments)
+            if alignments
+            else None
+        )
+        return {
+            "available": True,
+            "elf_class_bits": elf_bits,
+            "load_alignments": alignments,
+            "min_load_alignment": minimum,
+            "compatible_16kb": compatible,
+        }
+    except (struct.error, ValueError) as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "load_alignments": [],
+            "min_load_alignment": None,
+            "compatible_16kb": None,
+        }
+
+
+def verify_zip_alignment(apk_path: Path, zipalign: str | None) -> dict[str, Any]:
+    if not zipalign:
+        return {
+            "available": False,
+            "verified_16kb": None,
+        }
+
+    code, output = _run_text(
+        [zipalign, "-c", "-P", "16", "-v", "4", str(apk_path)]
+    )
+    return {
+        "available": True,
+        "verified_16kb": code == 0,
+        "output_tail": "\n".join(output.strip().splitlines()[-20:]),
+    }
 
 
 def _stream_contains_ascii(
