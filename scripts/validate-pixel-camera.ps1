@@ -62,8 +62,8 @@ function Invoke-PixelCameraInstall {
     }
 
     if ($extension -eq ".apk") {
-        $args = @("install") + $installFlags + @($resolvedPath)
-        $output = & adb @AdbPrefix @args 2>&1
+        $commandArgs = @("install") + $installFlags + @($resolvedPath)
+        $output = & adb @AdbPrefix @commandArgs 2>&1
         $exitCode = $LASTEXITCODE
 
         return [pscustomobject]@{
@@ -124,8 +124,8 @@ function Invoke-PixelCameraInstall {
         }
 
         $apkPaths = @($splitApks | ForEach-Object { $_.FullName })
-        $args = @("install-multiple") + $installFlags + $apkPaths
-        $output = & adb @AdbPrefix @args 2>&1
+        $commandArgs = @("install-multiple") + $installFlags + $apkPaths
+        $output = & adb @AdbPrefix @commandArgs 2>&1
         $exitCode = $LASTEXITCODE
 
         return [pscustomobject]@{
