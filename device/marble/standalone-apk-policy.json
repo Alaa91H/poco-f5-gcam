@@ -15,7 +15,11 @@
       "sha256": "a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67"
     },
     "android_build_tools": "35.0.0",
-    "native_library_page_alignment_bytes": 16384
+    "native_library_page_alignment_bytes": 16384,
+    "telegram_bot_api": {
+      "repository": "https://github.com/tdlib/telegram-bot-api.git",
+      "source_sha": "e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1"
+    }
   },
   "transformations": {
     "merge_split_bundle": true,
@@ -27,7 +31,7 @@
   },
   "signing": {
     "preferred_mode": "repository-keystore",
-    "ephemeral_ci_fallback": true,
+    "ephemeral_ci_fallback": "pull-request-only",
     "required_secrets": [
       "GCMOD_KEYSTORE_B64",
       "GCMOD_KEY_ALIAS",
@@ -38,7 +42,7 @@
   "notes": [
     "The original Google signature cannot survive bundle merging or any later modification.",
     "A stable repository signing key is required for APK-to-APK upgrades without uninstalling previous project builds.",
-    "The CI fallback key exists only so pull-request validation can prove that the generated APK is structurally signable.",
-    "PairIP is not removed or bypassed by this pipeline."
+    "PairIP is not removed or bypassed by this pipeline.",
+    "The CI fallback key is permitted only for pull-request validation; scheduled and manually dispatched production builds require a stable repository keystore."
   ]
 }
