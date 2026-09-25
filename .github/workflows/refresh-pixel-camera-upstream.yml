@@ -4,11 +4,23 @@ on:
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
+  push:
+    paths:
+      - "scripts/resolve_apkmirror_gcam.py"
+      - "scripts/pixel_camera_gate.py"
+      - "tests/test_resolve_apkmirror_gcam.py"
+      - "tests/test_pixel_camera_gate.py"
+      - "device/marble/upstream-policy.json"
+      - ".github/workflows/refresh-pixel-camera-upstream.yml"
   pull_request:
     paths:
       - "scripts/resolve_apkmirror_gcam.py"
+      - "scripts/pixel_camera_gate.py"
+      - "scripts/validate-pixel-camera.ps1"
       - "tests/test_resolve_apkmirror_gcam.py"
+      - "tests/test_pixel_camera_gate.py"
       - "device/marble/upstream-policy.json"
+      - "device/marble/upstream/pixel-camera-approved.json"
       - ".github/workflows/refresh-pixel-camera-upstream.yml"
 
 permissions:
@@ -21,33 +33,41 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - name: Test resolver
-        run: python -m unittest discover -s tests -p "test_resolve_apkmirror_gcam.py" -v
+      - name: Run upstream and promotion-gate tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
-      - name: Resolve newest compatible Pixel Camera
+      - name: Resolve compatible Pixel Camera candidates
         if: github.event_name != 'pull_request'
         run: |
           python scripts/resolve_apkmirror_gcam.py \
             --policy device/marble/upstream-policy.json \
             --output device/marble/upstream/pixel-camera.json
 
-      - name: Commit upstream lock update
+      - name: Show runtime promotion state
+        if: github.event_name != 'pull_request'
+        run: |
+          python scripts/pixel_camera_gate.py status \
+            --lock device/marble/upstream/pixel-camera.json \
+            --approved device/marble/upstream/pixel-camera-approved.json
+
+      - name: Commit discovery-lock update only
         if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
 
           if git diff --quiet -- device/marble/upstream/pixel-camera.json; then
-            echo "Already on the newest compatible Pixel Camera release."
+            echo "Discovery lock already tracks the newest compatible candidates."
             exit 0
           fi
 
@@ -55,12 +75,23 @@ jobs:
           import json
           from pathlib import Path
           data = json.loads(Path("device/marble/upstream/pixel-camera.json").read_text())
-          print(data["selected"]["version"])
+          candidate = data.get("candidate") or data.get("selected")
+          print(candidate["version"])
           PY
           )"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add device/marble/upstream/pixel-camera.json
-          git commit -m "chore(upstream): track Pixel Camera ${VERSION}"
+          git commit -m "chore(upstream): track Pixel Camera candidate ${VERSION}"
           git push
+
+      - name: Assert approved state is untouched
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          if ! git diff --quiet -- device/marble/upstream/pixel-camera-approved.json; then
+            echo "::error::Automated discovery must never modify last-known-good state."
+            git diff -- device/marble/upstream/pixel-camera-approved.json
+            exit 1
+          fi
