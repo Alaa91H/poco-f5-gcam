@@ -21,10 +21,23 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 
-VERSION_RE = re.compile(r"^\\d+(?:\\.\\d+)+(?:[A-Za-z0-9._-]*)?$")
+VERSION_RE = re.compile(r"^\d+(?:\.\d+)+(?:[A-Za-z0-9._-]*)?$")
 VARIANT_MARKER = "/variant-"
 DEFAULT_TIMEOUT_SECONDS = 30
 DEFAULT_ATTEMPTS = 3
+
+API_TO_ANDROID = {
+    37: "17",
+    36: "16",
+    35: "15",
+    34: "14",
+    33: "13",
+    32: "12L",
+    31: "12",
+    30: "11",
+    29: "10",
+    28: "9",
+}
 
 
 class AnchorCollector(HTMLParser):
@@ -74,7 +87,7 @@ def _as_tuple(value: object) -> tuple[str, ...]:
 def _extract_min_api(spec: dict[str, object]) -> int | None:
     values = _as_tuple(spec.get("minapi_slug"))
     for value in values:
-        match = re.search(r"(\\d+)", value)
+        match = re.search(r"(\d+)", value)
         if match:
             return int(match.group(1))
     return None
@@ -94,7 +107,7 @@ def _parse_variant_href(href: str) -> dict[str, object] | None:
 
 
 def _version_key(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\\d+", version))
+    return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
 def discover_candidates(html: str, product_url: str) -> list[Candidate]:
@@ -117,7 +130,11 @@ def discover_candidates(html: str, product_url: str) -> list[Candidate]:
         if min_api is None:
             continue
 
-        end = variant_indexes[offset + 1] if offset + 1 < len(variant_indexes) else len(anchors)
+        end = (
+            variant_indexes[offset + 1]
+            if offset + 1 < len(variant_indexes)
+            else len(anchors)
+        )
         release: tuple[str, str] | None = None
 
         for release_href, release_text in anchors[index + 1 : end]:
@@ -150,7 +167,9 @@ def discover_candidates(html: str, product_url: str) -> list[Candidate]:
     return candidates
 
 
-def choose_candidate(policy: dict[str, object], candidates: Iterable[Candidate]) -> Candidate:
+def choose_candidate(
+    policy: dict[str, object], candidates: Iterable[Candidate]
+) -> Candidate:
     compatibility = policy["compatibility"]
     if not isinstance(compatibility, dict):
         raise ValueError("policy.compatibility must be an object")
@@ -174,7 +193,10 @@ def choose_candidate(policy: dict[str, object], candidates: Iterable[Candidate])
             f"dpis={sorted(allowed_dpis)}"
         )
 
-    return max(compatible, key=lambda item: (_version_key(item.version), item.min_api))
+    return max(
+        compatible,
+        key=lambda item: (_version_key(item.version), item.min_api),
+    )
 
 
 def fetch_html(url: str, attempts: int = DEFAULT_ATTEMPTS) -> str:
@@ -194,7 +216,9 @@ def fetch_html(url: str, attempts: int = DEFAULT_ATTEMPTS) -> str:
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(
+                request, timeout=DEFAULT_TIMEOUT_SECONDS
+            ) as response:
                 charset = response.headers.get_content_charset() or "utf-8"
                 return response.read().decode(charset, errors="replace")
         except (urllib.error.URLError, TimeoutError) as exc:
@@ -205,16 +229,21 @@ def fetch_html(url: str, attempts: int = DEFAULT_ATTEMPTS) -> str:
     raise RuntimeError(f"Unable to fetch {url}: {last_error}") from last_error
 
 
-def build_lock(policy: dict[str, object], candidate: Candidate) -> dict[str, object]:
+def build_lock(
+    policy: dict[str, object], candidate: Candidate
+) -> dict[str, object]:
     device = policy["device"]
     android = policy["android"]
     compatibility = policy["compatibility"]
     source = policy["source"]
 
-    if not all(isinstance(item, dict) for item in (device, android, compatibility, source)):
-        raise ValueError("device, android, compatibility and source must be objects")
-
-    min_android = candidate.min_api - 20 if candidate.min_api >= 21 else candidate.min_api
+    if not all(
+        isinstance(item, dict)
+        for item in (device, android, compatibility, source)
+    ):
+        raise ValueError(
+            "device, android, compatibility and source must be objects"
+        )
 
     return {
         "schema_version": 1,
@@ -227,13 +256,17 @@ def build_lock(policy: dict[str, object], candidate: Candidate) -> dict[str, obj
             "rom": device["rom"],
             "android_version": android["version"],
             "api_level": android["api_level"],
-            "architectures": list(_as_tuple(compatibility.get("architectures"))),
+            "architectures": list(
+                _as_tuple(compatibility.get("architectures"))
+            ),
             "dpis": list(_as_tuple(compatibility.get("dpis"))),
         },
         "selected": {
             "version": candidate.version,
             "min_api": candidate.min_api,
-            "min_android": min_android,
+            "min_android": API_TO_ANDROID.get(
+                candidate.min_api, f"API {candidate.min_api}"
+            ),
             "architectures": list(candidate.architectures),
             "dpis": list(candidate.dpis),
             "release_url": candidate.release_url,
@@ -263,14 +296,22 @@ def _stable_identity(lock: dict[str, object]) -> tuple[object, ...]:
     )
 
 
-def resolve(policy_path: Path, output_path: Path, source_html: Path | None = None) -> bool:
+def resolve(
+    policy_path: Path,
+    output_path: Path,
+    source_html: Path | None = None,
+) -> bool:
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     source = policy["source"]
     if not isinstance(source, dict):
         raise ValueError("policy.source must be an object")
 
     product_url = str(source["product_url"])
-    html = source_html.read_text(encoding="utf-8") if source_html else fetch_html(product_url)
+    html = (
+        source_html.read_text(encoding="utf-8")
+        if source_html
+        else fetch_html(product_url)
+    )
 
     candidates = discover_candidates(html, product_url)
     if not candidates:
@@ -286,14 +327,14 @@ def resolve(policy_path: Path, output_path: Path, source_html: Path | None = Non
         current_lock = json.loads(output_path.read_text(encoding="utf-8"))
         if _stable_identity(current_lock) == _stable_identity(new_lock):
             print(
-                f"Pixel Camera {candidate.version} remains the newest compatible release "
-                f"(min API {candidate.min_api})."
+                f"Pixel Camera {candidate.version} remains the newest "
+                f"compatible release (min API {candidate.min_api})."
             )
             return False
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(new_lock, indent=2, ensure_ascii=False) + "\\n",
+        json.dumps(new_lock, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     print(
