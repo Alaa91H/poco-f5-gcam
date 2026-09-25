@@ -26,6 +26,11 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts.patch_pixel_camera_device_gate import patch_apk as patch_device_gate
+except ModuleNotFoundError:
+    from patch_pixel_camera_device_gate import patch_apk as patch_device_gate
+
 SUPPORTED_SUFFIXES = {".apk", ".apkm", ".apks", ".xapk", ".zip"}
 PACKAGE_RE = re.compile(r"package:\s+name='([^']+)'")
 VERSION_CODE_RE = re.compile(r"versionCode='([^']+)'")
@@ -143,6 +148,8 @@ def build_standalone(
     output: Path,
     *,
     apkeditor: Path,
+    baksmali: Path,
+    smali: Path,
     java: str,
     zipalign: str,
     apksigner: str,
@@ -159,6 +166,8 @@ def build_standalone(
     source = source.resolve()
     output = output.resolve()
     apkeditor = apkeditor.resolve()
+    baksmali = baksmali.resolve()
+    smali = smali.resolve()
     keystore = keystore.resolve()
 
     ensure_android_zip(source)
@@ -176,6 +185,7 @@ def build_standalone(
     with tempfile.TemporaryDirectory(prefix="poco-f5-standalone-") as temp:
         root = Path(temp)
         merged = root / "merged.apk"
+        patched = root / "device-gate-patched.apk"
         aligned = root / "aligned.apk"
         signed = root / "signed.apk"
 
@@ -197,6 +207,15 @@ def build_standalone(
         )
         ensure_android_zip(merged)
 
+        device_gate_patch = patch_device_gate(
+            merged,
+            patched,
+            baksmali=baksmali,
+            smali=smali,
+            java=java,
+        )
+        ensure_android_zip(patched)
+
         run(
             [
                 zipalign,
@@ -205,7 +224,7 @@ def build_standalone(
                 "-f",
                 "-v",
                 "4",
-                os.fspath(merged),
+                os.fspath(patched),
                 os.fspath(aligned),
             ]
         )
@@ -293,14 +312,17 @@ def build_standalone(
         "transformations": [
             "merge_split_bundle_to_standalone_apk",
             "clean_obsolete_split_signature_metadata",
+            "redirect_unsupported_device_gate_to_common_finalization",
             "zipalign_16k_native_libraries",
             "resign_with_project_key",
         ],
         "security": {
             "original_google_signature_preserved": False,
+            "unsupported_device_gate_patch_performed": True,
             "pairip_bypass_performed": False,
             "feature_splits_removed": False,
         },
+        "compatibility_patch": device_gate_patch,
         "runtime_validation": {
             "status": "not_run",
             "required_for_distribution": True,
@@ -308,7 +330,7 @@ def build_standalone(
             "target_api": 37,
         },
         "distribution": {
-            "status": "experimental-unvalidated",
+            "status": "compatibility-patched-unvalidated",
             "automatic_delivery_allowed": False,
         },
         "tooling": {
@@ -329,6 +351,8 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--apkeditor", required=True, type=Path)
+    parser.add_argument("--baksmali", required=True, type=Path)
+    parser.add_argument("--smali", required=True, type=Path)
     parser.add_argument("--java", default="java")
     parser.add_argument("--zipalign")
     parser.add_argument("--apksigner")
@@ -352,6 +376,8 @@ def main() -> int:
             args.input,
             args.output,
             apkeditor=args.apkeditor,
+            baksmali=args.baksmali,
+            smali=args.smali,
             java=resolve_tool(args.java, "java"),
             zipalign=resolve_tool(args.zipalign, "zipalign"),
             apksigner=resolve_tool(args.apksigner, "apksigner"),

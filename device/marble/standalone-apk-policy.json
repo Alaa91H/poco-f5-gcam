@@ -19,6 +19,13 @@
     "telegram_bot_api": {
       "repository": "https://github.com/tdlib/telegram-bot-api.git",
       "source_sha": "e3e9dd8e5b3d7ab8537cd5a10dc31d5ffa8f82d1"
+    },
+    "smali": {
+      "version": "3.0.10",
+      "baksmali_url": "https://github.com/baksmali/smali/releases/download/3.0.10/baksmali-3.0.10-fat-release.jar",
+      "baksmali_sha256": "37ae4a41a8886e15c20b8362fa4250f96bbdb55e1a608199ad8b5dff068b588f",
+      "smali_url": "https://github.com/baksmali/smali/releases/download/3.0.10/smali-3.0.10-fat-release.jar",
+      "smali_sha256": "32fa0e88a6c397b3922201adf5f3e534fbaed5a663c71d0c558c3ddce0af844a"
     }
   },
   "transformations": {
@@ -27,7 +34,8 @@
     "remove_feature_splits": false,
     "remove_pairip": false,
     "zipalign": true,
-    "resign": true
+    "resign": true,
+    "patch_unsupported_device_gate": true
   },
   "signing": {
     "preferred_mode": "repository-keystore",
@@ -42,8 +50,9 @@
   },
   "notes": [
     "The original Google signature cannot survive bundle merging or any later modification.",
-    "Original Google-signed split APKs are the preferred runtime-safe installation path.",
+    "Original Google-signed split APKs remain the preservation baseline, but Pixel Camera 11.0.073 rejects POCO F5 at runtime before the camera UI.",
     "A merged standalone APK is experimental until the real-device runtime smoke test passes on POCO F5 / API 37.",
+    "The compatibility build patches only the exact unsupported-device constructor throw and redirects it to Pixel Camera's existing common finalization path; the patch fails closed if the bytecode shape changes.",
     "A stable repository signing key is required for APK-to-APK upgrades between project-signed experimental builds.",
     "PairIP is not removed or bypassed by this pipeline."
   ],
@@ -58,8 +67,8 @@
     "smoke_test_script": "scripts/test-pixel-camera-runtime.ps1"
   },
   "distribution": {
-    "preferred_install_mode": "original-google-signed-splits",
-    "standalone_status": "experimental-unvalidated",
+    "preferred_install_mode": "compatibility-patched-standalone-after-runtime-validation",
+    "standalone_status": "compatibility-patched-unvalidated",
     "standalone_auto_delivery": false
   }
 }
