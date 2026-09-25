@@ -12,6 +12,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_analyze_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -27,6 +28,7 @@ on:
       - "tests/test_download_latest_pixel_camera.py"
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
+      - "tests/test_analyze_pixel_camera_device_gate.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -317,6 +319,7 @@ jobs:
           python -m unittest tests.test_inspect_apkm -v
           python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
+          python -m unittest tests.test_analyze_pixel_camera_device_gate -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -940,3 +943,96 @@ jobs:
           git add device/marble/upstream/pixel-camera.json
           git commit -m "chore(upstream): select Pixel Camera ${VERSION}"
           git push
+
+
+  device_gate_analysis:
+    name: Analyze Pixel Camera POCO F5 device gate
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.head_ref == 'feat/patch-pixel-camera-device-gate'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Test device-gate analyzer
+        run: python -m unittest tests.test_analyze_pixel_camera_device_gate -v
+
+      - name: Download selected Pixel Camera bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
+
+      - name: Download and verify Apktool 3.0.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKTOOL="$RUNNER_TEMP/apktool_3.0.3.jar"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar" \
+            --output "$APKTOOL"
+          echo "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  $APKTOOL" \
+            | sha256sum --check --strict
+          echo "APKTOOL_JAR=$APKTOOL" >> "$GITHUB_ENV"
+
+      - name: Locate unsupported-device guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          REPORT="$RUNNER_TEMP/pixel-camera-device-gate.json"
+
+          python scripts/analyze_pixel_camera_device_gate.py "$PACKAGE_PATH" \
+            --apktool "$APKTOOL_JAR" \
+            --output "$REPORT"
+
+          python - "$REPORT" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("\n### Pixel Camera device gate\n\n")
+              out.write(f"- Exact matches: {report['match_count']}\n")
+              for index, match in enumerate(report["matches"], 1):
+                  out.write(f"- Match {index}: {match['file']}:{match['marker_line']}\n")
+                  out.write(f"- Method: {match['method_header']}\n\n")
+                  out.write("~~~smali\n")
+                  out.write(match["method_smali"])
+                  out.write("\n~~~\n")
+          PY
+
+          python - "$REPORT" <<'PY'
+          import json
+          import sys
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          for index, match in enumerate(report["matches"], 1):
+              print(f"===== DEVICE GATE MATCH {index} =====")
+              print(f"{match['file']}:{match['marker_line']}")
+              print(match["method_smali"])
+          PY
+
+      - name: Upload device-gate analysis
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-device-gate-analysis
+          path: \${{ runner.temp }}/pixel-camera-device-gate.json
+          if-no-files-found: error
+          retention-days: 7
