@@ -100,14 +100,13 @@ $resumedLines = @(
 $logcat = (Invoke-Adb -Arguments @("logcat", "-d", "-v", "threadtime", "-t", "8000") -AllowFailure).Text
 $logLines = @($logcat -split "\r?\n")
 
-$fatalPatterns = @(
+$fatalMarkers = @(
     "FATAL EXCEPTION",
-    "Process: $PackageName",
     "UnsatisfiedLinkError",
     "NoClassDefFoundError",
     "ClassNotFoundException",
-    "Resources\$NotFoundException",
-    "Resources\.NotFoundException",
+    'Resources$NotFoundException',
+    "Resources.NotFoundException",
     "VerifyError",
     "IncompatibleClassChangeError",
     "SecurityException",
@@ -116,7 +115,7 @@ $fatalPatterns = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalPatterns | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
