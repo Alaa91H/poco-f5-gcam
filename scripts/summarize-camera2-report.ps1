@@ -139,7 +139,7 @@ $lines.Add("")
 
 foreach ($camera in @($report.cameras)) {
     $n = $camera.normalized
-    $lines.Add("### Camera ID `$(Cell $camera.id)`")
+    $lines.Add("### Camera ID $(Cell $camera.id)")
     $lines.Add("")
     $lines.Add("- Facing: **$(Cell (NamedValue $n.lensFacing))**")
     $lines.Add("- Hardware level: **$(Cell (NamedValue $n.hardwareLevel))**")
@@ -160,9 +160,9 @@ $lines.Add("Do not infer Main / Ultrawide / Macro / Front solely from Camera ID 
 $lines.Add("")
 $lines.Add("## Evidence")
 $lines.Add("")
-$lines.Add("- Source JSON: `$(Split-Path -Leaf $ReportPath)`")
+$lines.Add("- Source JSON: $(Split-Path -Leaf $ReportPath)")
 $lines.Add("- Schema version: $(Cell $report.schemaVersion)")
-$lines.Add("- All raw CameraCharacteristics remain available in the JSON under `allCharacteristics`.")
+$lines.Add("- All raw CameraCharacteristics remain available in the JSON under allCharacteristics.")
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllLines($OutputPath, $lines, $utf8NoBom)
