@@ -135,3 +135,15 @@ the selected version changes. A manual workflow run always downloads the current
 latest compatible release.
 
 See [docs/PIXEL_CAMERA_UPSTREAM.md](docs/PIXEL_CAMERA_UPSTREAM.md).
+
+## Standalone POCO F5 APK build
+
+After the original APK/APKM passes checksum and Google-signature verification,
+the CI pipeline can produce one standalone APK for POCO F5 on Android 17. The
+bundle is merged without automatically removing feature splits, aligned for
+16 KiB native-library pages, re-signed with the project key, verified, uploaded
+as a workflow artifact, and delivered to Telegram when the required credentials
+are configured.
+
+The original Google-signed input remains ephemeral and is never committed to the
+repository. See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
