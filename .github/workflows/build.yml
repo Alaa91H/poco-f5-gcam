@@ -1013,10 +1013,10 @@ jobs:
           SMALI="$RUNNER_TEMP/smali-3.0.10-fat.jar"
 
           curl --fail --location --silent --show-error --retry 3 \
-            "https://github.com/baksmali/smali/releases/download/v3.0.10/baksmali-3.0.10-fat.jar" \
+            "https://github.com/baksmali/smali/releases/download/3.0.10/baksmali-3.0.10-fat.jar" \
             --output "$BAKSMALI"
           curl --fail --location --silent --show-error --retry 3 \
-            "https://github.com/baksmali/smali/releases/download/v3.0.10/smali-3.0.10-fat.jar" \
+            "https://github.com/baksmali/smali/releases/download/3.0.10/smali-3.0.10-fat.jar" \
             --output "$SMALI"
 
           echo "37ae4a41a8886e15c20b8362fa4250f96bbdb55e1a608199ad8b5dff068b588f  $BAKSMALI" \
