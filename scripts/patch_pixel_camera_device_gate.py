@@ -30,7 +30,6 @@ from typing import Any
 DEVICE_GATE_TEXT = "Device is not recognized or not supported"
 TARGET_CLASS = "klm.smali"
 TARGET_METHOD = ".method public constructor <init>(Luyv;Luyu;Lqxe;Lacku;Lklk;)V"
-TARGET_BRANCH = "if-eqz p1, :cond_18"
 REPLACEMENT_BRANCH = "nop"
 SIGNER_RE = re.compile(r"Signer #\d+ certificate SHA-256 digest:\s*([0-9A-Fa-f:]+)")
 
@@ -150,24 +149,65 @@ def patch_smali(smali_root: Path) -> dict[str, Any]:
 
     if method.count(DEVICE_GATE_TEXT) != 1:
         raise PatchError("expected exactly one unsupported-device marker in target constructor")
-    if method.count(TARGET_BRANCH) != 1:
-        raise PatchError(
-            f"expected exactly one target branch {TARGET_BRANCH!r} in target constructor"
-        )
 
     marker_index = method.index(DEVICE_GATE_TEXT)
-    branch_index = method.index(TARGET_BRANCH)
-    if branch_index > marker_index:
-        raise PatchError("target branch does not precede the unsupported-device block")
 
-    patched_method = method.replace(TARGET_BRANCH, REPLACEMENT_BRANCH, 1)
+    # baksmali is free to renumber :cond_* labels, so discover the throw label
+    # from the exception block itself instead of pinning a numeric label.
+    before_marker = method[:marker_index]
+    label_matches = list(
+        re.finditer(
+            r"(?m)^\s*(:[A-Za-z0-9_]+)\s*$"
+            r"(?:(?!^\s*:[A-Za-z0-9_]+\s*$).)*?"
+            r"^\s*new-instance\s+\w+,\s+Ljava/lang/UnsupportedOperationException;\s*$"
+            r"(?:(?!^\s*:[A-Za-z0-9_]+\s*$).)*?$",
+            before_marker,
+            re.DOTALL,
+        )
+    )
+    if not label_matches:
+        raise PatchError("could not locate unsupported-device exception label")
+    throw_label = label_matches[-1].group(1)
+
+    # Locate the recognition call and the conditional branch that targets the
+    # discovered exception label. This binds the patch to semantics rather than
+    # label numbering.
+    guard_re = re.compile(
+        r"(?m)^(?P<indent>\s*)invoke-virtual\s+\{p1\},\s+Luyv;->p\(\)Z\s*$"
+        r"\n\s*move-result\s+p1\s*$"
+        r"\n(?P<branch_indent>\s*)if-eqz\s+p1,\s+"
+        + re.escape(throw_label)
+        + r"\s*$"
+    )
+    guards = list(guard_re.finditer(method[:marker_index]))
+    if len(guards) != 1:
+        raise PatchError(
+            f"expected one device-recognition branch to {throw_label}, found {len(guards)}"
+        )
+
+    guard = guards[0]
+    original_instruction = f"if-eqz p1, {throw_label}"
+    branch_line_re = re.compile(
+        r"(?m)^(?P<indent>\s*)if-eqz\s+p1,\s+"
+        + re.escape(throw_label)
+        + r"\s*$"
+    )
+    patched_method, count = branch_line_re.subn(
+        lambda match: match.group("indent") + REPLACEMENT_BRANCH,
+        method,
+        count=1,
+    )
+    if count != 1:
+        raise PatchError("failed to replace the recognized device-gate branch")
+
     patched_text = text[:method_start] + patched_method + text[method_end:]
     path.write_text(patched_text, encoding="utf-8")
 
     return {
         "smali_file": str(path.relative_to(smali_root)).replace("\\", "/"),
         "method": TARGET_METHOD,
-        "original_instruction": TARGET_BRANCH,
+        "throw_label": throw_label,
+        "original_instruction": original_instruction,
         "patched_instruction": REPLACEMENT_BRANCH,
         "device_gate_text": DEVICE_GATE_TEXT,
     }
