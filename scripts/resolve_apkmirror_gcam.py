@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -39,6 +39,33 @@ API_TO_ANDROID = {
     29: "10",
     28: "9",
 }
+
+ANDROID_TO_API = {
+    "17": 37,
+    "16": 36,
+    "15": 35,
+    "14": 34,
+    "13": 33,
+    "12L": 32,
+    "12": 31,
+    "11": 30,
+    "10": 29,
+    "9.0": 28,
+    "9": 28,
+}
+
+VERSION_SEARCH_RE = re.compile(
+    r"(?<!\d)(\d+(?:\.\d+)+(?:[A-Za-z0-9._-]*)?)(?!\d)"
+)
+ARCH_TEXT_RE = re.compile(
+    r"\b(arm64-v8a|armeabi-v7a|arm-v7a|x86_64|x86|noarch)\b",
+    re.IGNORECASE,
+)
+DPI_TEXT_RE = re.compile(r"\b(nodpi|\d+(?:-\d+)?dpi)\b", re.IGNORECASE)
+ANDROID_TEXT_RE = re.compile(
+    r"Android\s+(12L|\d+(?:\.\d+)?)\+",
+    re.IGNORECASE,
+)
 
 
 class AnchorCollector(HTMLParser):
@@ -115,6 +142,111 @@ def _parse_variant_href(href: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _parse_variant_text(text: str) -> dict[str, object] | None:
+    arch_match = ARCH_TEXT_RE.search(text)
+    dpi_match = DPI_TEXT_RE.search(text)
+    android_match = ANDROID_TEXT_RE.search(text)
+    if not (arch_match and dpi_match and android_match):
+        return None
+
+    android_version = android_match.group(1)
+    min_api = ANDROID_TO_API.get(android_version)
+    if min_api is None:
+        return None
+
+    return {
+        "arches_slug": [arch_match.group(1).lower()],
+        "dpis_slug": [dpi_match.group(1).lower()],
+        "minapi_slug": f"minapi-{min_api}",
+    }
+
+
+def _parse_variant_anchor(href: str, text: str) -> dict[str, object] | None:
+    return _parse_variant_href(href) or _parse_variant_text(text)
+
+
+def _extract_release_version(text: str) -> str | None:
+    normalized = " ".join(text.split())
+    if VERSION_RE.fullmatch(normalized):
+        return normalized
+    match = VERSION_SEARCH_RE.search(normalized)
+    return match.group(1) if match else None
+
+
+def _normalize_release_url(product_url: str, href: str) -> str:
+    absolute = urllib.parse.urljoin(product_url, href)
+    parsed = urllib.parse.urlsplit(absolute)
+    path = parsed.path
+    marker = "-release/"
+    if marker in path:
+        path = path.split(marker, 1)[0] + marker
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, "", "")
+    )
+
+
+def _is_variant_anchor(href: str, text: str) -> bool:
+    if VARIANT_MARKER in urllib.parse.urlsplit(href).path:
+        return True
+    return _parse_variant_text(text) is not None
+
+
+def build_variant_url(
+    product_url: str,
+    architecture: str,
+    dpi: str,
+    min_api: int,
+) -> str:
+    payload = {
+        "arches_slug": [architecture],
+        "dpis_slug": [dpi],
+        "minapi_slug": f"minapi-{min_api}",
+    }
+    encoded = urllib.parse.quote(
+        json.dumps(payload, separators=(",", ":")),
+        safe="",
+    )
+    return urllib.parse.urljoin(product_url, f"variant-{encoded}/")
+
+
+def discover_variant_page_candidates(
+    html: str,
+    product_url: str,
+    architecture: str,
+    dpi: str,
+    min_api: int,
+) -> list[Candidate]:
+    parser = AnchorCollector()
+    parser.feed(html)
+    result: list[Candidate] = []
+
+    for href, text in parser.anchors:
+        if (
+            "/apk/google-inc/camera/" not in href
+            or "-release/" not in href
+        ):
+            continue
+
+        version = _extract_release_version(text)
+        if version is None:
+            continue
+
+        result.append(
+            Candidate(
+                version=version,
+                min_api=min_api,
+                architectures=(architecture,),
+                dpis=(dpi,),
+                release_url=_normalize_release_url(product_url, href),
+            )
+        )
+
+    deduped: dict[tuple[str, str], Candidate] = {}
+    for item in result:
+        deduped[(item.version, item.release_url)] = item
+    return list(deduped.values())
+
+
 def _version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", version))
 
@@ -126,12 +258,14 @@ def discover_candidates(html: str, product_url: str) -> list[Candidate]:
     result: list[Candidate] = []
 
     variant_indexes = [
-        index for index, (href, _) in enumerate(anchors) if VARIANT_MARKER in href
+        index
+        for index, (href, text) in enumerate(anchors)
+        if _is_variant_anchor(href, text)
     ]
 
     for offset, index in enumerate(variant_indexes):
-        href, _ = anchors[index]
-        spec = _parse_variant_href(href)
+        href, variant_text = anchors[index]
+        spec = _parse_variant_anchor(href, variant_text)
         if not spec:
             continue
 
@@ -146,22 +280,26 @@ def discover_candidates(html: str, product_url: str) -> list[Candidate]:
         )
 
         for release_href, release_text in anchors[index + 1 : end]:
-            version = release_text.strip()
             if (
-                VERSION_RE.fullmatch(version)
-                and "/apk/google-inc/camera/" in release_href
-                and "-release/" in release_href
+                "/apk/google-inc/camera/" not in release_href
+                or "-release/" not in release_href
             ):
-                result.append(
-                    Candidate(
-                        version=version,
-                        min_api=min_api,
-                        architectures=_as_tuple(spec.get("arches_slug")),
-                        dpis=_as_tuple(spec.get("dpis_slug")),
-                        release_url=urllib.parse.urljoin(product_url, release_href),
-                    )
+                continue
+
+            version = _extract_release_version(release_text)
+            if version is None:
+                continue
+
+            result.append(
+                Candidate(
+                    version=version,
+                    min_api=min_api,
+                    architectures=_as_tuple(spec.get("arches_slug")),
+                    dpis=_as_tuple(spec.get("dpis_slug")),
+                    release_url=_normalize_release_url(product_url, release_href),
                 )
-                break
+            )
+            break
 
     return result
 
@@ -331,17 +469,48 @@ def resolve(
         raise ValueError("policy.source must be an object")
 
     product_url = str(source["product_url"])
-    html = (
-        source_html.read_text(encoding="utf-8")
-        if source_html
-        else fetch_html(product_url)
-    )
+    if source_html:
+        html = source_html.read_text(encoding="utf-8")
+        discovered = discover_candidates(html, product_url)
+    else:
+        html = fetch_html(product_url)
+        discovered = discover_candidates(html, product_url)
 
-    discovered = discover_candidates(html, product_url)
+        if not discovered:
+            compatibility = policy.get("compatibility")
+            if not isinstance(compatibility, dict):
+                raise ValueError("policy.compatibility must be an object")
+
+            allowed_arches = _as_tuple(compatibility.get("architectures"))
+            allowed_dpis = _as_tuple(compatibility.get("dpis"))
+            max_min_api = int(compatibility["max_min_api"])
+
+            fallback_discovered: list[Candidate] = []
+            for architecture in allowed_arches:
+                for dpi in allowed_dpis:
+                    variant_url = build_variant_url(
+                        product_url,
+                        architecture,
+                        dpi,
+                        max_min_api,
+                    )
+                    variant_html = fetch_html(variant_url)
+                    fallback_discovered.extend(
+                        discover_variant_page_candidates(
+                            variant_html,
+                            product_url,
+                            architecture,
+                            dpi,
+                            max_min_api,
+                        )
+                    )
+            discovered = fallback_discovered
+
     if not discovered:
         raise RuntimeError(
-            "No APKMirror Pixel Camera variants were parsed. "
-            "The upstream page structure may have changed."
+            "No APKMirror Pixel Camera variants were parsed from either "
+            "the product page or the direct target-variant page. "
+            "Failing closed instead of selecting an unverified release."
         )
 
     ordered = compatible_candidates(policy, discovered)
