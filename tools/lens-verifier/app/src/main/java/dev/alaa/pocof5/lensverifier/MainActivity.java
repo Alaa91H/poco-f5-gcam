@@ -613,7 +613,7 @@ public final class MainActivity extends Activity implements TextureView.SurfaceT
         return device;
     }
 
-    private static JSONArray floatArray(float[] values) {
+    private static JSONArray floatArray(float[] values) throws Exception {
         JSONArray array = new JSONArray();
         if (values == null) {
             return array;
