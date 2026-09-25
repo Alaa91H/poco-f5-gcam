@@ -20,8 +20,20 @@ function Invoke-Adb {
         [switch]$AllowFailure
     )
 
-    $output = & adb @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 surfaces native stderr as NativeCommandError when
+        # ErrorActionPreference is Stop. adb/monkey legitimately writes status
+        # lines to stderr even when the native exit code is zero, so capture both
+        # streams without allowing PowerShell's wrapper error to terminate us.
+        $ErrorActionPreference = "Continue"
+        $output = & adb @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
     $text = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
 
     if ($exitCode -ne 0 -and -not $AllowFailure) {
