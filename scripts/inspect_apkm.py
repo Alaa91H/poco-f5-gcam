@@ -240,6 +240,8 @@ def inspect_manifest(apk_path: Path, apkanalyzer: str | None) -> dict[str, Any]:
             "package": None,
             "split": None,
             "uses_splits": [],
+            "config_for_split": None,
+            "is_feature_split": None,
         }
 
     attrs = dict(MANIFEST_ATTR_RE.findall(output))
