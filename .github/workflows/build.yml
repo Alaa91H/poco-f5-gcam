@@ -8,7 +8,9 @@ on:
       - "scripts/**"
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
+      - "tests/test_inspect_apkm.py"
       - "device/marble/upstream-policy.json"
+      - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
   pull_request:
@@ -18,7 +20,9 @@ on:
       - "scripts/**"
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
+      - "tests/test_inspect_apkm.py"
       - "device/marble/upstream-policy.json"
+      - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
   schedule:
@@ -92,7 +96,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|device/marble/upstream-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -296,6 +300,7 @@ jobs:
         run: |
           python -m unittest tests.test_resolve_apkmirror_gcam -v
           python -m unittest tests.test_download_latest_pixel_camera -v
+          python -m unittest tests.test_inspect_apkm -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -366,6 +371,51 @@ jobs:
             echo "Latest compatible Pixel Camera was downloaded and SHA-256 verified on the ephemeral GitHub runner."
             echo "The proprietary APK/APKM is not committed to this repository."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install APK signature verifier
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path "*/bin/sdkmanager" | sort -V | tail -n 1)"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "build-tools;35.0.0"
+
+      - name: Audit downloaded Pixel Camera bundle
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          EXPECTED_SIGNER="$(python -c 'import json; print(json.load(open("device/marble/apkm-audit-policy.json"))["allowed_signer_sha256"][0])')"
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          REPORT="$RUNNER_TEMP/pixel-camera-audit.json"
+
+          python scripts/inspect_apkm.py "$PACKAGE_PATH" \
+            --output "$REPORT" \
+            --apksigner "$APKSIGNER" \
+            --allowed-signer-sha256 "$EXPECTED_SIGNER" \
+            --require-signature-verification >/dev/null
+
+          python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
+
+      - name: Upload Pixel Camera audit report
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-audit-\${{ steps.selected.outputs.version }}
+          path: \${{ runner.temp }}/pixel-camera-audit.json
+          if-no-files-found: error
 
       - name: Commit selected-version lock update
         if: github.event_name != 'pull_request'
