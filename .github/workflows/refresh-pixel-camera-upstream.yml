@@ -95,7 +95,6 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          github.event_name == 'push' ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -114,7 +113,7 @@ jobs:
             echo ""
             echo "### Download"
             echo ""
-            echo "Latest compatible Pixel Camera was downloaded to the ephemeral GitHub runner."
+            echo "Latest compatible Pixel Camera was downloaded and SHA-256 verified on the ephemeral GitHub runner."
             echo "The proprietary APK/APKM is not committed to this repository."
           } >> "$GITHUB_STEP_SUMMARY"
 
