@@ -42,3 +42,47 @@ No feature split is removed automatically.
 The first stage is measurement only. A future device-targeted split planner may mark a split removable only after its manifest/dependency relationship is known, it is not required by another installed split, POCO F5 A/B testing shows no loss of a working feature, installation succeeds using the unmodified Google-signed APK set, and regression tests still pass.
 
 This preserves the project's rule: reduce transferred/installed payload only through safe split selection, never by deleting content from signed APKs.
+
+
+## Native 16 KB compatibility audit
+
+The inspector now reads ELF program headers for every native `.so` and records
+the alignment of each `PT_LOAD` segment. Libraries whose load segments are
+below 16 KiB are reported as incompatible candidates for investigation.
+
+When `zipalign` is available, every base/split APK is also checked with:
+
+```text
+zipalign -c -P 16 -v 4
+```
+
+Both checks are diagnostic. The project does not realign or rewrite the
+Google-signed APKs.
+
+## Conservative split dependency planner
+
+After an APKM audit, run:
+
+```powershell
+python .\scripts\plan_device_splits.py .\reports\pixel-camera-audit.json --output .\reports\pixel-camera-split-plan.json
+```
+
+The planner uses decoded manifest metadata such as `split`, `uses-split`,
+and `configForSplit` to classify APKs as:
+
+- `keep-base`
+- `keep-dependency`
+- `keep-with-parent`
+- `unknown-manifest`
+- `requires-device-validation`
+
+`requires-device-validation` deliberately does **not** mean safe to remove.
+It means only that no structural dependency was found in the decoded manifests
+and the split can be prioritized for controlled POCO F5 A/B testing.
+
+The reported `validation_candidate_bytes` is a test pool, not a savings claim.
+No automatic split stripping is implemented.
+
+GitHub Actions generates both the APKM audit and split-plan JSON during a
+manual download, or on a scheduled run when the selected upstream version
+changes.
