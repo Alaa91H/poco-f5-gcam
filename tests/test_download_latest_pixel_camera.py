@@ -103,6 +103,22 @@ class DownloaderParsingTests(unittest.TestCase):
             "https://www.apkmirror.com/apk/google-inc/camera/release/final/?key=ok",
         )
 
+    def test_prefers_official_download_php_handler(self):
+        html = (
+            '<a href="/apk/google-inc/camera/help">click here</a>'
+            '<a href="/wp-content/themes/APKMirror/download.php?id=15799932&key=abc">'
+            'continue</a>'
+        )
+        url = downloader._followup_download_url(
+            html,
+            "https://www.apkmirror.com/apk/google-inc/camera/release/download/?key=first",
+        )
+        self.assertEqual(
+            url,
+            "https://www.apkmirror.com/wp-content/themes/APKMirror/"
+            "download.php?id=15799932&key=abc",
+        )
+
     def test_extracts_apkmirror_wait_countdown(self):
         html = "<div>Whoa there! You'll have to wait 15 more sec.</div>"
         self.assertEqual(downloader._countdown_seconds(html), 15)
