@@ -506,7 +506,11 @@ def resolve_target(lock_path: Path) -> DownloadTarget:
     )
 
 
-def _filename_from_headers(headers, fallback_version: str) -> str:
+def _filename_from_headers(
+    headers,
+    fallback_version: str,
+    prefer_bundle: bool = False,
+) -> str:
     disposition = headers.get("Content-Disposition") or ""
     match = FILENAME_RE.search(disposition)
     if match:
@@ -515,7 +519,11 @@ def _filename_from_headers(headers, fallback_version: str) -> str:
             return os.path.basename(name)
 
     content_type = headers.get_content_type()
-    extension = ".apkm" if "zip" in content_type or "octet-stream" in content_type else ".apk"
+    extension = (
+        ".apkm"
+        if prefer_bundle or "zip" in content_type or "octet-stream" in content_type
+        else ".apk"
+    )
     return f"PixelCamera-{fallback_version}{extension}"
 
 
@@ -572,7 +580,11 @@ def download(
                 f"Response preview: {' '.join(preview.split())[:300]}"
             )
 
-        filename = _filename_from_headers(response.headers, target.version)
+        filename = _filename_from_headers(
+            response.headers,
+            target.version,
+            prefer_bundle=expected_sha256 is not None,
+        )
         destination = output_dir / filename
         temp = destination.with_suffix(destination.suffix + ".part")
 
