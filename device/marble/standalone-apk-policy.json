@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "target": {
+    "device": "POCO F5 5G (marble)",
+    "rom": "Evolution X",
+    "android_version": 17,
+    "api_level": 37,
+    "package_name": "com.google.android.GoogleCamera",
+    "abi": "arm64-v8a"
+  },
+  "toolchain": {
+    "apkeditor": {
+      "version": "1.4.9",
+      "url": "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar",
+      "sha256": "a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67"
+    },
+    "android_build_tools": "35.0.0",
+    "native_library_page_alignment_bytes": 16384
+  },
+  "transformations": {
+    "merge_split_bundle": true,
+    "clean_obsolete_split_metadata": true,
+    "remove_feature_splits": false,
+    "remove_pairip": false,
+    "zipalign": true,
+    "resign": true
+  },
+  "signing": {
+    "preferred_mode": "repository-keystore",
+    "ephemeral_ci_fallback": true,
+    "required_secrets": [
+      "GCMOD_KEYSTORE_B64",
+      "GCMOD_KEY_ALIAS",
+      "GCMOD_KEYSTORE_PASSWORD",
+      "GCMOD_KEY_PASSWORD"
+    ]
+  },
+  "notes": [
+    "The original Google signature cannot survive bundle merging or any later modification.",
+    "A stable repository signing key is required for APK-to-APK upgrades without uninstalling previous project builds.",
+    "The CI fallback key exists only so pull-request validation can prove that the generated APK is structurally signable.",
+    "PairIP is not removed or bypassed by this pipeline."
+  ]
+}
