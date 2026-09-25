@@ -12,6 +12,7 @@ param(
     [int]$StabilitySeconds = 8,
 
     [switch]$AllowDowngrade,
+    [switch]$NonInteractive,
     [switch]$ConfirmMainPreview,
     [switch]$ConfirmMainCapture,
     [switch]$ConfirmFrontPreview
@@ -30,6 +31,53 @@ function New-Check([string]$Status, [string]$Detail) {
         status = $Status
         detail = $Detail
     }
+}
+
+function Get-VisualConfirmation {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SuccessDetail,
+
+        [Parameter(Mandatory = $true)]
+        [bool]$AutomaticPrerequisitesPassed,
+
+        [bool]$PresetConfirmation = $false,
+        [bool]$NonInteractiveMode = $false
+    )
+
+    if (-not $AutomaticPrerequisitesPassed) {
+        return New-Check "fail" (
+            "Visual confirmation was not accepted because automatic " +
+            "install/launch/stability prerequisites did not pass."
+        )
+    }
+
+    if ($NonInteractiveMode) {
+        if ($PresetConfirmation) {
+            return New-Check "pass" (
+                $SuccessDetail +
+                " Explicit non-interactive confirmation was supplied."
+            )
+        }
+
+        return New-Check "fail" (
+            "Not confirmed. Non-interactive mode requires the matching " +
+            "-Confirm* switch."
+        )
+    }
+
+    Write-Host ""
+    Write-Host $Prompt
+    $response = Read-Host "Type YES to confirm; anything else records FAIL"
+
+    if ($response.Trim() -match "^(?i:yes|y)$") {
+        return New-Check "pass" $SuccessDetail
+    }
+
+    return New-Check "fail" "User did not confirm this visual check."
 }
 
 function Find-Python {
@@ -333,26 +381,34 @@ else {
     $checks["no-fatal-crash"] = New-Check "pass" "No package-associated fatal crash marker was detected after launch."
 }
 
-if ($ConfirmMainPreview) {
-    $checks["main-preview-confirmed"] = New-Check "pass" "User confirmed live main-camera preview."
-}
-else {
-    $checks["main-preview-confirmed"] = New-Check "fail" "Not confirmed. Re-run with -ConfirmMainPreview after visually verifying preview."
-}
+$automaticPrerequisitesPassed =
+    ($checks["install"].status -eq "pass") -and
+    ($checks["package-match"].status -eq "pass") -and
+    ($checks["version-match"].status -eq "pass") -and
+    ($checks["launchable"].status -eq "pass") -and
+    ($checks["process-stable"].status -eq "pass") -and
+    ($checks["no-fatal-crash"].status -eq "pass")
 
-if ($ConfirmMainCapture) {
-    $checks["main-capture-confirmed"] = New-Check "pass" "User confirmed a successful main-camera capture."
-}
-else {
-    $checks["main-capture-confirmed"] = New-Check "fail" "Not confirmed. Re-run with -ConfirmMainCapture after taking and reviewing a photo."
-}
+$checks["main-preview-confirmed"] = Get-VisualConfirmation `
+    -Prompt "On the POCO F5, verify that Pixel Camera shows a correct LIVE MAIN-CAMERA preview." `
+    -SuccessDetail "User confirmed live main-camera preview after launch." `
+    -AutomaticPrerequisitesPassed $automaticPrerequisitesPassed `
+    -PresetConfirmation $ConfirmMainPreview.IsPresent `
+    -NonInteractiveMode $NonInteractive.IsPresent
 
-if ($ConfirmFrontPreview) {
-    $checks["front-preview-confirmed"] = New-Check "pass" "User confirmed front-camera preview."
-}
-else {
-    $checks["front-preview-confirmed"] = New-Check "fail" "Not confirmed. Re-run with -ConfirmFrontPreview after verifying the front camera."
-}
+$checks["main-capture-confirmed"] = Get-VisualConfirmation `
+    -Prompt "Take a photo with the MAIN camera and verify that the capture completes and the image can be reviewed." `
+    -SuccessDetail "User confirmed a successful main-camera capture after launch." `
+    -AutomaticPrerequisitesPassed $automaticPrerequisitesPassed `
+    -PresetConfirmation $ConfirmMainCapture.IsPresent `
+    -NonInteractiveMode $NonInteractive.IsPresent
+
+$checks["front-preview-confirmed"] = Get-VisualConfirmation `
+    -Prompt "Switch to the FRONT camera and verify that its live preview is correct." `
+    -SuccessDetail "User confirmed front-camera preview after launch." `
+    -AutomaticPrerequisitesPassed $automaticPrerequisitesPassed `
+    -PresetConfirmation $ConfirmFrontPreview.IsPresent `
+    -NonInteractiveMode $NonInteractive.IsPresent
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
@@ -365,6 +421,7 @@ $result = [ordered]@{
     installed_version = $installedVersion
     install_mode = [string]$installResult.Mode
     install_payload_count = [int]$installResult.PayloadCount
+    confirmation_mode = if ($NonInteractive) { "non-interactive-explicit" } else { "interactive-post-launch" }
     candidate_release_url = [string]$candidate.release_url
     device = [ordered]@{
         manufacturer = $manufacturer
