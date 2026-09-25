@@ -5,14 +5,18 @@ param(
     [string]$OutputRoot = "device/marble/camera2/captures",
     [string]$Package = "dev.alaa.pocof5.camera2probe",
     [switch]$Build,
-    [int]$TimeoutSeconds = 30
+    [switch]$YuvRuntime,
+    [int]$TimeoutSeconds = 30,
+    [int]$YuvTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
+$YuvActivity = ".YuvProbeActivity"
 $ReportRelativePath = "files/camera2-report.json"
+$YuvReportRelativePath = "files/yuv-runtime-report.json"
 
 function Fail([string]$Message) {
     Write-Error $Message
@@ -72,6 +76,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "Launching probe and generating report..."
 & adb @adbPrefix shell am force-stop $Package | Out-Null
+& adb @adbPrefix shell run-as $Package rm -f $ReportRelativePath 2>$null | Out-Null
 & adb @adbPrefix shell am start -W -n "$Package/$Activity" --ez autoGenerate true | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Fail "Failed to launch the Camera2 probe."
@@ -113,6 +118,59 @@ catch {
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($outFile, $reportText + [Environment]::NewLine, $utf8NoBom)
 
+if ($YuvRuntime) {
+    Write-Host "Running sustained YUV_420_888 runtime probe..."
+
+    & adb @adbPrefix shell pm grant $Package android.permission.CAMERA 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Failed to grant CAMERA permission to the debug probe package."
+    }
+
+    & adb @adbPrefix shell run-as $Package rm -f $YuvReportRelativePath 2>$null | Out-Null
+    & adb @adbPrefix shell am start -W -n "$Package/$YuvActivity" --ez autoGenerate true | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Failed to launch the YUV runtime probe."
+    }
+
+    $yuvDeadline = (Get-Date).AddSeconds($YuvTimeoutSeconds)
+    $yuvReady = $false
+    do {
+        Start-Sleep -Milliseconds 500
+        & adb @adbPrefix shell run-as $Package test -f $YuvReportRelativePath 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $yuvReady = $true
+            break
+        }
+    } while ((Get-Date) -lt $yuvDeadline)
+
+    if (-not $yuvReady) {
+        Fail "Timed out waiting for the YUV runtime report after $YuvTimeoutSeconds seconds."
+    }
+
+    $yuvOutFile = Join-Path $outDir "yuv-runtime-report.json"
+    $yuvLines = & adb @adbPrefix exec-out run-as $Package cat $YuvReportRelativePath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Failed to export the YUV runtime report via run-as."
+    }
+    $yuvText = ($yuvLines -join [Environment]::NewLine)
+
+    try {
+        $yuvParsed = $yuvText | ConvertFrom-Json
+    }
+    catch {
+        Fail "The exported YUV runtime report is not valid JSON: $($_.Exception.Message)"
+    }
+
+    [System.IO.File]::WriteAllText(
+        $yuvOutFile,
+        $yuvText + [Environment]::NewLine,
+        $utf8NoBom
+    )
+
+    $successCount = @($yuvParsed.cameras | Where-Object { $_.success -eq $true }).Count
+    $cameraCount = @($yuvParsed.cameras).Count
+    Write-Host "YUV runtime probe: $successCount/$cameraCount exposed camera IDs delivered sustained YUV frames."
+}
 $deviceCode = [string]$parsed.device.device
 $model = [string]$parsed.device.model
 if ($deviceCode -and $deviceCode -ne "marble") {
@@ -126,6 +184,7 @@ $readme = @"
 - Device codename: $deviceCode
 - Capture time: $((Get-Date).ToString("o"))
 - Probe package: $Package
+- YUV runtime probe requested: $YuvRuntime
 - ADB serial: intentionally not stored
 
 The JSON report contains camera characteristics and device/build metadata only. Review it before publishing.
