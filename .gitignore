@@ -17,6 +17,7 @@ tmp/
 *.apk
 *.aab
 *.apks
+*.apkm
 *.xapk
 *.dex
 *.odex
