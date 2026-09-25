@@ -26,6 +26,13 @@
         android:layout_marginTop="24dp"
         android:text="@string/generate_report" />
 
+    <Button
+        android:id="@+id/yuvProbeButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/run_yuv_probe" />
+
     <TextView
         android:id="@+id/statusText"
         android:layout_width="match_parent"
