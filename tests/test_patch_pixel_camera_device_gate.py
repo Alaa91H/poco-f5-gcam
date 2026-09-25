@@ -18,10 +18,10 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                         "    .locals 2",
                         "    invoke-virtual {p1}, Luyv;->p()Z",
                         "    move-result p1",
-                        f"    {patcher.TARGET_BRANCH}",
+                        "    if-eqz p1, :cond_a",
                         "    :goto_2",
                         "    return-void",
-                        "    :cond_18",
+                        "    :cond_a",
                         "    new-instance p0, Ljava/lang/UnsupportedOperationException;",
                         f'    const-string p1, \"{patcher.DEVICE_GATE_TEXT}\"',
                         "    invoke-direct {p0, p1}, Ljava/lang/UnsupportedOperationException;-><init>(Ljava/lang/String;)V",
@@ -34,9 +34,10 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             report = patcher.patch_smali(root)
             patched = target.read_text(encoding="utf-8")
             self.assertIn("    nop", patched)
-            self.assertNotIn(patcher.TARGET_BRANCH, patched)
+            self.assertNotIn("if-eqz p1, :cond_a", patched)
             self.assertIn(patcher.DEVICE_GATE_TEXT, patched)
             self.assertEqual(report["smali_file"], "klm.smali")
+            self.assertEqual(report["throw_label"], ":cond_a")
 
     def test_patch_smali_fails_closed_on_changed_branch(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -48,8 +49,12 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                         ".class public final Lklm;",
                         patcher.TARGET_METHOD,
                         "    .locals 2",
+                        "    invoke-virtual {p1}, Luyv;->p()Z",
+                        "    move-result p1",
                         "    if-eqz p1, :cond_99",
                         "    return-void",
+                        "    :cond_18",
+                        "    new-instance p0, Ljava/lang/UnsupportedOperationException;",
                         f'    const-string p1, \"{patcher.DEVICE_GATE_TEXT}\"',
                         ".end method",
                     ]
