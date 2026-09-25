@@ -358,21 +358,34 @@ def download(
 
         total = 0
         digest = hashlib.sha256()
+        first_bytes = b""
         with temp.open("wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
+                if not first_bytes:
+                    first_bytes = chunk[:512]
                 handle.write(chunk)
                 digest.update(chunk)
                 total += len(chunk)
 
         temp.replace(destination)
 
+    if not first_bytes.startswith(b"PK"):
+        preview = first_bytes.decode("utf-8", errors="replace")
+        hex_prefix = first_bytes[:32].hex()
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Downloaded response is not an APK/APKM ZIP payload: "
+            f"size={total}, first32_hex={hex_prefix}, "
+            f"preview={' '.join(preview.split())[:300]}"
+        )
+
     if total < 1024 * 1024:
         destination.unlink(missing_ok=True)
         raise RuntimeError(
-            f"Downloaded payload is unexpectedly small ({total} bytes)."
+            f"Downloaded ZIP payload is unexpectedly small ({total} bytes)."
         )
 
     actual_sha256 = digest.hexdigest()
