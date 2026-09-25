@@ -274,9 +274,6 @@ def _followup_download_url(raw_html: str, base_url: str) -> str | None:
     candidates: list[tuple[int, str]] = []
     for href, text in _anchors(raw_html):
         normalized = " ".join(text.split()).lower()
-        if "click here" not in normalized and "download" not in normalized:
-            continue
-
         absolute = urllib.parse.urljoin(base_url, href)
         parsed = urllib.parse.urlsplit(absolute)
 
@@ -290,7 +287,22 @@ def _followup_download_url(raw_html: str, base_url: str) -> str | None:
         if IMAGE_URL_RE.search(parsed.path):
             continue
 
+        is_download_handler = (
+            parsed.path.lower().endswith("/wp-content/themes/apkmirror/download.php")
+            and "id=" in parsed.query.lower()
+            and "key=" in parsed.query.lower()
+        )
+
+        if (
+            not is_download_handler
+            and "click here" not in normalized
+            and "download" not in normalized
+        ):
+            continue
+
         score = 0
+        if is_download_handler:
+            score += 250
         if "click here" in normalized:
             score += 100
         if "/download/" in parsed.path:
