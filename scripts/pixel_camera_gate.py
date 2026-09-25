@@ -196,8 +196,9 @@ def evaluate(
             "approved_at": timestamp,
             "validation_result": str(result_path),
             "rejected": rejected[-20:],
-            "next_candidate": choose_next_candidate(lock, approved),
+            "next_candidate": None,
         }
+        new_state["next_candidate"] = choose_next_candidate(lock, new_state)
         _write(approved_path, new_state)
         return True, new_state
 
