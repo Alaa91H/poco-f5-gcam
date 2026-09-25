@@ -42,8 +42,24 @@
   },
   "notes": [
     "The original Google signature cannot survive bundle merging or any later modification.",
-    "A stable repository signing key is required for APK-to-APK upgrades without uninstalling previous project builds.",
-    "PairIP is not removed or bypassed by this pipeline.",
-    "The CI fallback key is permitted only for pull-request validation; scheduled and manually dispatched production builds require a stable repository keystore."
-  ]
+    "Original Google-signed split APKs are the preferred runtime-safe installation path.",
+    "A merged standalone APK is experimental until the real-device runtime smoke test passes on POCO F5 / API 37.",
+    "A stable repository signing key is required for APK-to-APK upgrades between project-signed experimental builds.",
+    "PairIP is not removed or bypassed by this pipeline."
+  ],
+  "runtime_validation": {
+    "required_for_distribution": true,
+    "hosted_ci_can_satisfy": false,
+    "required_device_codenames": [
+      "marble",
+      "marblein"
+    ],
+    "required_api_level": 37,
+    "smoke_test_script": "scripts/test-pixel-camera-runtime.ps1"
+  },
+  "distribution": {
+    "preferred_install_mode": "original-google-signed-splits",
+    "standalone_status": "experimental-unvalidated",
+    "standalone_auto_delivery": false
+  }
 }
