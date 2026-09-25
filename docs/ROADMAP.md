@@ -8,9 +8,9 @@
 - Document resolutions, RAW support, stabilization modes, FPS ranges, and auxiliary-camera access.
 - Establish a reproducible baseline before applying tuning.
 
-## Phase 2 — GCam compatibility matrix
+## Phase 2 — Lens mapping and GCam compatibility matrix
 
-Track each tested GCam mod/base independently:
+First verify physical Camera ID mappings and package-specific auxiliary-camera exposure. Then track each tested GCam mod/base independently:
 
 - Application launches and camera switching
 - Main camera
