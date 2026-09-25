@@ -38,8 +38,8 @@ jobs:
 
             if ($errors.Count -gt 0) {
               $failed = $true
-              foreach ($error in $errors) {
-                Write-Error ("{0}:{1}:{2}: {3}" -f $_.FullName, $error.Extent.StartLineNumber, $error.Extent.StartColumnNumber, $error.Message)
+              foreach ($parseError in $errors) {
+                Write-Error ("{0}:{1}:{2}: {3}" -f $_.FullName, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
               }
             }
             else {
