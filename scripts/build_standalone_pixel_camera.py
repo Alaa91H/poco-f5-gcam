@@ -301,6 +301,16 @@ def build_standalone(
             "pairip_bypass_performed": False,
             "feature_splits_removed": False,
         },
+        "runtime_validation": {
+            "status": "not_run",
+            "required_for_distribution": True,
+            "target_device": "POCO F5 (marble/marblein)",
+            "target_api": 37,
+        },
+        "distribution": {
+            "status": "experimental-unvalidated",
+            "automatic_delivery_allowed": False,
+        },
         "tooling": {
             "apkeditor_output_tail": "\n".join(merge_output.splitlines()[-40:]),
         },
