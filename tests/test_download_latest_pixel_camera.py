@@ -74,6 +74,10 @@ class DownloaderParsingTests(unittest.TestCase):
             )
         )
 
+    def test_extracts_apkmirror_wait_countdown(self):
+        html = "<div>Whoa there! You'll have to wait 15 more sec.</div>"
+        self.assertEqual(downloader._countdown_seconds(html), 15)
+
     def test_direct_url_parser_rejects_unrelated_host(self):
         html = '<a href="https://example.com/file.apkm">download</a>'
         self.assertIsNone(
