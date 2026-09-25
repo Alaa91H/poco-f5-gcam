@@ -109,11 +109,29 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-lens-verifier.ps1 -Build
 For package-specific auxiliary-camera exposure tests, the Camera2 Probe can also be built with a custom Android application ID. See [docs/LENS_MAPPING_AND_COMPATIBILITY.md](docs/LENS_MAPPING_AND_COMPATIBILITY.md).
 
 
-## Automatic compatibility gate and fallback
+## Latest compatible Pixel Camera
 
-The newest APKMirror release is treated as a **candidate**, not automatically as
-the working version. Runtime promotion on POCO F5 requires the strict Android 17
-device gate. A failed update preserves the last-known-good version and points to
-the next compatible fallback candidate.
+The project automatically selects the numerically newest APKMirror Pixel Camera
+release matching the POCO F5 target:
 
-See [docs/RUNTIME_COMPATIBILITY_GATE.md](docs/RUNTIME_COMPATIBILITY_GATE.md).
+- Android 17 / API 37
+- `arm64-v8a`
+- `nodpi`
+
+There is no runtime promotion gate or last-known-good fallback. The selected
+release is simply the newest release whose published variant metadata matches
+the target policy.
+
+Download it locally:
+
+```powershell
+python .\scripts\resolve_apkmirror_gcam.py
+python .\scripts\download_latest_pixel_camera.py
+```
+
+The binary is saved under `downloads/pixel-camera/` and is ignored by Git.
+GitHub Actions checks for a newer compatible release daily and downloads it when
+the selected version changes. A manual workflow run always downloads the current
+latest compatible release.
+
+See [docs/PIXEL_CAMERA_UPSTREAM.md](docs/PIXEL_CAMERA_UPSTREAM.md).
