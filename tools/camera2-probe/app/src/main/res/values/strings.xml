@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">POCO F5 Camera2 Probe</string>
+    <string name="title">POCO F5 Camera2 Probe</string>
+    <string name="description">Exports Camera2 characteristics for every camera ID exposed by the current Android build.</string>
+    <string name="generate_report">Generate report</string>
+    <string name="status_idle">Ready. No camera permission or root access is required.</string>
+</resources>

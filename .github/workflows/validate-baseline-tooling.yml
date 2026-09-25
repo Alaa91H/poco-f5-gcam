@@ -1,4 +1,4 @@
-name: Validate baseline tooling
+name: Validate PowerShell tooling
 
 on:
   push:
@@ -21,22 +21,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Parse PowerShell collector
+      - name: Parse all PowerShell scripts
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD "scripts/collect-camera-baseline.ps1"),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
+          $failed = $false
 
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object {
-              Write-Error ("{0}:{1}: {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message)
+          Get-ChildItem -Path (Join-Path $PWD "scripts") -Filter "*.ps1" -File -Recurse | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              foreach ($parseError in $errors) {
+                Write-Error ("{0}:{1}:{2}: {3}" -f $_.FullName, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
+              }
             }
+            else {
+              Write-Host ("PASS: {0}" -f $_.FullName)
+            }
+          }
+
+          if ($failed) {
             exit 1
           }
 
-          Write-Host "PowerShell syntax validation passed."
+          Write-Host "All PowerShell scripts passed syntax validation."
