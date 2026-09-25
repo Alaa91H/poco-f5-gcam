@@ -20,8 +20,20 @@ function Invoke-Adb {
         [switch]$AllowFailure
     )
 
-    $output = & adb @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 surfaces native stderr as NativeCommandError when
+        # ErrorActionPreference is Stop. adb/monkey legitimately writes status
+        # lines to stderr even when the native exit code is zero, so capture both
+        # streams without allowing PowerShell's wrapper error to terminate us.
+        $ErrorActionPreference = "Continue"
+        $output = & adb @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
     $text = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
 
     if ($exitCode -ne 0 -and -not $AllowFailure) {
@@ -61,9 +73,15 @@ if ($sdk -ne "37") {
 }
 
 if ($UninstallExisting) {
-    $uninstall = Invoke-Adb -Arguments @("uninstall", $PackageName) -AllowFailure
-    if ($uninstall.ExitCode -ne 0 -and $uninstall.Text -notmatch "Unknown package") {
-        throw "Failed to uninstall existing $PackageName installation: $($uninstall.Text)"
+    $existing = Invoke-Adb -Arguments @("shell", "pm", "path", $PackageName) -AllowFailure
+    if ($existing.ExitCode -eq 0 -and $existing.Text -match "^package:") {
+        $uninstall = Invoke-Adb -Arguments @("uninstall", $PackageName) -AllowFailure
+        if ($uninstall.ExitCode -ne 0) {
+            throw "Failed to uninstall existing $PackageName installation: $($uninstall.Text)"
+        }
+    }
+    else {
+        Write-Host "$PackageName is not currently installed; uninstall step skipped."
     }
 }
 
