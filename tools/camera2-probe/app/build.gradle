@@ -7,14 +7,14 @@ def probeApplicationId = providers.gradleProperty("probeApplicationId")
 
 android {
     namespace "dev.alaa.pocof5.camera2probe"
-    compileSdk 35
+    compileSdk 37
 
     defaultConfig {
         applicationId probeApplicationId
         minSdk 23
-        targetSdk 35
+        targetSdk 37
         versionCode 1
-        versionName "0.2.0"
+        versionName "0.3.0"
     }
 
     buildTypes {
