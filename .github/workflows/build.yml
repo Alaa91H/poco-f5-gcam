@@ -499,7 +499,12 @@ jobs:
           curl --fail --location --silent --show-error --retry 3 \
             "$URL" --output "$JAR"
           echo "$EXPECTED_SHA256  $JAR" | sha256sum --check --strict
-          java -jar "$JAR" -h >/dev/null
+          HELP_OUTPUT="$(java -jar "$JAR" -h 2>&1 || true)"
+          if ! grep -Fq "APKEditor - 1.4.9" <<< "$HELP_OUTPUT"; then
+            echo "::error::Pinned APKEditor did not report the expected version."
+            printf '%s\n' "$HELP_OUTPUT"
+            exit 1
+          fi
           echo "Verified APKEditor 1.4.9 checksum and executable entry point."
 
           echo "APKEDITOR_JAR=$JAR" >> "$GITHUB_ENV"
