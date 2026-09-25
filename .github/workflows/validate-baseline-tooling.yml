@@ -1,0 +1,42 @@
+name: Validate baseline tooling
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/validate-baseline-tooling.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/validate-baseline-tooling.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  powershell-syntax:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse PowerShell collector
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD "scripts/collect-camera-baseline.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error ("{0}:{1}: {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message)
+            }
+            exit 1
+          }
+
+          Write-Host "PowerShell syntax validation passed."
