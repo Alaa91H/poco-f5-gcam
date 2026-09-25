@@ -350,6 +350,7 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -375,6 +376,7 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -389,6 +391,7 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -407,9 +410,128 @@ jobs:
 
           python -c 'import json,os; r=json.load(open(os.environ["RUNNER_TEMP"]+"/pixel-camera-audit.json")); s=r["summary"]; sig=s["signature"]; out=open(os.environ["GITHUB_STEP_SUMMARY"],"a"); out.write("\\n### Pixel Camera APKM audit\\n\\n"); out.write("- APK/split count: %s\\n" % s["apk_count"]); out.write("- PairIP indicators: %s\\n" % s["pairip_detected"]); out.write("- All APK signatures verified: %s\\n" % sig["all_verified"]); out.write("- Consistent signer: %s\\n" % sig["consistent_signer"]); out.close()'
 
+      - name: Deliver complete Pixel Camera payload to Telegram
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery')
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN repository secret is not configured."
+            exit 1
+          fi
+          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "::error::TELEGRAM_CHAT_ID repository secret is not configured."
+            exit 1
+          fi
+
+          META="$RUNNER_TEMP/pixel-camera-download.json"
+          PACKAGE_PATH="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
+          VERSION="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$META")"
+          SIZE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["size_bytes"])' "$META")"
+          SHA256="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$META")"
+          PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
+          PART_DIR="$RUNNER_TEMP/telegram-parts"
+          mkdir -p "$PART_DIR"
+
+          python - "$PACKAGE_PATH" "$PART_DIR" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          package = Path(sys.argv[1])
+          part_dir = Path(sys.argv[2])
+          chunk_size = 45 * 1024 * 1024
+
+          def digest(path):
+              h = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          parts = []
+          if package.stat().st_size <= chunk_size:
+              parts.append(package)
+          else:
+              with package.open("rb") as source:
+                  index = 1
+                  while True:
+                      data = source.read(chunk_size)
+                      if not data:
+                          break
+                      part = part_dir / f"{package.name}.part{index:03d}"
+                      part.write_bytes(data)
+                      parts.append(part)
+                      index += 1
+
+          manifest = {
+              "original_name": package.name,
+              "original_size_bytes": package.stat().st_size,
+              "original_sha256": digest(package),
+              "part_count": len(parts),
+              "parts": [
+                  {
+                      "path": str(p),
+                      "name": p.name,
+                      "size_bytes": p.stat().st_size,
+                      "sha256": digest(p),
+                  }
+                  for p in parts
+              ],
+          }
+          (part_dir / "telegram-delivery-manifest.json").write_text(
+              json.dumps(manifest, indent=2), encoding="utf-8"
+          )
+          PY
+
+          MANIFEST="$PART_DIR/telegram-delivery-manifest.json"
+          PART_COUNT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["part_count"])' "$MANIFEST")"
+
+          INTRO="$(printf '✅ Real E2E Pixel Camera delivery\nVersion: %s\nOriginal: %s\nSize: %s bytes\nSHA-256: %s\nPayload files: %s' "$VERSION" "$PACKAGE_NAME" "$SIZE" "$SHA256" "$PART_COUNT")"
+          curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${INTRO}" \
+            | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
+
+          python -c 'import json,sys; [print(p["path"]) for p in json.load(open(sys.argv[1]))["parts"]]' "$MANIFEST" > "$RUNNER_TEMP/telegram-files.txt"
+
+          index=0
+          while IFS= read -r file; do
+            index=$((index + 1))
+            base="$(basename "$file")"
+            CAPTION="$(printf 'Pixel Camera %s — %s/%s\n%s' "$VERSION" "$index" "$PART_COUNT" "$base")"
+            curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
+              --request POST \
+              --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+              --form "chat_id=${TELEGRAM_CHAT_ID}" \
+              --form "document=@${file};type=application/octet-stream" \
+              --form-string "caption=${CAPTION}" \
+              | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
+          done < "$RUNNER_TEMP/telegram-files.txt"
+
+          curl --silent --show-error --fail-with-body --retry 3 --retry-all-errors \
+            --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form "document=@${MANIFEST};type=application/json" \
+            --form-string "caption=Verification manifest. Reassembled SHA-256 must equal: ${SHA256}" \
+            | python -c 'import json,sys; r=json.load(sys.stdin); assert r.get("ok") is True, r'
+
+          echo "Full Pixel Camera payload delivered through Telegram."
+
       - name: Upload Pixel Camera audit report
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && github.ref_name == 'test/real-e2e-telegram-delivery') ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
