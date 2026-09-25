@@ -143,13 +143,23 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
     }
 
     $start = [Math]::Max(0, $i - 4)
-    $end = [Math]::Min($logLines.Count - 1, $i + 12)
+    # Keep enough lines to include nested "Caused by:" chains. The previous
+    # 12-line tail often stopped before the actual provider root cause.
+    $end = [Math]::Min($logLines.Count - 1, $i + 80)
     $context = ($logLines[$start..$end] -join [Environment]::NewLine)
 
     if ($context -match [regex]::Escape($PackageName)) {
         $fatalEvidence.Add($context)
     }
 }
+
+$rootCauseLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException)"
+        } |
+        Select-Object -Last 200
+)
 
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
@@ -193,6 +203,8 @@ $report = [ordered]@{
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
         fatalContexts = @($fatalEvidence)
+        rootCauseLineCount = $rootCauseLines.Count
+        rootCauseLines = $rootCauseLines
         diagnosticLineCount = $diagnosticLines.Count
         diagnosticLines = $diagnosticLines
     }
@@ -228,6 +240,7 @@ Write-Host "Installed APK paths: $($installedApkPaths.Count)"
 Write-Host "Launcher accepted: $launcherAccepted"
 Write-Host "Process alive after $WaitSeconds seconds: $processAlive"
 Write-Host "Fatal contexts: $($fatalEvidence.Count)"
+Write-Host "Root-cause lines: $($rootCauseLines.Count)"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
@@ -236,6 +249,11 @@ if (-not $runtimePassed) {
         Write-Host ""
         Write-Host "First fatal context:"
         Write-Host $fatalEvidence[0]
+    }
+    if ($rootCauseLines.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Root-cause lines:"
+        $rootCauseLines | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
     }
 }
 
