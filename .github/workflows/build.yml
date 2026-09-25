@@ -520,10 +520,12 @@ jobs:
           done
 
           # GitHub Secrets can accidentally include a trailing newline or
-          # surrounding whitespace when values are pasted from my.telegram.org.
+          # surrounding whitespace when values are pasted into repository settings.
+          TELEGRAM_BOT_TOKEN="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '\r\n')"
+          TELEGRAM_CHAT_ID="$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')"
           TELEGRAM_API_ID="$(printf '%s' "$TELEGRAM_API_ID" | tr -d '[:space:]')"
           TELEGRAM_API_HASH="$(printf '%s' "$TELEGRAM_API_HASH" | tr -d '[:space:]')"
-          export TELEGRAM_API_ID TELEGRAM_API_HASH
+          export TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH
 
           if ! [[ "$TELEGRAM_API_ID" =~ ^[0-9]+$ ]]; then
             echo "::error::TELEGRAM_API_ID must contain digits only after whitespace is removed."
@@ -570,6 +572,8 @@ jobs:
           cd "$RUNTIME"
 
           "$TELEGRAM_BOT_API_BIN" \
+            --api-id="$TELEGRAM_API_ID" \
+            --api-hash="$TELEGRAM_API_HASH" \
             --local \
             --http-ip-address=127.0.0.1 \
             --http-port=8081 \
