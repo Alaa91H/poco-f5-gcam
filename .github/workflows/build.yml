@@ -162,12 +162,12 @@ jobs:
           echo "SDKMANAGER=$SDKMANAGER"
           "$SDKMANAGER" --version
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;36.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: "8.9"
+          gradle-version: "9.6.0"
 
       - name: Build and lint
         shell: bash
