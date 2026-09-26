@@ -654,7 +654,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $oneCameraVendorRequestKeyNpeLines = @(
     $logLines |
         Where-Object {
-            $_ -match '(?i)(upd\.<init>\(PG:3\)|mta\.a\(PG:720\)|Failed to start OneCamera \(retry disabled\)|NullPointerException.*null object reference)'
+            $_ -match '(?i)(upd\.<init>\(PG:3\)|mta\.a\(PG:720\)|odr\.a\(PG:24\)|Failed to start OneCamera \(retry disabled\)|NullPointerException.*null object reference)'
         } |
         Select-Object -Last 100
 )
@@ -669,7 +669,7 @@ $oneCameraVendorRequestKeyNpeObserved = (
 $oneCameraRequestKeyNpeContexts = New-Object System.Collections.Generic.List[string]
 for ($i = 0; $i -lt $logLines.Count; $i++) {
     $line = $logLines[$i]
-    if ($line -notmatch '(?i)(CAM_oys|CAM_PckOneCamera|CAM_otz).*NullPointerException') {
+    if ($line -notmatch '(?i)(CAM_oys|CAM_PckOneCamera|CAM_otz|CAM_iuv).*NullPointerException') {
         continue
     }
 
@@ -688,6 +688,15 @@ $oneCameraVendorRequestKeyNpeObserved = (
     $oneCameraVendorRequestKeyNpeObserved -or
     $oneCameraRequestKeyNpeContexts.Count -gt 0
 )
+
+$oneCameraOdrRequestKeyNpeObserved = @(
+    $oneCameraRequestKeyNpeContexts |
+        Where-Object { $_ -match '(?i)odr\.a\(PG:24\)' }
+).Count -gt 0
+$oneCameraMtaRequestKeyNpeObserved = @(
+    $oneCameraRequestKeyNpeContexts |
+        Where-Object { $_ -match '(?i)mta\.a\(PG:720\)' }
+).Count -gt 0
 
 # Capture evidence that a capture session recovered after an earlier failed
 # configureStreams attempt. A single rejected stream combination should remain
@@ -810,6 +819,8 @@ $report = [ordered]@{
         cameraSessionSuccessLines = $cameraSessionSuccessLines
         cameraSessionLifecycleLines = $cameraSessionLifecycleLines
         oneCameraVendorRequestKeyNpeObserved = $oneCameraVendorRequestKeyNpeObserved
+        oneCameraOdrRequestKeyNpeObserved = $oneCameraOdrRequestKeyNpeObserved
+        oneCameraMtaRequestKeyNpeObserved = $oneCameraMtaRequestKeyNpeObserved
         oneCameraVendorRequestKeyNpeLines = $oneCameraVendorRequestKeyNpeLines
         oneCameraRequestKeyNpeContexts = $oneCameraRequestKeyNpeContexts.ToArray()
     }
@@ -933,6 +944,8 @@ Write-Host "OneCamera vendor request-key NPE observed: $oneCameraVendorRequestKe
 Write-Host "OneCamera request-key NPE contexts: $($oneCameraRequestKeyNpeContexts.Count)"
 Write-Host "Startup passed: $startupPassed"
 Write-Host "Camera pipeline compatibility passed: $cameraPipelineCompatibilityPassed"
+Write-Host "OneCamera odr request-key NPE observed: $oneCameraOdrRequestKeyNpeObserved"
+Write-Host "OneCamera mta request-key NPE observed: $oneCameraMtaRequestKeyNpeObserved"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
