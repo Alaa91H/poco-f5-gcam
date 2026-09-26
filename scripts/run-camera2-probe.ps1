@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
 $PixelGraphActivity = ".PixelGraphProbeActivity"
-$ExpectedProbeVersion = "0.4.2"
+$ExpectedProbeVersion = "0.4.3"
 # YUV runtime probing is isolated per Camera2 ID so a stuck logical camera cannot block the full capture.
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
@@ -366,9 +366,9 @@ if ($YuvRuntime) {
     # process and is force-stopped afterward.
     Write-Host "Testing isolated Pixel Camera stream graphs on camera 0..."
     $pixelGraphCandidates = @(
-        "private800+raw10full",
-        "private800+yuv800",
-        "private800+raw10full+yuv800"
+        "private1280+raw10full",
+        "private1280+yuv1280",
+        "private1280+raw10full+yuv1280"
     )
     $pixelGraphResults = New-Object System.Collections.Generic.List[object]
     foreach ($candidate in $pixelGraphCandidates) {
