@@ -59,6 +59,7 @@ public final class YuvProbeActivity extends Activity {
     private static final long CAMERA_TIMEOUT_MS = 7000;
     private static final long CAMERA_AVAILABILITY_TIMEOUT_MS = 2500;
     private static final long SESSION_QUERY_TIMEOUT_MS = 1500;
+    // 0.3.9 also queries the exact Pixel Camera stream graph observed on marble.
     private static final String REPORT_NAME = "yuv-runtime-report.json";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();

@@ -47,6 +47,7 @@ ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
 ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
+# Runtime-verified on marble: Lodr is in base classes.dex.
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
