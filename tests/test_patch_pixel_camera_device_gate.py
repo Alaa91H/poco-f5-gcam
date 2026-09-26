@@ -94,16 +94,6 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 .method public final synthetic a()Ljava/lang/Object;
     .locals 37
 
-    sget-object v2, Lkjq;->aD:Lkiz;
-
-    invoke-virtual {v6, v2}, Lklm;->q(Lkiz;)Z
-
-    move-result v2
-
-    iget-wide v7, v1, Lcom/google/googlex/gcam/InitParams;->a:J
-
-    invoke-static {v7, v8, v1, v2}, Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_portrait_brightening_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
-
     :cond_29
     if-eqz v27, :cond_2a
 
@@ -329,20 +319,6 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn("goto/32 :cond_2c", patched)
         self.assertIn(patcher.ALMOND_TPU_SYMBOL, patched)
         self.assertIn(patcher.TOMTE_GRAIN_SYMBOL, patched)
-        self.assertIn(patcher.PORTRAIT_BRIGHTENING_SYMBOL, patched)
-        self.assertIn(
-            "# POCO F5: portrait brightening OpenCL init fails; keep it off.\n"
-            "    const/4 v2, 0x0",
-            patched,
-        )
-        self.assertEqual(
-            metadata["portrait_brightening"]["status"],
-            "forced_false_after_opencl_init_failure",
-        )
-        self.assertEqual(
-            metadata["portrait_brightening"]["boolean_register"],
-            "v2",
-        )
         self.assertEqual(
             metadata["almond_use_tpu"]["status"],
             "forced_default_false",
@@ -372,17 +348,6 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         with self.assertRaisesRegex(
             patcher.PatchError,
             "sensor-ID uniqueness check",
-        ):
-            patcher.patch_gcam_init_smali_text(changed)
-
-    def test_gcam_init_patch_fails_closed_when_portrait_query_shape_changes(self):
-        changed = GCAM_INIT_SAMPLE.replace(
-            "invoke-virtual {v6, v2}, Lklm;->q(Lkiz;)Z",
-            "invoke-virtual {v6, v2}, Lother;->q(Lkiz;)Z",
-        )
-        with self.assertRaisesRegex(
-            patcher.PatchError,
-            "boolean register is not produced|could not verify",
         ):
             patcher.patch_gcam_init_smali_text(changed)
 
@@ -421,9 +386,6 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 .end method
 
 .method public static native InitParams_finish_tomte_grain_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
-.end method
-
-.method public static native InitParams_portrait_brightening_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
 .end method
 
 .method public static native Gcam_Create(JLcom/google/googlex/gcam/InitParams;JLcom/google/googlex/gcam/StaticMetadataVector;)J
