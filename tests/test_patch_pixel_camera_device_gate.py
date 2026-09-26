@@ -682,32 +682,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                 changed
             )
 
-    def test_omits_unsupported_stabilization_session_key_and_logs_rest(self):
+    def test_logs_applied_session_parameters_without_changing_behavior(self):
         patched, metadata = (
             patcher.patch_onecamera_session_parameter_logging_smali_text(
                 RP_SAMPLE
             )
         )
 
-        self.assertIn(
-            "sget-object v15, "
-            "Landroid/hardware/camera2/CaptureRequest;->"
-            "CONTROL_VIDEO_STABILIZATION_MODE:"
-            "Landroid/hardware/camera2/CaptureRequest$Key;",
-            patched,
-        )
-        self.assertIn(
-            "CONTROL_VIDEO_STABILIZATION_MODE:",
-            patched,
-        )
-        self.assertIn(
-            "CONTROL_AE_TARGET_FPS_RANGE:",
-            patched,
-        )
-        self.assertGreaterEqual(
-            patched.count("if-eq v13, v15, :goto_123"),
-            2,
-        )
+        self.assertNotIn("CONTROL_VIDEO_STABILIZATION_MODE:", patched)
+        self.assertNotIn("CONTROL_AE_TARGET_FPS_RANGE:", patched)
         self.assertIn(
             'const-string v15, "GCamSessionParamKey"',
             patched,
@@ -745,22 +728,12 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertTrue(metadata["logs_only_applied_session_parameters"])
         self.assertIn("Lpi.d()", metadata["source"])
-        self.assertTrue(metadata["behavior_changed"])
-        self.assertEqual(
-            metadata["skipped_session_keys"],
-            [
-                "android.control.videoStabilizationMode",
-                "android.control.aeTargetFpsRange",
-            ],
+        self.assertFalse(metadata["behavior_changed"])
+        self.assertIn(
+            "did not change the Xiaomi logical-camera type 7 failure",
+            metadata["session_parameter_isolation_result"],
         )
-        self.assertEqual(metadata["skip_scope"], "session_parameters_only")
-        self.assertEqual(
-            metadata["preserved_capture_request_keys"],
-            [
-                "android.control.videoStabilizationMode",
-                "android.control.aeTargetFpsRange",
-            ],
-        )
+        self.assertIn("1280x720", metadata["stream_graph_evidence"])
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
         changed = RP_SAMPLE.replace(
