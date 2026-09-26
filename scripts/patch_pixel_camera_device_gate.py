@@ -2413,24 +2413,6 @@ def patch_onecamera_session_parameter_logging_smali_text(
     indent = re.match(r"^(\s*)", lines[set_cursor]).group(1)
     injected = [
         "",
-        f"{indent}# POCO F5: Xiaomi camera 0 does not advertise "
-        "CONTROL_VIDEO_STABILIZATION_MODE as a session key.",
-        f"{indent}sget-object v15, "
-        "Landroid/hardware/camera2/CaptureRequest;->"
-        "CONTROL_VIDEO_STABILIZATION_MODE:"
-        "Landroid/hardware/camera2/CaptureRequest$Key;",
-        "",
-        f"{indent}if-eq v13, v15, :goto_123",
-        "",
-        f"{indent}# POCO F5 diagnostic isolation: keep AE target FPS "
-        "out of SessionConfiguration while preserving capture requests.",
-        f"{indent}sget-object v15, "
-        "Landroid/hardware/camera2/CaptureRequest;->"
-        "CONTROL_AE_TARGET_FPS_RANGE:"
-        "Landroid/hardware/camera2/CaptureRequest$Key;",
-        "",
-        f"{indent}if-eq v13, v15, :goto_123",
-        "",
         f'{indent}const-string v15, "GCamSessionParamKey"',
         "",
         f"{indent}invoke-virtual {{v13}}, "
@@ -2452,27 +2434,22 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "class": ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
         "method": signature,
         "tag": "GCamSessionParamKey",
-        "behavior_changed": True,
-        "skipped_session_keys": [
-            "android.control.videoStabilizationMode",
-            "android.control.aeTargetFpsRange",
-        ],
-        "skip_scope": "session_parameters_only",
+        "behavior_changed": False,
         "scratch_register": "v15",
         "scratch_liveness": "verified unused after key-name lookup",
         "stream_graph_evidence": (
-            "marble Camera2 probe configured PRIVATE 800x600 + RAW10 "
-            "4624x3472 + YUV_420_888 800x600 successfully"
+            "marble Camera2 probe configured PRIVATE 1280x720 + RAW10 "
+            "4624x3472 + YUV_420_888 1280x720 successfully"
         ),
         "source": (
             "Lve.g CaptureRequest.Key entries accepted by the "
             "Lpi.d() session-key allowlist"
         ),
         "logs_only_applied_session_parameters": True,
-        "preserved_capture_request_keys": [
-            "android.control.videoStabilizationMode",
-            "android.control.aeTargetFpsRange",
-        ],
+        "session_parameter_isolation_result": (
+            "removing videoStabilizationMode and aeTargetFpsRange did not "
+            "change the Xiaomi logical-camera type 7 failure"
+        ),
     }
 
 
