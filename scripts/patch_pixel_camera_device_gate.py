@@ -636,6 +636,33 @@ def find_gcam_init_dex(apk: Path) -> str:
     return matches[0]
 
 
+def find_descriptor_dex(
+    apk: Path,
+    descriptor: str,
+    *,
+    description: str,
+) -> str:
+    """Locate the unique dex containing an exact class descriptor string."""
+
+    needle = descriptor.encode("utf-8")
+    with zipfile.ZipFile(apk, "r") as archive:
+        matches: list[tuple[str, int]] = []
+        for info in archive.infolist():
+            if not DEX_NAME_RE.fullmatch(info.filename):
+                continue
+            data = archive.read(info)
+            count = data.count(needle)
+            if count:
+                matches.append((info.filename, count))
+
+    if len(matches) != 1:
+        rendered = ", ".join(f"{name}:{count}" for name, count in matches) or "none"
+        raise PatchError(
+            f"expected {description} in exactly one classes*.dex; found {rendered}"
+        )
+    return matches[0][0]
+
+
 def find_keepalive_receiver_dex(apk: Path) -> str:
     """Locate the dex that contains the Pixel-only keepalive receiver."""
 
@@ -2728,6 +2755,11 @@ def patch_apk(
     target_dex = find_target_dex(source)
     gcam_init_dex = find_gcam_init_dex(source)
     keepalive_dex = find_keepalive_receiver_dex(source)
+    session_config_dex = find_descriptor_dex(
+        source,
+        ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
+        description="OneCamera session class Lrp;",
+    )
 
     with tempfile.TemporaryDirectory(prefix="poco-f5-device-gate-") as temp:
         root = Path(temp)
@@ -2736,7 +2768,12 @@ def patch_apk(
         command_tails: dict[str, dict[str, str]] = {}
 
         with zipfile.ZipFile(source, "r") as archive:
-            for dex_name in sorted({target_dex, gcam_init_dex, keepalive_dex}):
+            for dex_name in sorted({
+                target_dex,
+                gcam_init_dex,
+                keepalive_dex,
+                session_config_dex,
+            }):
                 safe_name = dex_name.replace(".", "_")
                 input_dex = root / dex_name
                 smali_dir = root / f"smali-{safe_name}"
@@ -2774,12 +2811,15 @@ def patch_apk(
                     report_for_dex["onecamera_odr_missing_request_key"] = (
                         find_and_patch_onecamera_odr_missing_request_key_smali_tree(smali_dir)
                     )
-                    report_for_dex["onecamera_session_parameter_logging"] = (
-                        find_and_patch_onecamera_session_parameter_logging_smali_tree(smali_dir)
-                    )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
                         find_and_patch_keepalive_receiver_smali_tree(smali_dir)
+                    )
+                if dex_name == session_config_dex:
+                    report_for_dex["onecamera_session_parameter_logging"] = (
+                        find_and_patch_onecamera_session_parameter_logging_smali_tree(
+                            smali_dir
+                        )
                     )
 
                 assemble_output = run(
@@ -2845,9 +2885,9 @@ def patch_apk(
     onecamera_odr_missing_request_key_metadata = dex_reports[gcam_init_dex][
         "onecamera_odr_missing_request_key"
     ]
-    onecamera_session_parameter_logging_metadata = dex_reports[gcam_init_dex][
-        "onecamera_session_parameter_logging"
-    ]
+    onecamera_session_parameter_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_session_parameter_logging"]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -2876,7 +2916,7 @@ def patch_apk(
             **onecamera_odr_missing_request_key_metadata,
         },
         "onecamera_session_parameter_logging": {
-            "target_dex": gcam_init_dex,
+            "target_dex": session_config_dex,
             **onecamera_session_parameter_logging_metadata,
         },
         "keepalive_receiver_patch": {
