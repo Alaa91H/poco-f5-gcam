@@ -685,16 +685,16 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
 
         self.assertIn(
-            'const-string v16, "GCamSessionParamKey"',
+            'const-string v15, "GCamSessionParamKey"',
             patched,
         )
         self.assertIn(
-            "invoke-static {v16, v14}, "
+            "invoke-static {v15, v14}, "
             "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
             patched,
         )
         self.assertLess(
-            patched.index('const-string v16, "GCamSessionParamKey"'),
+            patched.index('const-string v15, "GCamSessionParamKey"'),
             patched.index(
                 "invoke-interface {v9, v14}, "
                 "Ljava/util/List;->contains(Ljava/lang/Object;)Z"
@@ -707,12 +707,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
         changed = RP_SAMPLE.replace(
-            "move-result v13",
-            "move-result v16",
+            "move-result-object v14\n\n"
+            "    invoke-interface {v9, v14}, ",
+            "move-result-object v14\n\n"
+            "    const/4 v15, 0x0\n\n"
+            "    invoke-interface {v9, v14}, ",
         )
         with self.assertRaisesRegex(
             patcher.PatchError,
-            "diagnostic scratch registers",
+            "diagnostic scratch register v15",
         ):
             patcher.patch_onecamera_session_parameter_logging_smali_text(
                 changed
