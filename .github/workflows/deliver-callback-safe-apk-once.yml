@@ -1,0 +1,189 @@
+name: Deliver callback-safe Pixel Camera APK once
+
+on:
+  push:
+    paths:
+      - ".github/workflows/deliver-callback-safe-apk-once.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download already-built APK artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DEST="$RUNNER_TEMP/pixel-camera-delivery"
+          mkdir -p "$DEST"
+          gh run download 36250586310 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "compatibility-patched-unvalidated-poco-f5-pixel-camera-11.0.073.972752740.32" \
+            --dir "$DEST"
+
+          APK="$(find "$DEST" -type f -name 'PixelCamera-11.0.073.972752740.32-POCO-F5-Android17.apk' -print -quit)"
+          test -n "$APK"
+          test -s "$APK"
+
+          EXPECTED_SHA="c6385ad0a59d97bc78df2ea05805c70e2d362f9525c86220387cc517cf1c18c6"
+          ACTUAL_SHA="$(sha256sum "$APK" | awk '{print $1}')"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::Delivery artifact SHA mismatch: $ACTUAL_SHA"
+            exit 1
+          fi
+
+          echo "STANDALONE_APK=$APK" >> "$GITHUB_ENV"
+          echo "GCMOD_SIGNING_MODE=repository-keystore" >> "$GITHUB_ENV"
+          echo "Verified delivery APK SHA-256: $ACTUAL_SHA"
+
+      - name: Prepare Telegram Bot API source
+        id: telegram-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/telegram-bot-api-src"
+          SOURCE_SHA="$(python -c 'import json; print(json.load(open("device/marble/standalone-apk-policy.json"))["toolchain"]["telegram_bot_api"]["source_sha"])')"
+          rm -rf "$SRC"
+          git init -q "$SRC"
+          git -C "$SRC" remote add origin https://github.com/tdlib/telegram-bot-api.git
+          git -C "$SRC" fetch --depth 1 origin "$SOURCE_SHA"
+          git -C "$SRC" checkout -q --detach FETCH_HEAD
+          git -C "$SRC" submodule update --init --recursive --depth 1
+          test "$(git -C "$SRC" rev-parse HEAD)" = "$SOURCE_SHA"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Telegram Bot API binary cache
+        id: telegram-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/telegram-bot-api-bin
+          key: telegram-bot-api-${{ runner.os }}-${{ steps.telegram-source.outputs.sha }}
+
+      - name: Build Telegram Local Bot API server if cache is missing
+        if: steps.telegram-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gperf libssl-dev zlib1g-dev
+          SRC="$RUNNER_TEMP/telegram-bot-api-src"
+          BIN_DIR="$RUNNER_TEMP/telegram-bot-api-bin"
+          rm -rf "$SRC/build"
+          mkdir -p "$BIN_DIR"
+          cmake -S "$SRC" -B "$SRC/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$SRC/build" --target telegram-bot-api --parallel "$(nproc)"
+          BIN="$(find "$SRC/build" -type f -name telegram-bot-api -perm -111 -print -quit)"
+          test -n "$BIN"
+          install -m 0755 "$BIN" "$BIN_DIR/telegram-bot-api"
+
+      - name: Deliver verified APK to Telegram
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          set -euo pipefail
+          for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH; do
+            test -n "${!name:-}"
+          done
+
+          TELEGRAM_BOT_TOKEN="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | tr -d '\r\n')"
+          TELEGRAM_CHAT_ID="$(printf '%s' "$TELEGRAM_CHAT_ID" | tr -d '[:space:]')"
+          TELEGRAM_API_ID="$(printf '%s' "$TELEGRAM_API_ID" | tr -d '[:space:]')"
+          TELEGRAM_API_HASH="$(printf '%s' "$TELEGRAM_API_HASH" | tr -d '[:space:]')"
+
+          [[ "$TELEGRAM_API_ID" =~ ^[0-9]+$ ]]
+          [[ "$TELEGRAM_API_HASH" =~ ^[0-9A-Fa-f]{32}$ ]]
+
+          BIN="$RUNNER_TEMP/telegram-bot-api-bin/telegram-bot-api"
+          test -x "$BIN"
+
+          APK="$STANDALONE_APK"
+          NAME="$(basename "$APK")"
+          SIZE="$(stat -c '%s' "$APK")"
+          SHA="$(sha256sum "$APK" | awk '{print $1}')"
+
+          curl --silent --show-error --max-time 30 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
+            >/dev/null || true
+
+          RUNTIME="$RUNNER_TEMP/telegram-bot-api-runtime"
+          mkdir -p "$RUNTIME"
+          cd "$RUNTIME"
+          "$BIN" \
+            --api-id="$TELEGRAM_API_ID" \
+            --api-hash="$TELEGRAM_API_HASH" \
+            --local \
+            --http-ip-address=127.0.0.1 \
+            --http-port=8081 \
+            > "$RUNNER_TEMP/telegram-bot-api.log" 2>&1 &
+          TG_PID=$!
+
+          cleanup() {
+            curl --silent --max-time 15 \
+              "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/logOut" \
+              >/dev/null 2>&1 || true
+            kill "$TG_PID" >/dev/null 2>&1 || true
+            wait "$TG_PID" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          READY=false
+          for attempt in $(seq 1 90); do
+            kill -0 "$TG_PID" >/dev/null 2>&1 || {
+              cat "$RUNNER_TEMP/telegram-bot-api.log" || true
+              exit 1
+            }
+            if curl --silent --show-error --max-time 5 \
+              "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/getMe" \
+              > "$RUNNER_TEMP/getme.json" &&
+              python - "$RUNNER_TEMP/getme.json" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1],encoding="utf-8"))
+          raise SystemExit(0 if r.get("ok") is True else 1)
+          PY
+            then
+              READY=true
+              break
+            fi
+            sleep 1
+          done
+          test "$READY" = true
+
+          CAPTION="$(printf '✅ POCO F5 Pixel Camera modified APK\nVersion: 11.0.073.972752740.32\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: repository-keystore\nPackage: com.google.android.GoogleCamera\nInstall: single APK' "$SIZE" "$SHA")"
+
+          curl --silent --show-error --fail-with-body \
+            --retry 3 --retry-all-errors --max-time 1800 \
+            --request POST \
+            --url "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            --form "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form "document=@${APK};type=application/vnd.android.package-archive" \
+            --form-string "caption=${CAPTION}" \
+            > "$RUNNER_TEMP/send-response.json"
+
+          python - "$RUNNER_TEMP/send-response.json" "$SIZE" "$NAME" <<'PY'
+          import json,sys
+          r=json.load(open(sys.argv[1],encoding="utf-8"))
+          if r.get("ok") is not True:
+              raise SystemExit(f"Telegram rejected document: {r}")
+          doc=(r.get("result") or {}).get("document") or {}
+          expected_size=int(sys.argv[2]); expected_name=sys.argv[3]
+          actual_size=int(doc.get("file_size") or 0)
+          actual_name=doc.get("file_name") or ""
+          if actual_size != expected_size:
+              raise SystemExit(f"size mismatch: {actual_size} != {expected_size}")
+          if actual_name != expected_name:
+              raise SystemExit(f"name mismatch: {actual_name!r} != {expected_name!r}")
+          print(f"Telegram accepted final APK: {actual_name}")
+          print(f"Telegram reported size: {actual_size} bytes")
+          PY
