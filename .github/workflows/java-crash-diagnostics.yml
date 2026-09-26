@@ -1,0 +1,166 @@
+name: Pixel Camera Java crash diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/java-crash-diagnostics.yml"
+      - "scripts/patch_pixel_camera_device_gate.py"
+      - "device/marble/upstream/pixel-camera.json"
+      - "device/marble/standalone-apk-policy.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-camera-java-crash-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download selected Pixel Camera bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          echo "PIXEL_CAMERA_SOURCE=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
+      - name: Download pinned baksmali
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          p=json.load(open("device/marble/standalone-apk-policy.json"))["toolchain"]["smali"]
+          print(p["baksmali_url"])
+          print(p["baksmali_sha256"])
+          PY
+          )
+          curl --fail --location --silent --show-error --retry 3 "${TOOL[0]}" -o "$RUNNER_TEMP/baksmali.jar"
+          echo "${TOOL[1]}  $RUNNER_TEMP/baksmali.jar" | sha256sum --check --strict
+
+      - name: Extract dex containing mjy and disassemble class
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/mjy.dex" <<'PY'
+          import io, sys, zipfile
+          from pathlib import Path
+
+          package=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          needle=b"Lmjy;"
+
+          candidates=[]
+          with zipfile.ZipFile(package) as outer:
+              for info in outer.infolist():
+                  if not info.filename.lower().endswith(".apk"):
+                      continue
+                  blob=outer.read(info)
+                  if not zipfile.is_zipfile(io.BytesIO(blob)):
+                      continue
+                  with zipfile.ZipFile(io.BytesIO(blob)) as apk:
+                      for dex in apk.namelist():
+                          if not (dex.startswith("classes") and dex.endswith(".dex")):
+                              continue
+                          data=apk.read(dex)
+                          if needle in data:
+                              candidates.append((info.filename,dex,data))
+          if len(candidates) != 1:
+              raise SystemExit(f"expected one dex containing Lmjy;, found {[(a,b) for a,b,_ in candidates]}")
+          apk_name,dex_name,data=candidates[0]
+          out.write_bytes(data)
+          print(f"source_apk={apk_name}")
+          print(f"dex={dex_name}")
+          print(f"size={len(data)}")
+          PY
+
+          mkdir -p "$RUNNER_TEMP/mjy-smali"
+          java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/mjy.dex" -o "$RUNNER_TEMP/mjy-smali"
+
+          MJY="$(find "$RUNNER_TEMP/mjy-smali" -type f -name 'mjy.smali' -print -quit)"
+          test -n "$MJY"
+          cp "$MJY" "$RUNNER_TEMP/mjy.smali"
+
+          python - "$MJY" "$RUNNER_TEMP/mjy-crash-analysis.txt" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          p=Path(sys.argv[1])
+          lines=p.read_text(encoding="utf-8").splitlines()
+          out=[]
+
+          # Dump every method named a plus every IllegalArgumentException site.
+          method_starts=[i for i,l in enumerate(lines) if re.match(r"^\.method .* a\(", l)]
+          iae=[i for i,l in enumerate(lines) if "Ljava/lang/IllegalArgumentException;" in l]
+
+          out.append(f"method_a_count={len(method_starts)}")
+          out.append(f"illegal_argument_exception_site_count={len(iae)}")
+          out.append("")
+
+          def method_bounds(index):
+              start=index
+              while start>=0 and not lines[start].startswith(".method "):
+                  start-=1
+              end=index
+              while end<len(lines) and lines[end].strip()!=".end method":
+                  end+=1
+              return start,min(end,len(lines)-1)
+
+          seen=set()
+          for idx in iae:
+              s,e=method_bounds(idx)
+              key=(s,e)
+              if key in seen:
+                  continue
+              seen.add(key)
+              out.append("="*80)
+              out.append(f"IAE method lines {s+1}-{e+1}: {lines[s]}")
+              out.extend(f"{i+1:06d}: {lines[i]}" for i in range(s,e+1))
+              out.append("")
+
+          for s in method_starts:
+              e=s
+              while e<len(lines) and lines[e].strip()!=".end method":
+                  e+=1
+              key=(s,e)
+              if key in seen:
+                  continue
+              out.append("="*80)
+              out.append(f"method a lines {s+1}-{e+1}: {lines[s]}")
+              # keep output bounded but complete for reasonably sized methods
+              if e-s <= 900:
+                  out.extend(f"{i+1:06d}: {lines[i]}" for i in range(s,e+1))
+              else:
+                  out.extend(f"{i+1:06d}: {lines[i]}" for i in range(s,min(e+1,s+450)))
+                  out.append("... middle omitted ...")
+                  out.extend(f"{i+1:06d}: {lines[i]}" for i in range(max(s,e-450),e+1))
+              out.append("")
+
+          Path(sys.argv[2]).write_text("\n".join(out)+"\n", encoding="utf-8")
+          PY
+
+          sed -n '1,2400p' "$RUNNER_TEMP/mjy-crash-analysis.txt"
+
+      - name: Upload mjy diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-mjy-java-crash-diagnostics
+          path: |
+            ${{ runner.temp }}/mjy.smali
+            ${{ runner.temp }}/mjy-crash-analysis.txt
+          retention-days: 14
+          if-no-files-found: error
