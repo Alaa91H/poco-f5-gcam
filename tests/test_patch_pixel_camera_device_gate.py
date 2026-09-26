@@ -152,6 +152,56 @@ MTA_SAMPLE = r'''.class public final Lmta;
 '''
 
 
+ODR_SAMPLE = r'''.class public final Lodr;
+.super Ljava/lang/Object;
+
+.field public final a:Ljava/lang/Object;
+.field public final b:I
+
+.method public final a(Ljava/lang/Object;)V
+    .registers 7
+
+    iget v0, p0, Lodr;->b:I
+
+    check-cast p1, Lpqg;
+
+    iget v0, p1, Lpqg;->a:I
+
+    sget-object v1, Ltdn;->a:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {v0}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
+
+    move-result-object v0
+
+    new-instance v2, Lupd;
+
+    invoke-direct {v2, v1, v0}, Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V
+
+    iget-object p1, p1, Lpqg;->b:Lyeh;
+
+    sget-object v0, Ltdn;->b:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {p1}, Laaaq;->aK(Ljava/util/Collection;)[F
+
+    move-result-object p1
+
+    new-instance v1, Lupd;
+
+    invoke-direct {v1, v0, p1}, Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V
+
+    invoke-static {v2, v1}, Lyfm;->I(Ljava/lang/Object;Ljava/lang/Object;)Lyfm;
+
+    move-result-object p1
+
+    iget-object p0, p0, Lodr;->a:Ljava/lang/Object;
+
+    invoke-interface {p0, p1}, Luoi;->t(Ljava/util/Set;)V
+
+    return-void
+.end method
+'''
+
+
 UG_SAMPLE = r'''.class public final Lug;
 .super Ljava/lang/Object;
 
@@ -534,6 +584,43 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "exactly one Ltdi.a CaptureRequest key",
         ):
             patcher.patch_onecamera_missing_request_key_smali_text(changed)
+
+    def test_odr_omits_absent_ldtn_b_request_entry(self):
+        patched, metadata = (
+            patcher.patch_onecamera_odr_missing_request_key_smali_text(
+                ODR_SAMPLE
+            )
+        )
+
+        self.assertIn(
+            "sget-object v0, Ltdn;->b:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    # POCO F5: Ltdn.b is an optional Pixel-only request key.\n"
+            "    if-eqz v0, :poco_odr_ldtn_b_absent",
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {v2}, "
+            "Ljava/util/Collections;->singleton(Ljava/lang/Object;)Ljava/util/Set;",
+            patched,
+        )
+        self.assertIn(":poco_odr_request_set_ready", patched)
+        self.assertEqual(
+            metadata["status"],
+            "omit_absent_ldtn_b_request_entry",
+        )
+        self.assertEqual(metadata["key"], "Ltdn.b")
+        self.assertEqual(metadata["preserved_key"], "Ltdn.a")
+
+    def test_odr_missing_request_key_patch_fails_closed_if_key_moves(self):
+        changed = ODR_SAMPLE.replace("Ltdn;->b:", "Ltdn;->c:")
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "Ltdn.a/Ltdn.b request-entry shape changed",
+        ):
+            patcher.patch_onecamera_odr_missing_request_key_smali_text(
+                changed
+            )
 
     def test_redirects_xiaomi_logical_rear_before_callback_creation(self):
         patched, metadata = patcher.patch_onecamera_open_camera_fallback_smali_text(
