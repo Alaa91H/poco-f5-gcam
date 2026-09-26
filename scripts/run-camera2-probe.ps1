@@ -15,12 +15,14 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.9"
+$PixelGraphActivity = ".PixelGraphProbeActivity"
+$ExpectedProbeVersion = "0.4.0"
 # YUV runtime probing is isolated per Camera2 ID so a stuck logical camera cannot block the full capture.
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
 $YuvReportRelativePath = "files/yuv-runtime-report.json"
+$PixelGraphReportRelativePath = "files/pixel-graph-runtime-report.json"
 
 function Fail([string]$Message) {
     Write-Error $Message
