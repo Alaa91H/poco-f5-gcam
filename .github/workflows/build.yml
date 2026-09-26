@@ -325,6 +325,26 @@ jobs:
             printf -- '- Selection changed: `%s`\n' "$CHANGED"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Decide standalone compatibility build
+        id: standalone
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          UPSTREAM_AFFECTED: ${{ needs.changes.outputs.upstream }}
+          DISPATCH_STANDALONE: ${{ inputs.build_experimental_standalone }}
+        run: |
+          set -euo pipefail
+
+          ENABLED=false
+          if [ "$EVENT_NAME" = "push" ] && [ "$UPSTREAM_AFFECTED" = "true" ]; then
+            ENABLED=true
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_STANDALONE" = "true" ]; then
+            ENABLED=true
+          fi
+
+          echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
+          echo "- Rebuild compatibility-patched APK: `$ENABLED`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Verify live APKMirror download path
         run: |
           python scripts/download_latest_pixel_camera.py \
@@ -335,6 +355,7 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          steps.standalone.outputs.enabled == 'true' ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -363,6 +384,7 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          steps.standalone.outputs.enabled == 'true' ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -377,6 +399,7 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          steps.standalone.outputs.enabled == 'true' ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -408,6 +431,7 @@ jobs:
       - name: Validate split dependency graph
         if: >-
           github.event_name == 'workflow_dispatch' ||
+          steps.standalone.outputs.enabled == 'true' ||
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
@@ -470,8 +494,7 @@ jobs:
 
       - name: Download pinned APKEditor
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -503,8 +526,7 @@ jobs:
 
       - name: Download pinned smali toolchain
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -553,8 +575,7 @@ jobs:
 
       - name: Prepare standalone APK signing key
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         env:
           SECRET_KEYSTORE_B64: ${{ secrets.GCMOD_KEYSTORE_B64 }}
@@ -609,8 +630,7 @@ jobs:
 
       - name: Build standalone POCO F5 Pixel Camera APK
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -674,8 +694,7 @@ jobs:
 
       - name: Upload standalone Pixel Camera APK
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: compatibility-patched-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
