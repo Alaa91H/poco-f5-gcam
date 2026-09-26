@@ -117,6 +117,15 @@ jobs:
 
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu >/dev/null
+          {
+            echo "=== underlying AllSensorIdsUnique implementation @ 0x35873c8 ==="
+            aarch64-linux-gnu-objdump -d \
+              --start-address=0x35872c0 \
+              --stop-address=0x3587800 \
+              "$RUNNER_TEMP/libgcastartup.so"
+          } > "$RUNNER_TEMP/gcam-sensor-id-impl.txt"
+          sed -n '1,520p' "$RUNNER_TEMP/gcam-sensor-id-impl.txt"
+
           python - "$RUNNER_TEMP/libgcastartup.so" "$RUNNER_TEMP/gcam-sensor-id-native.txt" <<'PY'
           import re, subprocess, sys
           lib=sys.argv[1]; out=sys.argv[2]
@@ -229,5 +238,6 @@ jobs:
             ${{ runner.temp }}/gcam-init-mjy-diagnostics.txt
             ${{ runner.temp }}/gcam-sensor-id-symbols.txt
             ${{ runner.temp }}/gcam-sensor-id-native.txt
+            ${{ runner.temp }}/gcam-sensor-id-impl.txt
           if-no-files-found: error
           retention-days: 14
