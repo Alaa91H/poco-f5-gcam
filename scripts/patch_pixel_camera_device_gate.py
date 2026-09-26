@@ -2604,6 +2604,7 @@ def patch_onecamera_output_configuration_logging_smali_text(
             "marble Camera2 probe configured PRIVATE 1280x720 + RAW10 "
             "4624x3472 + YUV_420_888 1280x720 successfully"
         ),
+        "runtime_report_group": "outputConfigurations",
     }
 
 
