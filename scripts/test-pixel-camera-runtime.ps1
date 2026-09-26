@@ -273,7 +273,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamMappedCameraId|GCamMappedSensorId|mjy\\.a\\(PG:\\d+\\)|sensor-ID uniqueness)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|mjy\\.a\\(PG:\\d+\\)|sensor-ID uniqueness)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -306,7 +306,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamTopCameraId|GCamPhysicalCameraId|GCamMappedCameraId|GCamMappedSensorId|mjy\\.a\\(PG:\\d+\\))"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamTopCameraId|GCamPhysicalCameraId|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|mjy\\.a\\(PG:\\d+\\))"
         } |
         Select-Object -Last 200
 )
@@ -469,6 +469,548 @@ foreach ($line in $cameraSourcePhysicalLines) {
         $cameraSourcePhysicalIds.Add($Matches["camera"])
     }
 }
+
+$sessionParameterKeyLines = @(
+    $logLines |
+        Where-Object { $_ -match '(?i)GCamSessionParamKey' } |
+        Select-Object -Last 300
+)
+$sessionParameterKeys = @(
+    $sessionParameterKeyLines |
+        ForEach-Object {
+            if ($_ -match 'GCamSessionParamKey\s*:\s*(?<key>.+)
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)GCamSensorIds'
+        } |
+        Select-Object -Last 100
+)
+$sensorVectorIds = New-Object System.Collections.Generic.List[string]
+foreach ($line in $sensorVectorLines) {
+    if ($line -match 'GCamSensorIds\s*:\s*(?<sensor>\S+)') {
+        $sensorVectorIds.Add($Matches["sensor"])
+    }
+}
+$sensorVectorDuplicateIds = @(
+    $sensorVectorIds |
+        Group-Object |
+        Where-Object { $_.Count -gt 1 } |
+        ForEach-Object {
+            [ordered]@{
+                sensor = $_.Name
+                count = $_.Count
+            }
+        }
+)
+
+# Correlate the Android Camera2 sources with the final GCam sensor vector per
+# native-create thread. Source IDs are emitted while the vector is built, and
+# GCamSensorIds is emitted immediately before Gcam_Create on that same thread.
+$cameraSensorEventLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(GCamTopCameraId|GCamPhysicalCameraId|GCamSensorIds)'
+        } |
+        Select-Object -Last 300
+)
+$cameraSensorThreadGroups = [ordered]@{}
+foreach ($line in $cameraSensorEventLines) {
+    if ($line -notmatch '^\S+\s+\S+\s+(?<pid>\d+)\s+(?<tid>\d+)\s+\S+\s+(?<tag>GCamTopCameraId|GCamPhysicalCameraId|GCamSensorIds)\s*:\s*(?<value>\S+)') {
+        continue
+    }
+
+    $threadKey = "$($Matches["pid"]):$($Matches["tid"])"
+    if (-not $cameraSensorThreadGroups.Contains($threadKey)) {
+        $cameraSensorThreadGroups[$threadKey] = [ordered]@{
+            pid = $Matches["pid"]
+            tid = $Matches["tid"]
+            sources = New-Object System.Collections.Generic.List[object]
+            sensors = New-Object System.Collections.Generic.List[string]
+        }
+    }
+
+    $group = $cameraSensorThreadGroups[$threadKey]
+    if ($Matches["tag"] -eq "GCamSensorIds") {
+        $group.sensors.Add($Matches["value"])
+    }
+    else {
+        $group.sources.Add([ordered]@{
+            sourceType = if ($Matches["tag"] -eq "GCamTopCameraId") { "top_level" } else { "physical" }
+            cameraId = $Matches["value"]
+        })
+    }
+}
+
+$sensorSourceMappings = New-Object System.Collections.Generic.List[object]
+$sensorSourceMappingThreads = New-Object System.Collections.Generic.List[object]
+$sensorVectorDuplicateIdsPerThread = New-Object System.Collections.Generic.List[object]
+foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
+    $group = $entry.Value
+    $pairedCount = [Math]::Min($group.sources.Count, $group.sensors.Count)
+    $complete = (
+        $group.sources.Count -gt 0 -and
+        $group.sources.Count -eq $group.sensors.Count
+    )
+
+    if ($complete) {
+        for ($i = 0; $i -lt $pairedCount; $i++) {
+            $sensorSourceMappings.Add([ordered]@{
+                pid = $group.pid
+                tid = $group.tid
+                index = $i
+                sourceType = $group.sources[$i].sourceType
+                cameraId = $group.sources[$i].cameraId
+                sensor = $group.sensors[$i]
+            })
+        }
+    }
+
+    $sensorSourceMappingThreads.Add([ordered]@{
+        pid = $group.pid
+        tid = $group.tid
+        sourceCount = $group.sources.Count
+        sensorCount = $group.sensors.Count
+        complete = $complete
+    })
+
+    $group.sensors.ToArray() |
+        Group-Object |
+        Where-Object { $_.Count -gt 1 } |
+        ForEach-Object {
+            $sensorVectorDuplicateIdsPerThread.Add([ordered]@{
+                pid = $group.pid
+                tid = $group.tid
+                sensor = $_.Name
+                count = $_.Count
+            })
+        }
+}
+
+$cameraServiceConnectLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)CameraService::connect call .*camera ID'
+        } |
+        Select-Object -Last 100
+)
+$cameraServiceConnectedIds = @(
+    $cameraServiceConnectLines |
+        ForEach-Object {
+            if ($_ -match '(?i)camera ID\s+([^\s\)]+)') {
+                $Matches[1]
+            }
+        } |
+        Select-Object -Unique
+)
+
+$xiaomiMultiCameraGraphFailureLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Cannot map logical camera type|Invalid logical camera id|MultiCameraSAT.*(failed|failure)|CreateUsecaseObject failed|Failed to initialize Multicamera|Feature graph manager initialization failed)'
+        } |
+        Select-Object -Last 150
+)
+$xiaomiMultiCameraGraphFailureObserved = $xiaomiMultiCameraGraphFailureLines.Count -gt 0
+
+$logicalCameraMappingLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Cannot map logical camera type|Invalid logical camera id|CreateUsecaseObject failed|Failed to initialize Multicamera)'
+        } |
+        Select-Object -Last 100
+)
+$logicalCameraMappingErrorsObserved = $logicalCameraMappingLines.Count -gt 0
+
+$oneCameraOptionalNpeLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Failed to start OneCamera|j\$\.util\.Optional\.of|ofe\.a\(PG:413\)|NullPointerException.*null object reference)'
+        } |
+        Select-Object -Last 100
+)
+$oneCameraOptionalNpeObserved = (
+    $logcat -match '(?is)Failed to start OneCamera.*?Caused by:\s*java\.lang\.NullPointerException.*?j\$\.util\.Optional\.of.*?ofe\.a\(PG:413\)'
+)
+
+$googleAllowlistLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(GoogleCertificatesRslt: not allowed|Package not on allowlist|CBVerifier: Fail to register phenotypeflags)'
+        } |
+        Select-Object -Last 100
+)
+$googleAllowlistRejectionObserved = $googleAllowlistLines.Count -gt 0
+
+$cameraStreamConfigurationFailureLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Unsupported set of inputs/outputs provided|Failed to create capture session; configuration failed|configure_streams\(\).*max_buffers\s*:\s*0|Unable to configure stream .*Function not implemented|End CONFIG failed)'
+        } |
+        Select-Object -Last 100
+)
+$cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureLines.Count -gt 0
+
+# Preserve raw log windows around vendor-HAL/session negotiation failures.
+# Filtering individual lines hides the stream dimensions and role-selection
+# messages that usually occur immediately before configure_streams fails.
+$cameraPipelineFailureContexts = New-Object System.Collections.Generic.List[string]
+$cameraPipelineContextKeys = @{}
+for ($i = 0; $i -lt $logLines.Count; $i++) {
+    $line = $logLines[$i]
+    if ($line -notmatch '(?i)(BuildCameraIdSet\(\).*Cannot map logical camera type|sat_roleMap: get logicalCameraInfo is NULL|Unsupported set of inputs/outputs provided|Failed to create capture session; configuration failed|configure_streams\(\).*End CONFIG failed|Unable to configure stream .*Function not implemented)') {
+        continue
+    }
+
+    $start = [Math]::Max(0, $i - 35)
+    $end = [Math]::Min($logLines.Count - 1, $i + 45)
+    $key = "${start}:${end}"
+    if ($cameraPipelineContextKeys.ContainsKey($key)) {
+        continue
+    }
+    $cameraPipelineContextKeys[$key] = $true
+    $cameraPipelineFailureContexts.Add(
+        ($logLines[$start..$end] -join [Environment]::NewLine)
+    )
+}
+
+$oneCameraVendorRequestKeyNpeLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(upd\.<init>\(PG:3\)|mta\.a\(PG:720\)|odr\.a\(PG:24\)|Failed to start OneCamera \(retry disabled\)|NullPointerException.*null object reference)'
+        } |
+        Select-Object -Last 100
+)
+$oneCameraVendorRequestKeyNpeObserved = (
+    $logcat -match '(?is)Failed to start OneCamera.*?Caused by:\s*java\.lang\.NullPointerException.*?upd\.<init>\(PG:3\).*?mta\.a\(PG:720\)'
+)
+
+# Preserve the complete stack around non-fatal OneCamera request-key failures.
+# These exceptions are often caught and logged by CameraStarter/OneCamera, so
+# they do not appear in fatalEvidence and a line-only filter loses the caller
+# that identifies the exact nullable vendor CaptureRequest.Key.
+$oneCameraRequestKeyNpeContexts = New-Object System.Collections.Generic.List[string]
+for ($i = 0; $i -lt $logLines.Count; $i++) {
+    $line = $logLines[$i]
+    if ($line -notmatch '(?i)(CAM_oys|CAM_PckOneCamera|CAM_otz|CAM_iuv).*NullPointerException') {
+        continue
+    }
+
+    $start = [Math]::Max(0, $i - 3)
+    $end = [Math]::Min($logLines.Count - 1, $i + 35)
+    $context = ($logLines[$start..$end] -join [Environment]::NewLine)
+    if ($context -match '(?i)upd\.<init>\(PG:3\)') {
+        $oneCameraRequestKeyNpeContexts.Add($context)
+    }
+}
+
+# The exception is often caught by OneCamera and never reaches a
+# "Failed to start OneCamera" wrapper. Treat a preserved Lupd constructor stack
+# as positive evidence too; this fixes false negatives in device reports.
+$oneCameraVendorRequestKeyNpeObserved = (
+    $oneCameraVendorRequestKeyNpeObserved -or
+    $oneCameraRequestKeyNpeContexts.Count -gt 0
+)
+
+$oneCameraOdrRequestKeyNpeObserved = @(
+    $oneCameraRequestKeyNpeContexts |
+        Where-Object { $_ -match '(?i)odr\.a\(PG:24\)' }
+).Count -gt 0
+$oneCameraMtaRequestKeyNpeObserved = @(
+    $oneCameraRequestKeyNpeContexts |
+        Where-Object { $_ -match '(?i)mta\.a\(PG:720\)' }
+).Count -gt 0
+
+# Capture evidence that a capture session recovered after an earlier failed
+# configureStreams attempt. A single rejected stream combination should remain
+# visible, but it should not be mistaken for the final pipeline state when a
+# later CameraCaptureSession is configured and starts issuing requests.
+$cameraSessionSuccessLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(CameraCaptureSession.*(configured|onConfigured|ready|active)|CaptureSession.*(configured|onConfigured|ready|active)|process_capture_request|setRepeatingRequest|submitCaptureRequest|first frame|frame number)'
+        } |
+        Select-Object -Last 200
+)
+$cameraSessionSuccessObserved = $cameraSessionSuccessLines.Count -gt 0
+
+$cameraSessionLifecycleLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(CameraCaptureSession|CaptureSession|configure_streams\(\)|Unsupported set of inputs/outputs|CameraService::connect call|disconnect: Disconnected client|process_capture_request|setRepeatingRequest|submitCaptureRequest)'
+        } |
+        Select-Object -Last 300
+)
+
+$processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
+$launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
+$topActivityMatches = $resumedLines.Count -gt 0
+$startupPassed = $launcherAccepted -and $processAlive -and $fatalEvidence.Count -eq 0
+$cameraPipelineCompatibilityPassed = (
+    $startupPassed -and
+    -not $logicalCameraMappingErrorsObserved -and
+    -not $xiaomiMultiCameraGraphFailureObserved -and
+    -not $cameraStreamConfigurationFailureObserved
+)
+# Keep runtimePassed as the startup/crash gate for backward compatibility.
+$runtimePassed = $startupPassed
+
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
+    $OutputPath = Join-Path $PWD "device/marble/runtime/$stamp-pixel-camera-runtime.json"
+}
+
+$report = [ordered]@{
+    schemaVersion = 1
+    generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    packageName = $PackageName
+    device = [ordered]@{
+        codename = $device
+        model = $model
+        sdk = $sdk
+        buildId = $buildId
+        expectedCodenames = $allowedDevices
+        codenameMatches = $deviceMatches
+    }
+    installation = [ordered]@{
+        apkPathCount = $installedApkPaths.Count
+        apkPaths = $installedApkPaths
+        isSplitInstall = $installedApkPaths.Count -gt 1
+    }
+    launch = [ordered]@{
+        startedAtUtc = $launchStartedAt.ToString("yyyy-MM-ddTHH:mm:ssZ")
+        waitSeconds = $WaitSeconds
+        commandExitCode = $launch.ExitCode
+        commandOutput = $launch.Text
+        launcherAccepted = $launcherAccepted
+        firstObservedPid = $firstObservedPid
+        launchPidSamples = $launchPidSamples.ToArray()
+        earlyPid = $earlyPid
+        finalPid = $finalPid
+        processAliveAfterWait = $processAlive
+        pidReplacementObserved = $pidReplacementObserved
+        fatalProcessPids = $fatalProcessPids
+        fatalPidDiffersFromFinalPid = $fatalPidDiffersFromFinalPid
+        topActivityMatchesPackage = $topActivityMatches
+        resumedActivityLines = $resumedLines
+    }
+    tuningAnalysis = [ordered]@{
+        state = $tuningState
+        uncalibratedFallbackObserved = $tuningFallbackObserved
+        abortObserved = $tuningAbortObserved
+        sensorDefaultsObserved = $tuningDefaultsObserved
+        uncalibratedLines = $tuningUncalibratedLines
+        abortLines = $tuningAbortLines
+        defaultsLines = $tuningDefaultsLines
+    }
+    compatibilityAnalysis = [ordered]@{
+        keepAliveBackgroundCrashObserved = $keepAliveBackgroundCrashObserved
+        keepAliveBackgroundCrashLines = $keepAliveBackgroundCrashLines
+        aionMissingLibraryObserved = $aionMissingLibraryObserved
+        aionMissingLibraryLines = $aionMissingLibraryLines
+        aionFatalCheckObserved = $aionFatalCheckObserved
+        aionFatalCheckLines = $aionFatalCheckLines
+        sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
+        sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
+        cameraSourceTopLines = $cameraSourceTopLines
+        cameraSourceTopIds = $cameraSourceTopIds.ToArray()
+        cameraSourcePhysicalLines = $cameraSourcePhysicalLines
+        cameraSourcePhysicalIds = $cameraSourcePhysicalIds.ToArray()
+        preFilterMappingEventLines = $preFilterMappingEventLines
+        preFilterMappings = $preFilterMappings.ToArray()
+        sessionParameterKeyLines = $sessionParameterKeyLines
+        sessionParameterKeys = $sessionParameterKeys
+        sensorVectorLines = $sensorVectorLines
+        sensorVectorIds = $sensorVectorIds.ToArray()
+        sensorVectorDuplicateIds = $sensorVectorDuplicateIds
+        sensorVectorDuplicateIdsPerThread = $sensorVectorDuplicateIdsPerThread.ToArray()
+        sensorSourceMappingThreads = $sensorSourceMappingThreads.ToArray()
+        sensorSourceMappings = $sensorSourceMappings.ToArray()
+        cameraServiceConnectLines = $cameraServiceConnectLines
+        cameraServiceConnectedIds = $cameraServiceConnectedIds
+        cameraServiceDumpLines = $cameraServiceDumpLines
+        xiaomiMultiCameraGraphFailureObserved = $xiaomiMultiCameraGraphFailureObserved
+        xiaomiMultiCameraGraphFailureLines = $xiaomiMultiCameraGraphFailureLines
+        logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
+        logicalCameraMappingLines = $logicalCameraMappingLines
+        oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
+        oneCameraOptionalNpeLines = $oneCameraOptionalNpeLines
+        googleAllowlistRejectionObserved = $googleAllowlistRejectionObserved
+        googleAllowlistLines = $googleAllowlistLines
+        cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureObserved
+        cameraStreamConfigurationFailureLines = $cameraStreamConfigurationFailureLines
+        cameraPipelineFailureContexts = $cameraPipelineFailureContexts.ToArray()
+        cameraSessionSuccessObserved = $cameraSessionSuccessObserved
+        cameraSessionSuccessLines = $cameraSessionSuccessLines
+        cameraSessionLifecycleLines = $cameraSessionLifecycleLines
+        oneCameraVendorRequestKeyNpeObserved = $oneCameraVendorRequestKeyNpeObserved
+        oneCameraOdrRequestKeyNpeObserved = $oneCameraOdrRequestKeyNpeObserved
+        oneCameraMtaRequestKeyNpeObserved = $oneCameraMtaRequestKeyNpeObserved
+        oneCameraVendorRequestKeyNpeLines = $oneCameraVendorRequestKeyNpeLines
+        oneCameraRequestKeyNpeContexts = $oneCameraRequestKeyNpeContexts.ToArray()
+    }
+    crashAnalysis = [ordered]@{
+        fatalContextCount = $fatalEvidence.Count
+        fatalContexts = $fatalEvidence.ToArray()
+        rootCauseLineCount = $rootCauseLines.Count
+        rootCauseLines = $rootCauseLines
+        diagnosticLineCount = $diagnosticLines.Count
+        diagnosticLines = $diagnosticLines
+        nativeCrash = [ordered]@{
+            crashBufferExitCode = $crashLogcatResult.ExitCode
+            crashBufferLineCount = $crashBufferLines.Count
+            crashBufferLines = $crashBufferLines
+            rootAvailable = $nativeTombstoneRootAvailable
+            tombstonePath = $nativeTombstonePath
+            tombstoneLineCount = $nativeTombstoneLines.Count
+            tombstoneLines = $nativeTombstoneLines
+            threadName = $nativeCrashThreadName
+            backtraceLineCount = $nativeBacktraceLines.Count
+            backtraceLines = $nativeBacktraceLines
+            frameLineCount = $nativeFrameLines.Count
+            frameLines = $nativeFrameLines
+            firstFrame = $nativeFirstFrame
+            libraries = $nativeCrashLibraries
+        }
+    }
+    result = [ordered]@{
+        startupPassed = $startupPassed
+        cameraPipelineCompatibilityPassed = $cameraPipelineCompatibilityPassed
+        runtimePassed = $runtimePassed
+        reason = if ($runtimePassed) {
+            "Launcher accepted the app, its process remained alive, and no package-associated fatal crash signature was found."
+        }
+        elseif (-not $launcherAccepted) {
+            "Android did not accept a launcher activity for the package."
+        }
+        elseif (-not $processAlive) {
+            "The package process was not alive after the observation window."
+        }
+        else {
+            "Package-associated fatal crash evidence was found in logcat."
+        }
+    }
+}
+
+$outputFile = [System.IO.Path]::GetFullPath($OutputPath)
+$outputDirectory = Split-Path -Parent $outputFile
+if (-not [string]::IsNullOrWhiteSpace($outputDirectory)) {
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+}
+
+$report | ConvertTo-Json -Depth 12 | Set-Content -Path $outputFile -Encoding UTF8
+
+Write-Host "Pixel Camera runtime report:"
+Write-Host $outputFile
+Write-Host ""
+Write-Host "Installed APK paths: $($installedApkPaths.Count)"
+Write-Host "Launcher accepted: $launcherAccepted"
+Write-Host "Process alive after $WaitSeconds seconds: $processAlive"
+Write-Host "First observed PID: $firstObservedPid"
+Write-Host "PID replacement observed: $pidReplacementObserved"
+Write-Host "Fatal PID differs from final PID: $fatalPidDiffersFromFinalPid"
+Write-Host "Fatal contexts: $($fatalEvidence.Count)"
+Write-Host "Root-cause lines: $($rootCauseLines.Count)"
+Write-Host "Native crash-buffer lines: $($crashBufferLines.Count)"
+Write-Host "Native tombstone root available: $nativeTombstoneRootAvailable"
+Write-Host "Native tombstone: $nativeTombstonePath"
+Write-Host "Native crash thread: $nativeCrashThreadName"
+Write-Host "Native backtrace frames: $($nativeFrameLines.Count)"
+if (-not [string]::IsNullOrWhiteSpace($nativeFirstFrame)) {
+    Write-Host "Native first frame: $nativeFirstFrame"
+}
+Write-Host "GCam tuning state: $tuningState"
+Write-Host "Uncalibrated fallback observed: $tuningFallbackObserved"
+Write-Host "Tuning abort observed: $tuningAbortObserved"
+Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserved"
+Write-Host "AION missing library observed: $aionMissingLibraryObserved"
+Write-Host "AION fatal check observed: $aionFatalCheckObserved"
+Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
+Write-Host "Top-level Camera2 IDs: $($cameraSourceTopIds -join ', ')"
+Write-Host "Physical Camera2 IDs: $($cameraSourcePhysicalIds -join ', ')"
+if ($preFilterMappings.Count -gt 0) {
+    Write-Host "Pre-filter Camera2 -> GCam sensor mappings:"
+    $preFilterMappings | ForEach-Object {
+        Write-Host ("  PID " + $_.pid + " TID " + $_.tid + ": camera " + $_.cameraId + " -> " + $_.sensor)
+    }
+}
+else {
+    Write-Host "Pre-filter Camera2 -> GCam sensor mappings: none observed"
+}
+Write-Host "Sensor vector IDs: $($sensorVectorIds -join ', ')"
+if ($sensorVectorDuplicateIdsPerThread.Count -gt 0) {
+    Write-Host "Duplicate sensor vector IDs per create thread:"
+    $sensorVectorDuplicateIdsPerThread | ForEach-Object {
+        Write-Host ("  PID " + $_.pid + " TID " + $_.tid + ": " + $_.sensor + " x" + $_.count)
+    }
+}
+else {
+    Write-Host "Duplicate sensor vector IDs per create thread: none observed"
+}
+if ($sensorSourceMappings.Count -gt 0) {
+    Write-Host "Camera2 -> GCam sensor mappings:"
+    $sensorSourceMappings | ForEach-Object {
+        Write-Host ("  PID " + $_.pid + " TID " + $_.tid + " [" + $_.sourceType + "] camera " + $_.cameraId + " -> " + $_.sensor)
+    }
+}
+else {
+    Write-Host "Camera2 -> GCam sensor mappings: none observed"
+}
+Write-Host "CameraService connected IDs: $($cameraServiceConnectedIds -join ', ')"
+Write-Host "Xiaomi multi-camera graph failure observed: $xiaomiMultiCameraGraphFailureObserved"
+Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
+Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
+Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
+Write-Host "Camera stream configuration failure observed: $cameraStreamConfigurationFailureObserved"
+Write-Host "Camera pipeline failure contexts: $($cameraPipelineFailureContexts.Count)"
+Write-Host "CameraService dumpsys lines: $($cameraServiceDumpLines.Count)"
+Write-Host "Camera session success observed: $cameraSessionSuccessObserved"
+Write-Host "OneCamera vendor request-key NPE observed: $oneCameraVendorRequestKeyNpeObserved"
+Write-Host "OneCamera request-key NPE contexts: $($oneCameraRequestKeyNpeContexts.Count)"
+Write-Host "Startup passed: $startupPassed"
+Write-Host "Camera pipeline compatibility passed: $cameraPipelineCompatibilityPassed"
+Write-Host "OneCamera odr request-key NPE observed: $oneCameraOdrRequestKeyNpeObserved"
+Write-Host "OneCamera mta request-key NPE observed: $oneCameraMtaRequestKeyNpeObserved"
+Write-Host "Runtime passed: $runtimePassed"
+
+if (-not $runtimePassed) {
+    Write-Warning $report.result.reason
+    if ($fatalEvidence.Count -gt 0) {
+        Write-Host ""
+        Write-Host "First fatal context:"
+        Write-Host $fatalEvidence[0]
+    }
+    if ($rootCauseLines.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Root-cause lines:"
+        $rootCauseLines | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+    }
+    if ($nativeBacktraceLines.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Native crash backtrace:"
+        $nativeBacktraceLines | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+    }
+    if ($oneCameraRequestKeyNpeContexts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "OneCamera request-key NPE context:"
+        Write-Host $oneCameraRequestKeyNpeContexts[0]
+    }
+    if ($cameraPipelineFailureContexts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Camera pipeline failure context:"
+        Write-Host $cameraPipelineFailureContexts[0]
+    }
+}
+
+if ($Strict -and -not $cameraPipelineCompatibilityPassed) {
+    exit 2
+}
+) {
+                $Matches["key"].Trim()
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+)
 
 $sensorVectorLines = @(
     $logLines |
