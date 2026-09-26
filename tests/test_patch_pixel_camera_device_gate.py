@@ -238,9 +238,14 @@ RP_SAMPLE = r'''.class public final Lrp;
 
     invoke-interface {v9, v14}, Ljava/util/List;->contains(Ljava/lang/Object;)Z
 
-    move-result v13
+    move-result v14
 
-    return v13
+    if-eqz v14, :cond_123
+
+    invoke-static {v0, v13, v6}, Lvz;->x(Landroid/hardware/camera2/CaptureRequest$Builder;Ljava/lang/Object;Ljava/lang/Object;)V
+
+    :cond_123
+    return v14
 .end method
 '''
 
@@ -725,11 +730,11 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
         changed = RP_SAMPLE.replace(
-            "move-result v13\n\n"
-            "    return v13",
-            "move-result v13\n\n"
+            ":cond_123\n"
+            "    return v14",
+            ":cond_123\n"
             "    const/4 v15, 0x0\n\n"
-            "    return v13",
+            "    return v14",
         )
         with self.assertRaisesRegex(
             patcher.PatchError,
