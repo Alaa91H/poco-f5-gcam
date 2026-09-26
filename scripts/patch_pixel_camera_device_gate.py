@@ -2422,6 +2422,15 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "",
         f"{indent}if-eq v13, v15, :goto_123",
         "",
+        f"{indent}# POCO F5 diagnostic isolation: keep AE target FPS "
+        "out of SessionConfiguration while preserving capture requests.",
+        f"{indent}sget-object v15, "
+        "Landroid/hardware/camera2/CaptureRequest;->"
+        "CONTROL_AE_TARGET_FPS_RANGE:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;",
+        "",
+        f"{indent}if-eq v13, v15, :goto_123",
+        "",
         f'{indent}const-string v15, "GCamSessionParamKey"',
         "",
         f"{indent}invoke-virtual {{v13}}, "
@@ -2444,7 +2453,10 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "method": signature,
         "tag": "GCamSessionParamKey",
         "behavior_changed": True,
-        "skipped_session_key": "android.control.videoStabilizationMode",
+        "skipped_session_keys": [
+            "android.control.videoStabilizationMode",
+            "android.control.aeTargetFpsRange",
+        ],
         "skip_scope": "session_parameters_only",
         "scratch_register": "v15",
         "scratch_liveness": "verified unused after key-name lookup",
@@ -2457,7 +2469,10 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "Lpi.d() session-key allowlist"
         ),
         "logs_only_applied_session_parameters": True,
-        "preserved_session_keys": ["android.control.aeTargetFpsRange"],
+        "preserved_capture_request_keys": [
+            "android.control.videoStabilizationMode",
+            "android.control.aeTargetFpsRange",
+        ],
     }
 
 
