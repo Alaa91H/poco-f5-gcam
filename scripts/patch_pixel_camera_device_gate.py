@@ -33,10 +33,12 @@ MARKER_BYTES = MARKER.encode("utf-8")
 GCAM_CREATE_SYMBOL = "Gcam_Create"
 ALMOND_TPU_SYMBOL = "InitParams_almond_use_tpu_set"
 TOMTE_GRAIN_SYMBOL = "InitParams_finish_tomte_grain_enabled_set"
+PORTRAIT_BRIGHTENING_SYMBOL = "InitParams_portrait_brightening_enabled_set"
 GCAM_INIT_SYMBOLS = (
     GCAM_CREATE_SYMBOL.encode("utf-8"),
     ALMOND_TPU_SYMBOL.encode("utf-8"),
     TOMTE_GRAIN_SYMBOL.encode("utf-8"),
+    PORTRAIT_BRIGHTENING_SYMBOL.encode("utf-8"),
 )
 GCASTARTUP_LIBRARY = "lib/arm64-v8a/libgcastartup.so"
 KEEPALIVE_RECEIVER_DESCRIPTOR = (
@@ -699,15 +701,92 @@ def _find_skip_branch_for_call(
     return branch_index, label
 
 
-def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
-    """Keep startup GCam initialization off Pixel Tensor-only accelerator paths.
+def _force_boolean_jni_setter_false(
+    lines: list[str],
+    *,
+    method_start: int,
+    call_index: int,
+    symbol: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Force one verified JNI boolean setter argument false.
 
-    The real POCO F5 runtime reaches CameraService but Pixel Camera 11 then tries
-    to initialize libgxp.so and Gcam_Create returns a null native object. Two
-    independent InitParams inputs bypass klm.q()/x(): almond_use_tpu is fed by a
-    provider boolean, and Tomte grain is fed by an Optional. Redirecting their
-    existing enable branches to their existing continuation labels preserves
-    the default false values without inventing a Pixel device profile.
+    The setter must consume a local v-register whose latest definition in the
+    same basic block is a move-result from klm.q()/x(). This keeps the original
+    feature-query side effects and changes only the value passed to the one JNI
+    InitParams setter. Any shape drift fails closed.
+    """
+
+    call = lines[call_index]
+    match = re.search(
+        r"invoke-static\s+\{(?P<regs>[^}]+)\},\s*"
+        r"Lcom/google/googlex/gcam/GcamModuleJNI;->"
+        + re.escape(symbol)
+        + r"\(JLcom/google/googlex/gcam/InitParams;Z\)V",
+        call,
+    )
+    if not match:
+        raise PatchError(f"{symbol} call no longer matches expected JNI signature")
+
+    registers = [item.strip() for item in match.group("regs").split(",")]
+    if len(registers) != 4 or not re.fullmatch(r"v\d+", registers[-1]):
+        raise PatchError(
+            f"{symbol} expected four explicit v-register arguments; found "
+            f"{registers!r}"
+        )
+    boolean_register = registers[-1]
+
+    move_result_index = None
+    query_index = None
+    for index in range(call_index - 1, max(method_start, call_index - 20), -1):
+        if LABEL_RE.match(lines[index]):
+            break
+        if lines[index].strip() != f"move-result {boolean_register}":
+            continue
+
+        previous = index - 1
+        while previous > method_start and not lines[previous].strip():
+            previous -= 1
+        if not re.search(
+            r"invoke-virtual\s+\{[^}]+\},\s*Lklm;->[qx]\(Lkiz;\)Z",
+            lines[previous],
+        ):
+            raise PatchError(
+                f"{symbol} boolean register is not produced by klm.q()/x()"
+            )
+        move_result_index = index
+        query_index = previous
+        break
+
+    if move_result_index is None or query_index is None:
+        raise PatchError(
+            f"could not verify local klm.q()/x() boolean producer for {symbol}"
+        )
+
+    indent = re.match(r"^(\s*)", lines[move_result_index]).group(1)
+    patched = (
+        lines[: move_result_index + 1]
+        + [
+            "",
+            f"{indent}# POCO F5: portrait brightening OpenCL init fails; keep it off.",
+            f"{indent}const/4 {boolean_register}, 0x0",
+        ]
+        + lines[move_result_index + 1 :]
+    )
+    return patched, {
+        "status": "forced_false_after_opencl_init_failure",
+        "boolean_register": boolean_register,
+        "query": lines[query_index].strip(),
+    }
+
+
+def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
+    """Keep unsupported Pixel accelerator/OpenCL startup features disabled.
+
+    Real-device evidence shows the POCO F5 reaches CameraService and creates a
+    native Gcam object after the GXP/AION fallbacks, but Gcam.g() remains false
+    when PortraitBrighteningProcessor cannot initialize OpenCL. Almond TPU and
+    Tomte grain keep using their existing disabled continuation paths, while
+    portrait brightening alone is forced false at its verified JNI setter.
     """
 
     lines = text.splitlines()
@@ -717,6 +796,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             GCAM_CREATE_SYMBOL,
             ALMOND_TPU_SYMBOL,
             TOMTE_GRAIN_SYMBOL,
+            PORTRAIT_BRIGHTENING_SYMBOL,
         )
     }
     for symbol, indexes in symbol_indexes.items():
@@ -728,15 +808,18 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
 
     almond_index = symbol_indexes[ALMOND_TPU_SYMBOL][0]
     tomte_index = symbol_indexes[TOMTE_GRAIN_SYMBOL][0]
+    portrait_index = symbol_indexes[PORTRAIT_BRIGHTENING_SYMBOL][0]
     gcam_create_index = symbol_indexes[GCAM_CREATE_SYMBOL][0]
 
     method_start, method_end = _method_bounds(lines, gcam_create_index)
     if not (
         method_start < almond_index < method_end
         and method_start < tomte_index < method_end
+        and method_start < portrait_index < method_end
     ):
         raise PatchError(
-            "GCam_Create, almond TPU, and Tomte grain setters are not in one method"
+            "GCam_Create and POCO compatibility InitParams setters are not "
+            "in one method"
         )
 
     method_header = lines[method_start].strip()
@@ -767,6 +850,13 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         indent = re.match(r"^(\s*)", lines[branch_index]).group(1)
         lines[branch_index] = f"{indent}goto/32 :{label}"
 
+    lines, portrait_metadata = _force_boolean_jni_setter_false(
+        lines,
+        method_start=method_start,
+        call_index=portrait_index,
+        symbol=PORTRAIT_BRIGHTENING_SYMBOL,
+    )
+
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
         "status": "patched",
@@ -779,6 +869,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             "status": "forced_default_false",
             "continuation_label": tomte_label,
         },
+        "portrait_brightening": portrait_metadata,
     }
 
 
@@ -1088,6 +1179,7 @@ def _has_gcam_init_callsites(text: str) -> bool:
         GCAM_CREATE_SYMBOL,
         ALMOND_TPU_SYMBOL,
         TOMTE_GRAIN_SYMBOL,
+        PORTRAIT_BRIGHTENING_SYMBOL,
     ):
         if not any(
             "invoke-static" in line
