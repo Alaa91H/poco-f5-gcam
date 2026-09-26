@@ -127,7 +127,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -160,7 +160,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_)"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond)"
         } |
         Select-Object -Last 200
 )

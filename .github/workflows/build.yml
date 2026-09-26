@@ -657,14 +657,15 @@ jobs:
             printf -- '- Size: `%s bytes`\n' "$APK_SIZE"
             printf -- '- SHA-256: `%s`\n' "$APK_SHA256"
             printf -- '- Signing mode: `%s`\n' "$GCMOD_SIGNING_MODE"
-            echo "- Native library alignment: `16 KiB`"
-            echo "- PairIP bypass: `false`"
-            echo "- Feature splits removed: `false`"
-            echo "- Unsupported-device gate: `patched (fail-closed)`"
-            echo "- Non-Tensor accelerator guards: `GXP/TPU/DarwiNN disabled`"
-            echo "- Patch target: `constructor finalization + klm boolean feature queries`"
-            echo "- On-device runtime validation: `NOT RUN`"
-            echo "- Distribution status: `BLOCKED` until real-device runtime validation passes"
+            printf '%s\n' '- Native library alignment: `16 KiB`'
+            printf '%s\n' '- PairIP bypass: `false`'
+            printf '%s\n' '- Feature splits removed: `false`'
+            printf '%s\n' '- Unsupported-device gate: `patched (fail-closed)`'
+            printf '%s\n' '- Non-Tensor feature guards: `GXP/TPU/DarwiNN disabled`'
+            printf '%s\n' '- Native GCam startup: `almond TPU + Tomte grain disabled`'
+            printf '%s\n' '- Patch target: `constructor + klm queries + GCam InitParams provider`'
+            printf '%s\n' '- On-device runtime validation: `NOT RUN`'
+            printf '%s\n' '- Distribution status: `BLOCKED` until real-device runtime validation passes'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload standalone Pixel Camera APK

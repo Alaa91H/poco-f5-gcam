@@ -5,7 +5,9 @@ The patch is intentionally fail-closed. It locates the exact
 "Device is not recognized or not supported" constructor guard in one
 classes*.dex file, redirects that rejection block to the existing common
 finalization path, and then hard-disables Tensor-only GXP/TPU/DarwiNN feature
-queries in the same klm class. PairIP and unrelated feature gates are untouched.
+queries in the klm class. Real-device runtime evidence is then used to keep
+the native GCam InitParams provider from enabling almond TPU and Tomte grain
+during startup. PairIP and unrelated feature gates are untouched.
 """
 
 from __future__ import annotations
@@ -23,6 +25,14 @@ from typing import Any
 
 MARKER = "Device is not recognized or not supported"
 MARKER_BYTES = MARKER.encode("utf-8")
+GCAM_CREATE_SYMBOL = "Gcam_Create"
+ALMOND_TPU_SYMBOL = "InitParams_almond_use_tpu_set"
+TOMTE_GRAIN_SYMBOL = "InitParams_finish_tomte_grain_enabled_set"
+GCAM_INIT_SYMBOLS = (
+    GCAM_CREATE_SYMBOL.encode("utf-8"),
+    ALMOND_TPU_SYMBOL.encode("utf-8"),
+    TOMTE_GRAIN_SYMBOL.encode("utf-8"),
+)
 DEX_NAME_RE = re.compile(r"^classes(?:\d+)?\.dex$")
 LABEL_RE = re.compile(r"^\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$")
 BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
@@ -73,6 +83,157 @@ def find_target_dex(apk: Path) -> str:
             f"expected one marker occurrence in {matches[0][0]}; found {matches[0][1]}"
         )
     return matches[0][0]
+
+
+def find_gcam_init_dex(apk: Path) -> str:
+    """Locate the dex that owns Pixel Camera's native GCam InitParams builder."""
+
+    with zipfile.ZipFile(apk, "r") as archive:
+        matches: list[str] = []
+        for info in archive.infolist():
+            if not DEX_NAME_RE.fullmatch(info.filename):
+                continue
+            data = archive.read(info)
+            if all(symbol in data for symbol in GCAM_INIT_SYMBOLS):
+                matches.append(info.filename)
+
+    if len(matches) != 1:
+        rendered = ", ".join(matches) or "none"
+        raise PatchError(
+            "expected GCam_Create/almond TPU/Tomte grain symbols in exactly one "
+            f"classes*.dex; found {rendered}"
+        )
+    return matches[0]
+
+
+def _find_skip_branch_for_call(
+    lines: list[str],
+    *,
+    method_start: int,
+    method_end: int,
+    call_index: int,
+    description: str,
+) -> tuple[int, str]:
+    """Find the local feature-enable conditional that skips a JNI setter call."""
+
+    candidates: list[tuple[int, str, int]] = []
+    for i in range(call_index - 1, max(method_start, call_index - 18), -1):
+        match = re.match(
+            r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$",
+            lines[i],
+        )
+        if not match:
+            continue
+        label = match.group("label")
+        label_indexes = [
+            j
+            for j in range(call_index + 1, min(method_end + 1, call_index + 18))
+            if lines[j].strip() == f":{label}"
+        ]
+        if len(label_indexes) == 1:
+            candidates.append((i, label, label_indexes[0]))
+
+    if len(candidates) != 1:
+        rendered = ", ".join(
+            f"line {index + 1} -> :{label}" for index, label, _ in candidates
+        ) or "none"
+        raise PatchError(
+            f"expected one local skip branch for {description}; found {rendered}"
+        )
+
+    branch_index, label, label_index = candidates[0]
+    between = lines[branch_index + 1 : label_index]
+    if any(LABEL_RE.match(line) for line in between):
+        raise PatchError(
+            f"{description} skip branch crosses another basic-block label"
+        )
+    if not (branch_index < call_index < label_index):
+        raise PatchError(f"{description} call is not inside the expected guarded block")
+
+    return branch_index, label
+
+
+def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
+    """Keep startup GCam initialization off Pixel Tensor-only accelerator paths.
+
+    The real POCO F5 runtime reaches CameraService but Pixel Camera 11 then tries
+    to initialize libgxp.so and Gcam_Create returns a null native object. Two
+    independent InitParams inputs bypass klm.q()/x(): almond_use_tpu is fed by a
+    provider boolean, and Tomte grain is fed by an Optional. Redirecting their
+    existing enable branches to their existing continuation labels preserves
+    the default false values without inventing a Pixel device profile.
+    """
+
+    lines = text.splitlines()
+    symbol_indexes: dict[str, list[int]] = {
+        symbol: [i for i, line in enumerate(lines) if symbol in line]
+        for symbol in (
+            GCAM_CREATE_SYMBOL,
+            ALMOND_TPU_SYMBOL,
+            TOMTE_GRAIN_SYMBOL,
+        )
+    }
+    for symbol, indexes in symbol_indexes.items():
+        if len(indexes) != 1:
+            raise PatchError(
+                f"expected exactly one {symbol} occurrence in GCam init smali; "
+                f"found {len(indexes)}"
+            )
+
+    almond_index = symbol_indexes[ALMOND_TPU_SYMBOL][0]
+    tomte_index = symbol_indexes[TOMTE_GRAIN_SYMBOL][0]
+    gcam_create_index = symbol_indexes[GCAM_CREATE_SYMBOL][0]
+
+    method_start, method_end = _method_bounds(lines, gcam_create_index)
+    if not (
+        method_start < almond_index < method_end
+        and method_start < tomte_index < method_end
+    ):
+        raise PatchError(
+            "GCam_Create, almond TPU, and Tomte grain setters are not in one method"
+        )
+
+    method_header = lines[method_start].strip()
+    if " synthetic a()Ljava/lang/Object;" not in method_header:
+        raise PatchError(
+            "GCam InitParams symbols moved out of the expected synthetic provider method"
+        )
+
+    almond_branch, almond_label = _find_skip_branch_for_call(
+        lines,
+        method_start=method_start,
+        method_end=method_end,
+        call_index=almond_index,
+        description="InitParams_almond_use_tpu_set",
+    )
+    tomte_branch, tomte_label = _find_skip_branch_for_call(
+        lines,
+        method_start=method_start,
+        method_end=method_end,
+        call_index=tomte_index,
+        description="InitParams_finish_tomte_grain_enabled_set",
+    )
+
+    for branch_index, label in sorted(
+        [(almond_branch, almond_label), (tomte_branch, tomte_label)],
+        reverse=True,
+    ):
+        indent = re.match(r"^(\s*)", lines[branch_index]).group(1)
+        lines[branch_index] = f"{indent}goto/32 :{label}"
+
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "patched",
+        "method": method_header,
+        "almond_use_tpu": {
+            "status": "forced_default_false",
+            "continuation_label": almond_label,
+        },
+        "finish_tomte_grain": {
+            "status": "forced_default_false",
+            "continuation_label": tomte_label,
+        },
+    }
 
 
 def _method_bounds(lines: list[str], index: int) -> tuple[int, int]:
@@ -368,23 +529,70 @@ def find_and_patch_smali_tree(root: Path) -> dict[str, str]:
     return metadata
 
 
-def replace_zip_member(source: Path, output: Path, member: str, replacement: Path) -> None:
+def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
+    matches: list[Path] = []
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if all(
+            symbol in text
+            for symbol in (
+                GCAM_CREATE_SYMBOL,
+                ALMOND_TPU_SYMBOL,
+                TOMTE_GRAIN_SYMBOL,
+            )
+        ):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected native GCam init symbols in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    original = target.read_text(encoding="utf-8")
+    patched, metadata = patch_gcam_init_smali_text(original)
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
+def replace_zip_members(
+    source: Path,
+    output: Path,
+    replacements: dict[str, Path],
+) -> None:
     if source.resolve() == output.resolve():
         raise PatchError("source and output APK paths must be different")
+    if not replacements:
+        raise PatchError("no APK members were supplied for replacement")
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    found: set[str] = set()
     with zipfile.ZipFile(source, "r") as src, zipfile.ZipFile(output, "w") as dst:
         dst.comment = src.comment
-        found = False
         for info in src.infolist():
-            if info.filename == member:
-                found = True
+            replacement = replacements.get(info.filename)
+            if replacement is not None:
+                found.add(info.filename)
                 data = replacement.read_bytes()
             else:
                 data = src.read(info)
             dst.writestr(info, data, compress_type=info.compress_type)
-    if not found:
-        raise PatchError(f"target dex disappeared from APK: {member}")
+
+    missing = sorted(set(replacements) - found)
+    if missing:
+        raise PatchError(
+            "target dex disappeared from APK: " + ", ".join(missing)
+        )
+
+
+def replace_zip_member(source: Path, output: Path, member: str, replacement: Path) -> None:
+    replace_zip_members(source, output, {member: replacement})
 
 
 def patch_apk(
@@ -408,29 +616,72 @@ def patch_apk(
         raise PatchError(f"smali jar not found: {smali}")
 
     target_dex = find_target_dex(source)
+    gcam_init_dex = find_gcam_init_dex(source)
 
     with tempfile.TemporaryDirectory(prefix="poco-f5-device-gate-") as temp:
         root = Path(temp)
-        input_dex = root / target_dex
-        smali_dir = root / "smali"
-        rebuilt_dex = root / "patched.dex"
+        replacements: dict[str, Path] = {}
+        dex_reports: dict[str, dict[str, Any]] = {}
+        command_tails: dict[str, dict[str, str]] = {}
 
         with zipfile.ZipFile(source, "r") as archive:
-            input_dex.write_bytes(archive.read(target_dex))
+            for dex_name in sorted({target_dex, gcam_init_dex}):
+                safe_name = dex_name.replace(".", "_")
+                input_dex = root / dex_name
+                smali_dir = root / f"smali-{safe_name}"
+                rebuilt_dex = root / f"patched-{safe_name}"
+                input_dex.write_bytes(archive.read(dex_name))
 
-        disassemble_output = run(
-            [java, "-jar", os.fspath(baksmali), "d", os.fspath(input_dex), "-o", os.fspath(smali_dir)]
-        )
-        metadata = find_and_patch_smali_tree(smali_dir)
-        assemble_output = run(
-            [java, "-jar", os.fspath(smali), "a", os.fspath(smali_dir), "-o", os.fspath(rebuilt_dex)]
-        )
-        if not rebuilt_dex.is_file() or rebuilt_dex.stat().st_size == 0:
-            raise PatchError("smali did not produce a rebuilt dex")
-        if MARKER_BYTES in rebuilt_dex.read_bytes():
-            raise PatchError("unsupported-device marker still exists in rebuilt dex")
+                disassemble_output = run(
+                    [
+                        java,
+                        "-jar",
+                        os.fspath(baksmali),
+                        "d",
+                        os.fspath(input_dex),
+                        "-o",
+                        os.fspath(smali_dir),
+                    ]
+                )
 
-        replace_zip_member(source, output, target_dex, rebuilt_dex)
+                report_for_dex: dict[str, Any] = {}
+                if dex_name == target_dex:
+                    report_for_dex["device_gate"] = find_and_patch_smali_tree(smali_dir)
+                if dex_name == gcam_init_dex:
+                    report_for_dex["gcam_init"] = find_and_patch_gcam_init_smali_tree(
+                        smali_dir
+                    )
+
+                assemble_output = run(
+                    [
+                        java,
+                        "-jar",
+                        os.fspath(smali),
+                        "a",
+                        os.fspath(smali_dir),
+                        "-o",
+                        os.fspath(rebuilt_dex),
+                    ]
+                )
+                if not rebuilt_dex.is_file() or rebuilt_dex.stat().st_size == 0:
+                    raise PatchError(f"smali did not produce rebuilt dex: {dex_name}")
+                if dex_name == target_dex and MARKER_BYTES in rebuilt_dex.read_bytes():
+                    raise PatchError(
+                        "unsupported-device marker still exists in rebuilt dex"
+                    )
+
+                replacements[dex_name] = rebuilt_dex
+                dex_reports[dex_name] = report_for_dex
+                command_tails[dex_name] = {
+                    "baksmali_output_tail": "\n".join(
+                        disassemble_output.splitlines()[-20:]
+                    ),
+                    "smali_output_tail": "\n".join(
+                        assemble_output.splitlines()[-20:]
+                    ),
+                }
+
+        replace_zip_members(source, output, replacements)
 
     with zipfile.ZipFile(output, "r") as archive:
         remaining = []
@@ -443,13 +694,19 @@ def patch_apk(
             + ", ".join(remaining)
         )
 
+    device_metadata = dex_reports[target_dex]["device_gate"]
+    gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
+
     return {
         "status": "patched",
         "marker": MARKER,
         "target_dex": target_dex,
-        **metadata,
-        "baksmali_output_tail": "\n".join(disassemble_output.splitlines()[-20:]),
-        "smali_output_tail": "\n".join(assemble_output.splitlines()[-20:]),
+        **device_metadata,
+        "gcam_init_patch": {
+            "target_dex": gcam_init_dex,
+            **gcam_metadata,
+        },
+        "dex_command_tails": command_tails,
     }
 
 

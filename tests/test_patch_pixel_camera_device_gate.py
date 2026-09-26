@@ -72,6 +72,42 @@ FLAG_QUERY_SAMPLE = r'''.class public final Lklm;
 FLAG_QUERY_REGISTERS_SAMPLE = FLAG_QUERY_SAMPLE.replace(".locals 3", ".registers 4")
 
 
+GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
+.super Ljava/lang/Object;
+
+.method public final synthetic a()Ljava/lang/Object;
+    .locals 37
+
+    :cond_29
+    if-eqz v27, :cond_2a
+
+    iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
+
+    invoke-static {v2, v3, v1, v12}, Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_almond_use_tpu_set(JLcom/google/googlex/gcam/InitParams;Z)V
+
+    :cond_2a
+    invoke-virtual {v2}, Ljava/lang/Boolean;->booleanValue()Z
+
+    move-result v2
+
+    if-eqz v2, :cond_2c
+
+    iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
+
+    invoke-static {v2, v3, v1, v12}, Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_finish_tomte_grain_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
+
+    :cond_2c
+    iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
+
+    invoke-static/range {v14 .. v19}, Lcom/google/googlex/gcam/GcamModuleJNI;->Gcam_Create(JLcom/google/googlex/gcam/InitParams;JLcom/google/googlex/gcam/StaticMetadataVector;)J
+
+    move-result-wide v0
+
+    return-object v5
+.end method
+'''
+
+
 class PixelCameraDeviceGatePatchTests(unittest.TestCase):
     def test_redirects_unsupported_device_throw_to_common_finalization(self):
         patched, metadata = patcher.patch_smali_text(SAMPLE)
@@ -187,6 +223,54 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(patcher.PatchError, "exactly one"):
             patcher.patch_nontensor_flag_queries(changed)
+
+    def test_disables_native_tensor_startup_initparams(self):
+        patched, metadata = patcher.patch_gcam_init_smali_text(GCAM_INIT_SAMPLE)
+
+        self.assertIn("goto/32 :cond_2a", patched)
+        self.assertIn("goto/32 :cond_2c", patched)
+        self.assertIn(patcher.ALMOND_TPU_SYMBOL, patched)
+        self.assertIn(patcher.TOMTE_GRAIN_SYMBOL, patched)
+        self.assertEqual(
+            metadata["almond_use_tpu"]["status"],
+            "forced_default_false",
+        )
+        self.assertEqual(
+            metadata["finish_tomte_grain"]["status"],
+            "forced_default_false",
+        )
+
+    def test_gcam_init_patch_fails_closed_without_unique_symbols(self):
+        changed = GCAM_INIT_SAMPLE.replace(
+            patcher.ALMOND_TPU_SYMBOL,
+            "DifferentSetter",
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "exactly one"):
+            patcher.patch_gcam_init_smali_text(changed)
+
+    def test_gcam_init_patch_rejects_cross_block_branch(self):
+        changed = GCAM_INIT_SAMPLE.replace(
+            "    iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J\n\n"
+            "    invoke-static {v2, v3, v1, v12}, "
+            "Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_almond_use_tpu_set",
+            "    :unexpected_label\n"
+            "    iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J\n\n"
+            "    invoke-static {v2, v3, v1, v12}, "
+            "Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_almond_use_tpu_set",
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "crosses another"):
+            patcher.patch_gcam_init_smali_text(changed)
+
+    def test_finds_gcam_init_dex_by_exact_symbol_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("classes.dex", b"ordinary")
+                archive.writestr(
+                    "classes3.dex",
+                    b"\x00".join(patcher.GCAM_INIT_SYMBOLS),
+                )
+            self.assertEqual(patcher.find_gcam_init_dex(apk), "classes3.dex")
 
     def test_finds_exactly_one_target_dex(self):
         with tempfile.TemporaryDirectory() as temp:
