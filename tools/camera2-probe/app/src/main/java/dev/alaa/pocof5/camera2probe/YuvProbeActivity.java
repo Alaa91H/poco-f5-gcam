@@ -481,6 +481,7 @@ public final class YuvProbeActivity extends Activity {
     }
 
     @SuppressLint("NewApi")
+    @android.annotation.TargetApi(35)
     private JSONArray buildSessionSupportMatrix(
             CameraManager manager,
             String cameraId,
@@ -603,6 +604,7 @@ public final class YuvProbeActivity extends Activity {
     }
 
     @SuppressLint("NewApi")
+    @android.annotation.TargetApi(35)
     private static boolean addSetupSessionCandidate(
             JSONArray matrix,
             CameraDevice.CameraDeviceSetup setup,
