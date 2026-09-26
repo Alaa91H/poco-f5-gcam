@@ -47,6 +47,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,6 +58,7 @@ public final class YuvProbeActivity extends Activity {
     private static final int TARGET_FRAMES = 12;
     private static final long CAMERA_TIMEOUT_MS = 7000;
     private static final long CAMERA_AVAILABILITY_TIMEOUT_MS = 2500;
+    private static final long SESSION_QUERY_TIMEOUT_MS = 1500;
     private static final String REPORT_NAME = "yuv-runtime-report.json";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -199,6 +202,7 @@ public final class YuvProbeActivity extends Activity {
         root.put("targetFramesPerCamera", TARGET_FRAMES);
         root.put("timeoutMsPerCamera", CAMERA_TIMEOUT_MS);
         root.put("availabilityTimeoutMsPerCamera", CAMERA_AVAILABILITY_TIMEOUT_MS);
+        root.put("sessionQueryTimeoutMs", SESSION_QUERY_TIMEOUT_MS);
 
         CameraManager manager =
                 (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -272,6 +276,12 @@ public final class YuvProbeActivity extends Activity {
                 .put("width", selected.getWidth())
                 .put("height", selected.getHeight()));
 
+        JSONArray sessionMatrix = buildSessionSupportMatrix(
+                manager,
+                cameraId,
+                map);
+        result.put("sessionSupportMatrix", sessionMatrix);
+
         ImageReader reader = ImageReader.newInstance(
                 selected.getWidth(),
                 selected.getHeight(),
@@ -280,7 +290,6 @@ public final class YuvProbeActivity extends Activity {
 
         AtomicReference<CameraDevice> deviceRef = new AtomicReference<>();
         AtomicReference<CameraCaptureSession> sessionRef = new AtomicReference<>();
-        AtomicReference<JSONArray> sessionMatrixRef = new AtomicReference<>();
         AtomicReference<String> errorRef = new AtomicReference<>();
         AtomicInteger frameCount = new AtomicInteger();
         AtomicInteger planeCount = new AtomicInteger(-1);
@@ -362,19 +371,6 @@ public final class YuvProbeActivity extends Activity {
                 public void onOpened(CameraDevice camera) {
                     deviceRef.set(camera);
                     try {
-                        sessionMatrixRef.set(buildSessionSupportMatrix(camera, map, reader));
-                    } catch (Exception e) {
-                        JSONArray matrixError = new JSONArray();
-                        try {
-                            matrixError.put(new JSONObject()
-                                    .put("name", "matrix_probe_error")
-                                    .put("error", e.toString()));
-                        } catch (Exception ignored) {
-                            matrixError.put("matrix_probe_error: " + e);
-                        }
-                        sessionMatrixRef.set(matrixError);
-                    }
-                    try {
                         camera.createCaptureSession(
                                 Arrays.asList(reader.getSurface()),
                                 new CameraCaptureSession.StateCallback() {
@@ -442,9 +438,6 @@ public final class YuvProbeActivity extends Activity {
             boolean success = completed && frames >= TARGET_FRAMES && errorRef.get() == null;
 
             result.put("success", success);
-            JSONArray matrix = sessionMatrixRef.get();
-            result.put("sessionSupportMatrix",
-                    matrix == null ? new JSONArray() : matrix);
             result.put("framesReceived", frames);
             result.put("elapsedMs", elapsedMs);
             result.put("planeCount", planeCount.get());
@@ -488,158 +481,140 @@ public final class YuvProbeActivity extends Activity {
     }
 
     private JSONArray buildSessionSupportMatrix(
-            CameraDevice camera,
-            StreamConfigurationMap map,
-            ImageReader yuvReader) throws Exception {
+            CameraManager manager,
+            String cameraId,
+            StreamConfigurationMap map) throws Exception {
         JSONArray matrix = new JSONArray();
 
-        Size[] previewSizes = map.getOutputSizes(SurfaceTexture.class);
-        Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
-        Size[] yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888);
+        Size previewSize = chooseOptionalProbeSize(
+                map.getOutputSizes(SurfaceTexture.class));
+        Size jpegSize = chooseOptionalProbeSize(
+                map.getOutputSizes(ImageFormat.JPEG));
+        Size yuvSize = chooseOptionalProbeSize(
+                map.getOutputSizes(ImageFormat.YUV_420_888));
 
-        Size previewSize = chooseOptionalProbeSize(previewSizes);
-        Size jpegSize = chooseOptionalProbeSize(jpegSizes);
-        Size yuvSize = chooseOptionalProbeSize(yuvSizes);
-
-        SurfaceTexture previewTexture = null;
-        Surface previewSurface = null;
-        ImageReader jpegReader = null;
-        try {
-            if (previewSize != null) {
-                previewTexture = new SurfaceTexture(0);
-                previewTexture.setDefaultBufferSize(
-                        previewSize.getWidth(),
-                        previewSize.getHeight());
-                previewSurface = new Surface(previewTexture);
+        CameraDevice.CameraDeviceSetup setup = null;
+        String setupError = null;
+        if (android.os.Build.VERSION.SDK_INT >= 35) {
+            try {
+                if (manager.isCameraDeviceSetupSupported(cameraId)) {
+                    setup = manager.getCameraDeviceSetup(cameraId);
+                } else {
+                    setupError = "CameraDeviceSetup is not supported";
+                }
+            } catch (Exception e) {
+                setupError = e.toString();
             }
-            if (jpegSize != null) {
-                jpegReader = ImageReader.newInstance(
-                        jpegSize.getWidth(),
-                        jpegSize.getHeight(),
-                        ImageFormat.JPEG,
-                        2);
-            }
-
-            Executor sessionExecutor = command -> cameraHandler.post(command);
-            CameraCaptureSession.StateCallback callback =
-                    new CameraCaptureSession.StateCallback() {
-                        @Override
-                        public void onConfigured(CameraCaptureSession session) {}
-
-                        @Override
-                        public void onConfigureFailed(CameraCaptureSession session) {}
-                    };
-
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "preview",
-                    previewSize,
-                    previewSurface);
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "yuv",
-                    yuvSize,
-                    yuvReader.getSurface());
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "jpeg",
-                    jpegSize,
-                    jpegReader == null ? null : jpegReader.getSurface());
-
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "preview+yuv",
-                    new Size[]{previewSize, yuvSize},
-                    new Surface[]{previewSurface, yuvReader.getSurface()});
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "preview+jpeg",
-                    new Size[]{previewSize, jpegSize},
-                    new Surface[]{
-                            previewSurface,
-                            jpegReader == null ? null : jpegReader.getSurface()
-                    });
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "yuv+jpeg",
-                    new Size[]{yuvSize, jpegSize},
-                    new Surface[]{
-                            yuvReader.getSurface(),
-                            jpegReader == null ? null : jpegReader.getSurface()
-                    });
-            addSessionCandidate(
-                    matrix,
-                    camera,
-                    sessionExecutor,
-                    callback,
-                    "preview+yuv+jpeg",
-                    new Size[]{previewSize, yuvSize, jpegSize},
-                    new Surface[]{
-                            previewSurface,
-                            yuvReader.getSurface(),
-                            jpegReader == null ? null : jpegReader.getSurface()
-                    });
-        } finally {
-            if (jpegReader != null) {
-                jpegReader.close();
-            }
-            if (previewSurface != null) {
-                previewSurface.release();
-            }
-            if (previewTexture != null) {
-                previewTexture.release();
-            }
+        } else {
+            setupError = "CameraDeviceSetup requires API 35+";
         }
+
+        Executor directExecutor = Runnable::run;
+        CameraCaptureSession.StateCallback callback =
+                new CameraCaptureSession.StateCallback() {
+                    @Override
+                    public void onConfigured(CameraCaptureSession session) {}
+
+                    @Override
+                    public void onConfigureFailed(CameraCaptureSession session) {}
+                };
+
+        boolean queryEnabled = setup != null;
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "preview",
+                new Size[]{previewSize},
+                new int[]{-1});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "yuv",
+                new Size[]{yuvSize},
+                new int[]{ImageFormat.YUV_420_888});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "jpeg",
+                new Size[]{jpegSize},
+                new int[]{ImageFormat.JPEG});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "preview+yuv",
+                new Size[]{previewSize, yuvSize},
+                new int[]{-1, ImageFormat.YUV_420_888});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "preview+jpeg",
+                new Size[]{previewSize, jpegSize},
+                new int[]{-1, ImageFormat.JPEG});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "yuv+jpeg",
+                new Size[]{yuvSize, jpegSize},
+                new int[]{ImageFormat.YUV_420_888, ImageFormat.JPEG});
+        addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "preview+yuv+jpeg",
+                new Size[]{previewSize, yuvSize, jpegSize},
+                new int[]{-1, ImageFormat.YUV_420_888, ImageFormat.JPEG});
 
         return matrix;
     }
 
-    private static void addSessionCandidate(
+    private static boolean addSetupSessionCandidate(
             JSONArray matrix,
-            CameraDevice camera,
+            CameraDevice.CameraDeviceSetup setup,
+            String cameraId,
             Executor executor,
             CameraCaptureSession.StateCallback callback,
-            String name,
-            Size size,
-            Surface surface) throws Exception {
-        addSessionCandidate(
-                matrix,
-                camera,
-                executor,
-                callback,
-                name,
-                new Size[]{size},
-                new Surface[]{surface});
-    }
-
-    private static void addSessionCandidate(
-            JSONArray matrix,
-            CameraDevice camera,
-            Executor executor,
-            CameraCaptureSession.StateCallback callback,
+            String setupError,
+            boolean queryEnabled,
             String name,
             Size[] sizes,
-            Surface[] surfaces) throws Exception {
+            int[] formats) throws Exception {
         JSONObject item = new JSONObject();
         item.put("name", name);
+        item.put("queryMode", "CameraDeviceSetup");
 
         JSONArray sizeArray = new JSONArray();
         boolean available = true;
@@ -659,44 +634,72 @@ public final class YuvProbeActivity extends Activity {
         if (!available) {
             item.put("supported", JSONObject.NULL);
             matrix.put(item);
-            return;
+            return queryEnabled;
         }
 
-        if (android.os.Build.VERSION.SDK_INT < 29) {
+        if (setup == null) {
             item.put("supported", JSONObject.NULL);
+            item.put("error", setupError == null
+                    ? "CameraDeviceSetup unavailable"
+                    : setupError);
             matrix.put(item);
-            return;
+            return false;
+        }
+
+        if (!queryEnabled) {
+            item.put("supported", JSONObject.NULL);
+            item.put("error", "Skipped after prior session-query timeout");
+            matrix.put(item);
+            return false;
         }
 
         List<OutputConfiguration> outputs = new ArrayList<>();
-        for (Surface surface : surfaces) {
-            if (surface == null) {
-                available = false;
-                break;
+        for (int i = 0; i < sizes.length; i++) {
+            if (formats[i] == -1) {
+                outputs.add(new OutputConfiguration(
+                        sizes[i],
+                        SurfaceTexture.class));
+            } else {
+                outputs.add(new OutputConfiguration(
+                        formats[i],
+                        sizes[i]));
             }
-            outputs.add(new OutputConfiguration(surface));
-        }
-        if (!available) {
-            item.put("supported", JSONObject.NULL);
-            matrix.put(item);
-            return;
         }
 
+        SessionConfiguration config = new SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                outputs,
+                executor,
+                callback);
+
+        FutureTask<Boolean> query = new FutureTask<>(
+                () -> setup.isSessionConfigurationSupported(config));
+        Thread queryThread = new Thread(
+                query,
+                "camera-session-query-" + cameraId + "-" + name);
+        queryThread.setDaemon(true);
+        queryThread.start();
+
         try {
-            SessionConfiguration config = new SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR,
-                    outputs,
-                    executor,
-                    callback);
             item.put(
                     "supported",
-                    camera.isSessionConfigurationSupported(config));
-        } catch (RuntimeException e) {
+                    query.get(SESSION_QUERY_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+        } catch (TimeoutException e) {
+            query.cancel(true);
+            item.put("supported", JSONObject.NULL);
+            item.put(
+                    "error",
+                    "Timed out after " + SESSION_QUERY_TIMEOUT_MS + " ms");
+            item.put("queryTimedOut", true);
+            matrix.put(item);
+            return false;
+        } catch (Exception e) {
             item.put("supported", JSONObject.NULL);
             item.put("error", e.toString());
         }
 
         matrix.put(item);
+        return true;
     }
 
     private static Size chooseOptionalProbeSize(Size[] sizes) {
