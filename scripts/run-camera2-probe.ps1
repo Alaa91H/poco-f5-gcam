@@ -503,7 +503,13 @@ if ($YuvRuntime) {
 
     $successCount = @($yuvParsed.cameras | Where-Object { $_.success -eq $true }).Count
     $cameraCount = @($yuvParsed.cameras).Count
-    $timeoutCount = @($yuvParsed.cameras | Where-Object { $_.runnerTimedOut -eq $true }).Count
+    $timeoutCount = @(
+        $yuvParsed.cameras |
+            Where-Object {
+                $property = $_.PSObject.Properties["runnerTimedOut"]
+                $null -ne $property -and $property.Value -eq $true
+            }
+    ).Count
     Write-Host (
         "YUV runtime probe: " + $successCount + "/" + $cameraCount +
         " camera IDs delivered sustained YUV frames; " + $timeoutCount +
