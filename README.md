@@ -159,3 +159,17 @@ and must not be promoted until the real-device smoke test passes on POCO F5
 (Android 17 / API 37).
 
 See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
+
+## Xiaomi camera-session ABI inspection
+
+Before adding any Marble-specific `frameworks/av` camera-session hook, inspect
+the actual Xiaomi `libcameraimpl.so` shipped on the connected POCO F5:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\inspect-marble-libcameraimpl.ps1 -Strict
+```
+
+This produces an ELF/API report without requiring `readelf`, `nm`, an NDK,
+or third-party Python packages. See
+[docs/MARBLE_CAMERAIMPL_ABI.md](docs/MARBLE_CAMERAIMPL_ABI.md).
+\n
