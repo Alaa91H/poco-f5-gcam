@@ -151,6 +151,16 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 
     iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
 
+    iget-wide v4, v14, Lcom/google/googlex/gcam/StaticMetadataVector;->a:J
+
+    move-object/from16 v16, v1
+
+    move-wide/from16 v17, v4
+
+    move-object/from16 v19, v14
+
+    move-wide v14, v2
+
     invoke-static/range {v14 .. v19}, Lcom/google/googlex/gcam/GcamModuleJNI;->Gcam_Create(JLcom/google/googlex/gcam/InitParams;JLcom/google/googlex/gcam/StaticMetadataVector;)J
 
     move-result-wide v0
@@ -393,6 +403,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["native_check"],
             "Gcam_AllSensorIdsUnique",
+        )
+        self.assertIn('const-string v3, "GCamSensorIds"', patched)
+        self.assertIn(":poco_sensor_diag_loop", patched)
+        self.assertEqual(
+            metadata["sensor_vector_diagnostics"]["status"],
+            "logged_static_metadata_sensor_ids",
+        )
+        self.assertFalse(
+            metadata["sensor_vector_diagnostics"]["behavior_changed"],
         )
 
     def test_gcam_init_patch_fails_closed_when_sensor_id_guard_shape_changes(self):
