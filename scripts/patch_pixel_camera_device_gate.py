@@ -857,6 +857,7 @@ def _patch_logical_camera_sensor_ids(
         "poco_top_level_front_logical",
         "poco_top_level_set_logical",
         "poco_top_level_logical_done",
+        "poco_top_level_alias_done",
     )
     if any(f":{label}" in method_text for label in labels):
         raise PatchError("logical camera sensor-ID patch labels already exist")
@@ -890,13 +891,62 @@ def _patch_logical_camera_sensor_ids(
         "",
         "    :poco_top_level_logical_done",
         "",
+        "    # POCO F5: exclude Camera2 aliases that collapse onto an existing",
+        "    # GCam sensor enum. Keep Android/Camera2 enumeration unchanged;",
+        "    # only omit the duplicate metadata entry from the native GCam vector.",
+        "    move-object/from16 v5, v24",
+        "",
+        "    check-cast v5, Luur;",
+        "",
+        "    iget-object v5, v5, Luur;->a:Luuv;",
+        "",
+        "    iget-object v5, v5, Luuv;->a:Ljava/lang/String;",
+        "",
+        '    const-string v25, "3"',
+        "",
+        "    move-object/from16 v26, v5",
+        "",
+        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v5",
+        "",
+        "    if-nez v5, :poco_top_level_alias_done",
+        "",
+        '    const-string v25, "5"',
+        "",
+        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v5",
+        "",
+        "    if-nez v5, :poco_top_level_alias_done",
+        "",
+        '    const-string v25, "6"',
+        "",
+        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v5",
+        "",
+        "    if-nez v5, :poco_top_level_alias_done",
+        "",
     ]
-    patched = lines[:add_index] + guard + lines[add_index:]
+    patched = (
+        lines[:add_index]
+        + guard
+        + [
+            lines[add_index],
+            "",
+            "    :poco_top_level_alias_done",
+        ]
+        + lines[add_index + 1 :]
+    )
     return patched, {
-        "status": "remapped_top_level_logical_entries",
+        "status": "remapped_logical_and_filtered_duplicate_aliases",
         "predicate": "non_empty_physical_camera_id_set",
         "back_sensor_id": "kRearLogical (5)",
         "front_sensor_id": "kFrontLogical (3)",
+        "duplicate_alias_camera_ids_excluded_from_gcam_vector": ["3", "5", "6"],
+        "camera2_enumeration_unchanged": True,
+        "expected_kept_camera_ids": ["0", "2", "4", "1"],
         "physical_entries_preserved": True,
     }
 
