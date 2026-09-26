@@ -707,11 +707,11 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
         changed = RP_SAMPLE.replace(
-            "move-result-object v14\n\n"
-            "    invoke-interface {v9, v14}, ",
-            "move-result-object v14\n\n"
+            "move-result v13\n\n"
+            "    return v13",
+            "move-result v13\n\n"
             "    const/4 v15, 0x0\n\n"
-            "    invoke-interface {v9, v14}, ",
+            "    return v13",
         )
         with self.assertRaisesRegex(
             patcher.PatchError,
