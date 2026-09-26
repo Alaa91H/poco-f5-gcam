@@ -607,7 +607,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 
     $start = [Math]::Max(0, $i - 35)
     $end = [Math]::Min($logLines.Count - 1, $i + 45)
-    $key = "$start:$end"
+    $key = "${start}:${end}"
     if ($cameraPipelineContextKeys.ContainsKey($key)) {
         continue
     }
