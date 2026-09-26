@@ -352,6 +352,7 @@ jobs:
               "Landroid/hardware/camera2/params/SessionConfiguration;",
               "Lrr;-><init>",
               "Lua;-><init>",
+              "Lupd;-><init>",
           )
           for dex_info in manifest["dex_files"]:
               smali_root=root/f"smali-{dex_info['index']}"
@@ -361,7 +362,8 @@ jobs:
                       camera2_hit=any(token in line for token in patterns[:4])
                       rr_ctor_hit="Lrr;-><init>" in line
                       lua_hit="Lua;-><init>" in line
-                      if not (camera2_hit or rr_ctor_hit or lua_hit):
+                      upd_ctor_hit="Lupd;-><init>" in line
+                      if not (camera2_hit or rr_ctor_hit or lua_hit or upd_ctor_hit):
                           continue
                       ms,me=method_bounds(lines,idx)
                       key=(str(p),ms,me)
