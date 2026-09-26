@@ -495,6 +495,18 @@ public final class YuvProbeActivity extends Activity {
         Size yuvSize = chooseOptionalProbeSize(
                 map.getOutputSizes(ImageFormat.YUV_420_888));
 
+        // Pixel Camera runtime evidence on marble shows this exact standard
+        // Camera2 graph immediately before Xiaomi's HAL rejects configuration:
+        // PRIVATE 800x600 + RAW10 4624x3472 + YUV_420_888 800x600.
+        // Query it explicitly so we can distinguish an unsupported stream
+        // combination from Pixel-specific session/vendor parameters.
+        Size pixelPrivate800 = findExactSize(
+                map.getOutputSizes(SurfaceTexture.class), 800, 600);
+        Size pixelRaw10Full = findExactSize(
+                map.getOutputSizes(ImageFormat.RAW10), 4624, 3472);
+        Size pixelYuv800 = findExactSize(
+                map.getOutputSizes(ImageFormat.YUV_420_888), 800, 600);
+
         CameraDevice.CameraDeviceSetup setup = null;
         String setupError = null;
         if (android.os.Build.VERSION.SDK_INT >= 35) {
@@ -588,7 +600,7 @@ public final class YuvProbeActivity extends Activity {
                 "yuv+jpeg",
                 new Size[]{yuvSize, jpegSize},
                 new int[]{ImageFormat.YUV_420_888, ImageFormat.JPEG});
-        addSetupSessionCandidate(
+        queryEnabled = addSetupSessionCandidate(
                 matrix,
                 setup,
                 cameraId,
@@ -599,6 +611,40 @@ public final class YuvProbeActivity extends Activity {
                 "preview+yuv+jpeg",
                 new Size[]{previewSize, yuvSize, jpegSize},
                 new int[]{-1, ImageFormat.YUV_420_888, ImageFormat.JPEG});
+
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "pixel-private800+raw10full",
+                new Size[]{pixelPrivate800, pixelRaw10Full},
+                new int[]{-1, ImageFormat.RAW10});
+        queryEnabled = addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "pixel-private800+yuv800",
+                new Size[]{pixelPrivate800, pixelYuv800},
+                new int[]{-1, ImageFormat.YUV_420_888});
+        addSetupSessionCandidate(
+                matrix,
+                setup,
+                cameraId,
+                directExecutor,
+                callback,
+                setupError,
+                queryEnabled,
+                "pixel-private800+raw10full+yuv800",
+                new Size[]{pixelPrivate800, pixelRaw10Full, pixelYuv800},
+                new int[]{-1, ImageFormat.RAW10, ImageFormat.YUV_420_888});
 
         return matrix;
     }
@@ -704,6 +750,21 @@ public final class YuvProbeActivity extends Activity {
 
         matrix.put(item);
         return true;
+    }
+
+    private static Size findExactSize(
+            Size[] sizes,
+            int width,
+            int height) {
+        if (sizes == null) {
+            return null;
+        }
+        for (Size size : sizes) {
+            if (size.getWidth() == width && size.getHeight() == height) {
+                return size;
+            }
+        }
+        return null;
     }
 
     private static Size chooseOptionalProbeSize(Size[] sizes) {
