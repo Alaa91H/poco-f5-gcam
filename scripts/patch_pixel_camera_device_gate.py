@@ -2372,6 +2372,10 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "behavior_changed": False,
         "scratch_register": "v15",
         "scratch_liveness": "verified unused after key-name lookup",
+        "stream_graph_evidence": (
+            "marble Camera2 probe configured PRIVATE 800x600 + RAW10 "
+            "4624x3472 + YUV_420_888 800x600 successfully"
+        ),
         "source": "Lve.g CaptureRequest.Key map before session configuration",
     }
 
