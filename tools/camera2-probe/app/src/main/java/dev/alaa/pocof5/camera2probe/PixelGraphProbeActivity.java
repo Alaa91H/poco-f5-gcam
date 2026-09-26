@@ -55,6 +55,7 @@ public final class PixelGraphProbeActivity extends Activity {
     private HandlerThread cameraThread;
     private Handler cameraHandler;
     private TextView statusText;
+    private boolean autoGenerateStarted;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -73,7 +74,15 @@ public final class PixelGraphProbeActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         setContentView(root);
 
-        if (getIntent() != null && getIntent().getBooleanExtra("autoGenerate", false)) {
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!autoGenerateStarted
+                && getIntent() != null
+                && getIntent().getBooleanExtra("autoGenerate", false)) {
+            autoGenerateStarted = true;
             ensurePermissionAndRun();
         }
     }
@@ -237,7 +246,7 @@ public final class PixelGraphProbeActivity extends Activity {
                     .put("error", "One or more exact stream sizes are not advertised");
         }
 
-        SurfaceTexture texture = new SurfaceTexture(0);
+        SurfaceTexture texture = new SurfaceTexture(false);
         texture.setDefaultBufferSize(800, 600);
         Surface privateSurface = new Surface(texture);
         ImageReader rawReader = needRaw
