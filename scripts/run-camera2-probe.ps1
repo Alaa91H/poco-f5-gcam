@@ -179,7 +179,7 @@ Invoke-Adb -Arguments @(
 ) -AllowFailure | Out-Null
 $launch = Invoke-Adb -Arguments @(
     $adbPrefix + @(
-        "shell", "am", "start", "-W",
+        "shell", "am", "start", "-S", "-W",
         "-n", "$Package/$Activity",
         "--ez", "autoGenerate", "true"
     )
@@ -359,6 +359,152 @@ if ($YuvRuntime) {
         )
     }
 
+    # Test the exact Pixel Camera stream graphs before probing risky logical IDs.
+    # CameraDeviceSetup is not implemented by Xiaomi's HAL on marble, so these
+    # candidates must be validated by creating real capture sessions with real
+    # PRIVATE/RAW10/YUV surfaces. Each candidate runs in a fresh foreground
+    # process and is force-stopped afterward.
+    Write-Host "Testing isolated Pixel Camera stream graphs on camera 0..."
+    $pixelGraphCandidates = @(
+        "private800+raw10full",
+        "private800+yuv800",
+        "private800+raw10full+yuv800"
+    )
+    $pixelGraphResults = New-Object System.Collections.Generic.List[object]
+    foreach ($candidate in $pixelGraphCandidates) {
+        Write-Host ("Pixel graph: " + $candidate + "...")
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "am", "force-stop", $Package)
+        ) -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 1000
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @(
+                "shell", "run-as", $Package, "rm", "-f",
+                $PixelGraphReportRelativePath
+            )
+        ) -AllowFailure | Out-Null
+
+        $graphLaunch = Invoke-Adb -Arguments @(
+            $adbPrefix + @(
+                "shell", "am", "start", "-S", "-W",
+                "-n", "$Package/$PixelGraphActivity",
+                "--ez", "autoGenerate", "true",
+                "--es", "cameraId", "0",
+                "--es", "candidate", $candidate
+            )
+        ) -AllowFailure
+
+        if ($graphLaunch.ExitCode -ne 0) {
+            $pixelGraphResults.Add([pscustomobject][ordered]@{
+                cameraId = "0"
+                candidate = $candidate
+                sessionConfigured = $false
+                runnerLaunchFailed = $true
+                error = ("Failed to launch Pixel graph probe: " + $graphLaunch.Text)
+            })
+            continue
+        }
+
+        $graphDeadline = (Get-Date).AddSeconds(15)
+        $graphReady = $false
+        do {
+            Start-Sleep -Milliseconds 400
+            $graphReadyCheck = Invoke-Adb -Arguments @(
+                $adbPrefix + @(
+                    "shell", "run-as", $Package, "test", "-f",
+                    $PixelGraphReportRelativePath
+                )
+            ) -AllowFailure
+            if ($graphReadyCheck.ExitCode -eq 0) {
+                $graphReady = $true
+                break
+            }
+        } while ((Get-Date) -lt $graphDeadline)
+
+        if (-not $graphReady) {
+            $graphTimeoutDump = Invoke-Adb -Arguments @(
+                $adbPrefix + @("shell", "dumpsys", "media.camera")
+            ) -AllowFailure
+            $safeCandidate = $candidate -replace '[^A-Za-z0-9._-]', '_'
+            [System.IO.File]::WriteAllText(
+                (Join-Path $outDir ("camera-service-timeout-pixel-graph-" + $safeCandidate + ".txt")),
+                $graphTimeoutDump.Text + [Environment]::NewLine,
+                $utf8NoBom
+            )
+            $pixelGraphResults.Add([pscustomobject][ordered]@{
+                cameraId = "0"
+                candidate = $candidate
+                sessionConfigured = $false
+                runnerTimedOut = $true
+                timeoutSeconds = 15
+                error = "Pixel graph probe timed out before producing a report."
+            })
+        }
+        else {
+            $graphExport = Invoke-Adb -Arguments @(
+                $adbPrefix + @(
+                    "exec-out", "run-as", $Package, "cat",
+                    $PixelGraphReportRelativePath
+                )
+            ) -AllowFailure -StdoutOnly
+            if ($graphExport.ExitCode -ne 0) {
+                $pixelGraphResults.Add([pscustomobject][ordered]@{
+                    cameraId = "0"
+                    candidate = $candidate
+                    sessionConfigured = $false
+                    runnerExportFailed = $true
+                    error = ("Failed to export Pixel graph report: " + $graphExport.Text)
+                })
+            }
+            else {
+                try {
+                    $graphParsed = $graphExport.Text | ConvertFrom-Json
+                    if ($null -eq $graphParsed.result) {
+                        throw "Pixel graph report did not contain a result."
+                    }
+                    $pixelGraphResults.Add($graphParsed.result)
+                    $safeCandidate = $candidate -replace '[^A-Za-z0-9._-]', '_'
+                    [System.IO.File]::WriteAllText(
+                        (Join-Path $outDir ("pixel-graph-" + $safeCandidate + ".json")),
+                        $graphExport.Text + [Environment]::NewLine,
+                        $utf8NoBom
+                    )
+                }
+                catch {
+                    $pixelGraphResults.Add([pscustomobject][ordered]@{
+                        cameraId = "0"
+                        candidate = $candidate
+                        sessionConfigured = $false
+                        runnerParseFailed = $true
+                        error = ("Invalid Pixel graph report: " + $_.Exception.Message)
+                    })
+                }
+            }
+        }
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "am", "force-stop", $Package)
+        ) -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 2000
+    }
+
+    $pixelGraphCombined = [ordered]@{
+        schemaVersion = 1
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        packageName = $Package
+        cameraId = "0"
+        mode = "isolated-real-session-per-candidate"
+        candidates = $pixelGraphResults.ToArray()
+    }
+    $pixelGraphText = $pixelGraphCombined | ConvertTo-Json -Depth 24
+    [System.IO.File]::WriteAllText(
+        (Join-Path $outDir "pixel-graph-runtime-report.json"),
+        $pixelGraphText + [Environment]::NewLine,
+        $utf8NoBom
+    )
+
     $cameraIds = @($parsed.cameraIdList | ForEach-Object { [string]$_ })
     if ($cameraIds.Count -eq 0) {
         Fail "Camera2 report did not expose any camera IDs for isolated YUV probing."
@@ -384,7 +530,7 @@ if ($YuvRuntime) {
 
         $yuvLaunch = Invoke-Adb -Arguments @(
             $adbPrefix + @(
-                "shell", "am", "start", "-W",
+                "shell", "am", "start", "-S", "-W",
                 "-n", "$Package/$YuvActivity",
                 "--ez", "autoGenerate", "true",
                 "--es", "cameraId", $cameraId
@@ -432,7 +578,7 @@ if ($YuvRuntime) {
             Invoke-Adb -Arguments @(
                 $adbPrefix + @("shell", "am", "force-stop", $Package)
             ) -AllowFailure | Out-Null
-            Start-Sleep -Milliseconds 1500
+            Start-Sleep -Milliseconds 3000
             continue
         }
 
