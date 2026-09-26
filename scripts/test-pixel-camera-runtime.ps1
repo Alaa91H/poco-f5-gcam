@@ -273,7 +273,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|mjy\\.a\\(PG:\\d+\\)|sensor-ID uniqueness)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|GCamOC|mjy\\.a\\(PG:\\d+\\)|sensor-ID uniqueness)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -306,7 +306,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamTopCameraId|GCamPhysicalCameraId|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|mjy\\.a\\(PG:\\d+\\))"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamTopCameraId|GCamPhysicalCameraId|GCamMappedCameraId|GCamMappedSensorId|GCamSessionParamKey|GCamOC|mjy\\.a\\(PG:\\d+\\))"
         } |
         Select-Object -Last 200
 )
@@ -485,6 +485,66 @@ $sessionParameterKeys = @(
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -Unique
 )
+
+$outputConfigurationLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)GCamOC(Surface|Type|Mirror|Timestamp|DynamicRange|StreamUseCase|PixelModes|Size|Sharing|GroupId|PhysicalId)'
+        } |
+        Select-Object -Last 600
+)
+$outputConfigurations = New-Object System.Collections.Generic.List[object]
+$pendingOutputConfigurationByThread = @{}
+foreach ($line in $outputConfigurationLines) {
+    if ($line -notmatch '^\S+\s+\S+\s+(?<pid>\d+)\s+(?<tid>\d+)\s+\S+\s+(?<tag>GCamOC(?:Surface|Type|Mirror|Timestamp|DynamicRange|StreamUseCase|PixelModes|Size|Sharing|GroupId|PhysicalId))\s*:\s*(?<value>.*)$') {
+        continue
+    }
+
+    $threadKey = "$($Matches["pid"]):$($Matches["tid"])"
+    $tag = $Matches["tag"]
+    $value = $Matches["value"].Trim()
+
+    if ($tag -eq "GCamOCSurface") {
+        $pendingOutputConfigurationByThread[$threadKey] = [ordered]@{
+            pid = $Matches["pid"]
+            tid = $Matches["tid"]
+            surface = $value
+            outputType = ""
+            mirrorMode = ""
+            timestampBase = ""
+            dynamicRangeProfile = ""
+            streamUseCase = ""
+            sensorPixelModesUsed = ""
+            size = ""
+            surfaceSharing = ""
+            surfaceGroupId = ""
+            physicalCameraId = ""
+        }
+        continue
+    }
+
+    if (-not $pendingOutputConfigurationByThread.ContainsKey($threadKey)) {
+        continue
+    }
+
+    $entry = $pendingOutputConfigurationByThread[$threadKey]
+    switch ($tag) {
+        "GCamOCType" { $entry.outputType = $value }
+        "GCamOCMirror" { $entry.mirrorMode = $value }
+        "GCamOCTimestamp" { $entry.timestampBase = $value }
+        "GCamOCDynamicRange" { $entry.dynamicRangeProfile = $value }
+        "GCamOCStreamUseCase" { $entry.streamUseCase = $value }
+        "GCamOCPixelModes" { $entry.sensorPixelModesUsed = $value }
+        "GCamOCSize" { $entry.size = $value }
+        "GCamOCSharing" { $entry.surfaceSharing = $value }
+        "GCamOCGroupId" { $entry.surfaceGroupId = $value }
+        "GCamOCPhysicalId" {
+            $entry.physicalCameraId = $value
+            $outputConfigurations.Add($entry)
+            $pendingOutputConfigurationByThread.Remove($threadKey)
+        }
+    }
+}
 
 $sensorVectorLines = @(
     $logLines |
@@ -827,6 +887,8 @@ $report = [ordered]@{
         preFilterMappings = $preFilterMappings.ToArray()
         sessionParameterKeyLines = $sessionParameterKeyLines
         sessionParameterKeys = $sessionParameterKeys
+        outputConfigurationLines = $outputConfigurationLines
+        outputConfigurations = $outputConfigurations.ToArray()
         sensorVectorLines = $sensorVectorLines
         sensorVectorIds = $sensorVectorIds.ToArray()
         sensorVectorDuplicateIds = $sensorVectorDuplicateIds
@@ -941,6 +1003,27 @@ if ($sessionParameterKeys.Count -gt 0) {
 }
 else {
     Write-Host "OneCamera session parameter keys: none observed"
+}
+if ($outputConfigurations.Count -gt 0) {
+    Write-Host "OneCamera OutputConfiguration entries:"
+    $outputConfigurations | ForEach-Object {
+        Write-Host (
+            "  PID " + $_.pid + " TID " + $_.tid +
+            ": type=" + $_.outputType +
+            " size=" + $_.size +
+            " physical=" + $_.physicalCameraId +
+            " useCase=" + $_.streamUseCase +
+            " dynamicRange=" + $_.dynamicRangeProfile +
+            " sharing=" + $_.surfaceSharing +
+            " groupId=" + $_.surfaceGroupId +
+            " mirror=" + $_.mirrorMode +
+            " timestamp=" + $_.timestampBase +
+            " pixelModes=" + $_.sensorPixelModesUsed
+        )
+    }
+}
+else {
+    Write-Host "OneCamera OutputConfiguration entries: none observed"
 }
 if ($preFilterMappings.Count -gt 0) {
     Write-Host "Pre-filter Camera2 -> GCam sensor mappings:"
