@@ -364,6 +364,7 @@ jobs:
               "Landroid/hardware/camera2/params/OutputConfiguration;->setSensorPixelModesUsed",
           )
           support_patterns=(
+              "Lvz;->u(Landroid/view/Surface;Lqw;Lqv;Lra;Lqu;Lqy;Ljava/util/List;Landroid/util/Size;ZILjava/lang/String;I)Lry;",
               "Lrr;-><init>",
               "Lua;-><init>",
               "Lupd;-><init>",
