@@ -36,7 +36,8 @@
     "zipalign": true,
     "resign": true,
     "patch_unsupported_device_gate": true,
-    "patch_tensor_gxp_tpu_feature_queries": true
+    "patch_tensor_gxp_tpu_feature_queries": true,
+    "patch_native_gcam_startup_initparams": true
   },
   "signing": {
     "preferred_mode": "repository-keystore",
@@ -56,7 +57,8 @@
     "The compatibility build patches the exact unsupported-device constructor throw and, based on POCO F5 runtime evidence, forces Tensor-only GXP/TPU/DarwiNN feature queries off while preserving all unrelated feature flags; both patches fail closed if the expected bytecode shape changes.",
     "A stable repository signing key is required for APK-to-APK upgrades between project-signed experimental builds.",
     "POCO F5 runtime validation reached CameraService successfully but then showed libgxp.so/DarwiNN initialization failures followed by a null Gcam object; the non-Tensor guard prevents selecting those Pixel Tensor accelerator paths.",
-    "PairIP is not removed or bypassed by this pipeline."
+    "PairIP is not removed or bypassed by this pipeline.",
+    "Real-device validation after the klm feature-query guard still showed libgxp.so probing followed by Gcam.g() on a null native object. The current compatibility patch therefore also keeps the GCam InitParams provider from enabling almond TPU and Tomte grain during startup, preserving their default false state."
   ],
   "runtime_validation": {
     "required_for_distribution": true,
