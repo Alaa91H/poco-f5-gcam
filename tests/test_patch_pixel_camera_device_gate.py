@@ -703,6 +703,11 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertEqual(metadata["status"], "diagnostic_logging")
         self.assertEqual(metadata["class"], "Lrp;")
         self.assertEqual(metadata["tag"], "GCamSessionParamKey")
+        self.assertEqual(metadata["scratch_register"], "v15")
+        self.assertEqual(
+            metadata["scratch_liveness"],
+            "verified unused after key-name lookup",
+        )
         self.assertFalse(metadata["behavior_changed"])
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
