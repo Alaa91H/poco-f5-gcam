@@ -2462,7 +2462,7 @@ def patch_onecamera_output_configuration_logging_smali_text(
     descriptor = "Lvz;"
     class_matches = [
         i for i, line in enumerate(lines)
-        if re.match(r"^\\.class\\s+.*" + re.escape(descriptor) + r"\\s*$", line)
+        if re.match(r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$", line)
     ]
     if len(class_matches) != 1:
         raise PatchError(
@@ -2494,7 +2494,7 @@ def patch_onecamera_output_configuration_logging_smali_text(
 
     register_lines = [
         i for i in range(method_start + 1, method_end)
-        if re.fullmatch(r"\\s*\\.registers\\s+13\\s*", lines[i])
+        if re.fullmatch(r"\s*\.registers\s+13\s*", lines[i])
     ]
     if len(register_lines) != 1:
         raise PatchError(
@@ -2524,7 +2524,7 @@ def patch_onecamera_output_configuration_logging_smali_text(
             f"found {actual!r}"
         )
 
-    indent = re.match(r"^(\\s*)", lines[anchor_index]).group(1)
+    indent = re.match(r"^(\s*)", lines[anchor_index]).group(1)
 
     def log_object(tag: str, register: str) -> list[str]:
         return [
@@ -2611,7 +2611,7 @@ def find_and_patch_onecamera_output_configuration_logging_smali_tree(
     root: Path,
 ) -> dict[str, Any]:
     matches: list[Path] = []
-    class_line_re = re.compile(r"^\\.class\\s+.*Lvz;\\s*$", re.MULTILINE)
+    class_line_re = re.compile(r"^\.class\s+.*Lvz;\s*$", re.MULTILINE)
     for path in root.rglob("*.smali"):
         try:
             text = path.read_text(encoding="utf-8")
