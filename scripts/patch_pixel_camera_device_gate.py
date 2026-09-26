@@ -947,7 +947,9 @@ def _inject_camera_source_runtime_diagnostics(
         "",
         '    const-string v24, "GCamTopCameraId"',
         "",
-        "    invoke-static {v24, v7}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    move-object/from16 v25, v7",
+        "",
+        "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
     lines = lines[:top_call_index] + top_block + lines[top_call_index:]
@@ -973,11 +975,11 @@ def _inject_camera_source_runtime_diagnostics(
 
     physical_block = [
         "",
-        "    iget-object v18, v0, Luuv;->a:Ljava/lang/String;",
+        '    const-string v24, "GCamPhysicalCameraId"',
         "",
-        '    const-string v25, "GCamPhysicalCameraId"',
+        "    iget-object v25, v0, Luuv;->a:Ljava/lang/String;",
         "",
-        "    invoke-static {v25, v18}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
     lines = lines[:physical_call_index] + physical_block + lines[physical_call_index:]
@@ -1823,7 +1825,10 @@ def patch_apk(
                     ]
                 )
                 if not rebuilt_dex.is_file() or rebuilt_dex.stat().st_size == 0:
-                    raise PatchError(f"smali did not produce rebuilt dex: {dex_name}")
+                    tail = "\n".join(assemble_output.splitlines()[-80:])
+                    raise PatchError(
+                        f"smali did not produce rebuilt dex: {dex_name}\n{tail}"
+                    )
                 if dex_name == target_dex and MARKER_BYTES in rebuilt_dex.read_bytes():
                     raise PatchError(
                         "unsupported-device marker still exists in rebuilt dex"
