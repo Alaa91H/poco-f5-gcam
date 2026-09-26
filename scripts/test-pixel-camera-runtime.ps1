@@ -494,7 +494,31 @@ $sessionParameterKeyLines = @(
 $sessionParameterKeys = @(
     $sessionParameterKeyLines |
         ForEach-Object {
-            if ($_ -match 'GCamSessionParamKey\s*:\s*(?<key>.+)
+            if ($_ -match 'GCamSessionParamKey\s*:\s*(?<key>.+)$') {
+                $Matches["key"].Trim()
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+)
+
+$xiaomiClientNameLines = @(
+    $logLines |
+        Where-Object { $_ -match '(?i)GCamXiaomiClientName' } |
+        Select-Object -Last 100
+)
+$xiaomiClientNameValues = @(
+    $xiaomiClientNameLines |
+        ForEach-Object {
+            if ($_ -match 'GCamXiaomiClientName\s*:\s*(?<value>.+)$') {
+                $Matches["value"].Trim()
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+)
+$xiaomiClientNameInjected = $xiaomiClientNameValues.Count -gt 0
+
 $outputConfigurationLines = @(
     $logLines |
         Where-Object {
