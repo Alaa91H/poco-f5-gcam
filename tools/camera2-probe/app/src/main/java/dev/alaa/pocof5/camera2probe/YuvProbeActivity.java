@@ -67,6 +67,7 @@ public final class YuvProbeActivity extends Activity {
     private Button runButton;
     private HandlerThread cameraThread;
     private Handler cameraHandler;
+    private boolean autoGenerateStarted;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -116,7 +117,15 @@ public final class YuvProbeActivity extends Activity {
 
         runButton.setOnClickListener(v -> ensurePermissionAndRun());
 
-        if (getIntent() != null && getIntent().getBooleanExtra("autoGenerate", false)) {
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (!autoGenerateStarted
+                && getIntent() != null
+                && getIntent().getBooleanExtra("autoGenerate", false)) {
+            autoGenerateStarted = true;
             ensurePermissionAndRun();
         }
     }
