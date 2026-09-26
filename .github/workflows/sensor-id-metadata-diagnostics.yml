@@ -166,6 +166,24 @@ jobs:
                       if " g()Lzoi;" in sig or " u(Lzoi;)V" in sig:
                           out.write(f"\n=== StaticMetadata method {s+1}-{e+1}: {sig} ===\n")
                           out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+
+              vec_path=root/"com/google/googlex/gcam/StaticMetadataVector.smali"
+              if vec_path.is_file():
+                  _,ms=methods(vec_path)
+                  out.write("\n=== StaticMetadataVector public API ===\n")
+                  for sig,s,e,body in ms:
+                      if " public " in sig or " constructor " in sig:
+                          out.write(f"\n=== StaticMetadataVector method {s+1}-{e+1}: {sig} ===\n")
+                          out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+
+              mjy_path=root/"mjy.smali"
+              if mjy_path.is_file():
+                  lines,ms=methods(mjy_path)
+                  targets=[i for i,line in enumerate(lines) if "Gcam_Create" in line]
+                  for target in targets:
+                      out.write("\n=== mjy Gcam_Create build context ===\n")
+                      for i in range(max(0,target-260),min(len(lines),target+50)):
+                          out.write(f"{i+1:06d}: {lines[i]}\n")
           PY
 
           sed -n '1,4200p' "$REPORT"
