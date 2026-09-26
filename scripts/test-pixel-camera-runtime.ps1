@@ -131,6 +131,103 @@ $resumedLines = @(
 $logcat = (Invoke-Adb -Arguments @("logcat", "-d", "-v", "threadtime", "-t", "8000") -AllowFailure).Text
 $logLines = @($logcat -split "\r?\n")
 
+# Native debuggerd output is written to Android's dedicated crash buffer and
+# can be absent from the default logcat buffers. Collect it explicitly so a
+# SIGSEGV report includes the native PC/library frames when Android publishes
+# them there.
+$crashLogcatResult = Invoke-Adb -Arguments @(
+    "logcat", "-b", "crash", "-d", "-v", "threadtime", "-t", "4000"
+) -AllowFailure
+$crashBufferLines = @(
+    $crashLogcatResult.Text -split "\r?\n" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
+
+# On rooted development devices (Magisk/KernelSU), debuggerd also writes a
+# complete tombstone under /data/tombstones. Root is optional: failure to run
+# su simply leaves the tombstone fields empty and never fails the runtime test.
+$nativeTombstoneRootAvailable = $false
+$nativeTombstonePath = ""
+$nativeTombstoneLines = @()
+$tombstoneFindCommand = @'
+for f in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 12); do
+  if grep -Fq 'com.google.android.GoogleCamera' "$f" 2>/dev/null; then
+    echo "$f"
+    break
+  fi
+done
+'@
+$tombstoneFind = Invoke-Adb -Arguments @(
+    "shell", "su", "-c", $tombstoneFindCommand
+) -AllowFailure
+if ($tombstoneFind.ExitCode -eq 0) {
+    $nativeTombstoneRootAvailable = $true
+    $nativeTombstonePath = @(
+        $tombstoneFind.Text -split "\r?\n" |
+            Where-Object { $_ -match '^/data/tombstones/tombstone_' } |
+            Select-Object -First 1
+    )
+    if ($nativeTombstonePath -is [array]) {
+        $nativeTombstonePath = if ($nativeTombstonePath.Count -gt 0) {
+            "$($nativeTombstonePath[0])".Trim()
+        }
+        else {
+            ""
+        }
+    }
+    else {
+        $nativeTombstonePath = "$nativeTombstonePath".Trim()
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($nativeTombstonePath)) {
+        $tombstoneRead = Invoke-Adb -Arguments @(
+            "shell", "su", "-c", ("cat " + $nativeTombstonePath)
+        ) -AllowFailure
+        if ($tombstoneRead.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($tombstoneRead.Text)) {
+            $nativeTombstoneLines = @($tombstoneRead.Text -split "\r?\n")
+        }
+    }
+}
+
+$nativeCrashCombinedLines = @($crashBufferLines + $nativeTombstoneLines)
+$nativeBacktraceLines = @(
+    $nativeCrashCombinedLines |
+        Where-Object {
+            $_ -match '(?i)(backtrace:|^\s*#\d+\s+pc\s+|signal\s+11|SIGSEGV|Cmdline:|pid:\s*\d+.*tid:\s*\d+|Abort message:|Cause:)'
+        } |
+        Select-Object -Last 400
+)
+$nativeFrameLines = @(
+    $nativeCrashCombinedLines |
+        Where-Object { $_ -match '^\s*#\d+\s+pc\s+' } |
+        Select-Object -Last 300
+)
+$nativeFirstFrame = if ($nativeFrameLines.Count -gt 0) { $nativeFrameLines[0] } else { "" }
+$nativeCrashLibraries = @(
+    $nativeFrameLines |
+        ForEach-Object {
+            if ($_ -match '(?<library>/[^\s]+\.so)(?:\s|$)') {
+                $Matches["library"]
+            }
+        } |
+        Select-Object -Unique
+)
+$nativeCrashThreadName = ""
+foreach ($candidateLine in @($crashBufferLines + $logLines)) {
+    if ($candidateLine -match 'Fatal signal\s+\d+.*?tid\s+\d+\s+\((?<thread>[^)]+)\)') {
+        $nativeCrashThreadName = $Matches["thread"]
+        break
+    }
+}
+if ([string]::IsNullOrWhiteSpace($nativeCrashThreadName)) {
+    foreach ($candidateLine in $nativeTombstoneLines) {
+        if ($candidateLine -match 'pid:\s*\d+,\s*tid:\s*\d+,\s*name:\s*(?<thread>\S+)') {
+            $nativeCrashThreadName = $Matches["thread"]
+            break
+        }
+    }
+}
+
 $fatalMarkers = @(
     "FATAL EXCEPTION",
     "UnsatisfiedLinkError",
@@ -594,6 +691,22 @@ $report = [ordered]@{
         rootCauseLines = $rootCauseLines
         diagnosticLineCount = $diagnosticLines.Count
         diagnosticLines = $diagnosticLines
+        nativeCrash = [ordered]@{
+            crashBufferExitCode = $crashLogcatResult.ExitCode
+            crashBufferLineCount = $crashBufferLines.Count
+            crashBufferLines = $crashBufferLines
+            rootAvailable = $nativeTombstoneRootAvailable
+            tombstonePath = $nativeTombstonePath
+            tombstoneLineCount = $nativeTombstoneLines.Count
+            tombstoneLines = $nativeTombstoneLines
+            threadName = $nativeCrashThreadName
+            backtraceLineCount = $nativeBacktraceLines.Count
+            backtraceLines = $nativeBacktraceLines
+            frameLineCount = $nativeFrameLines.Count
+            frameLines = $nativeFrameLines
+            firstFrame = $nativeFirstFrame
+            libraries = $nativeCrashLibraries
+        }
     }
     result = [ordered]@{
         startupPassed = $startupPassed
@@ -633,6 +746,14 @@ Write-Host "PID replacement observed: $pidReplacementObserved"
 Write-Host "Fatal PID differs from final PID: $fatalPidDiffersFromFinalPid"
 Write-Host "Fatal contexts: $($fatalEvidence.Count)"
 Write-Host "Root-cause lines: $($rootCauseLines.Count)"
+Write-Host "Native crash-buffer lines: $($crashBufferLines.Count)"
+Write-Host "Native tombstone root available: $nativeTombstoneRootAvailable"
+Write-Host "Native tombstone: $nativeTombstonePath"
+Write-Host "Native crash thread: $nativeCrashThreadName"
+Write-Host "Native backtrace frames: $($nativeFrameLines.Count)"
+if (-not [string]::IsNullOrWhiteSpace($nativeFirstFrame)) {
+    Write-Host "Native first frame: $nativeFirstFrame"
+}
 Write-Host "GCam tuning state: $tuningState"
 Write-Host "Uncalibrated fallback observed: $tuningFallbackObserved"
 Write-Host "Tuning abort observed: $tuningAbortObserved"
@@ -683,6 +804,11 @@ if (-not $runtimePassed) {
         Write-Host ""
         Write-Host "Root-cause lines:"
         $rootCauseLines | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+    }
+    if ($nativeBacktraceLines.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Native crash backtrace:"
+        $nativeBacktraceLines | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
     }
 }
 
