@@ -383,15 +383,17 @@ foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
         $group.sources.Count -eq $group.sensors.Count
     )
 
-    for ($i = 0; $i -lt $pairedCount; $i++) {
-        $sensorSourceMappings.Add([ordered]@{
-            pid = $group.pid
-            tid = $group.tid
-            index = $i
-            sourceType = $group.sources[$i].sourceType
-            cameraId = $group.sources[$i].cameraId
-            sensor = $group.sensors[$i]
-        })
+    if ($complete) {
+        for ($i = 0; $i -lt $pairedCount; $i++) {
+            $sensorSourceMappings.Add([ordered]@{
+                pid = $group.pid
+                tid = $group.tid
+                index = $i
+                sourceType = $group.sources[$i].sourceType
+                cameraId = $group.sources[$i].cameraId
+                sensor = $group.sensors[$i]
+            })
+        }
     }
 
     $sensorSourceMappingThreads.Add([ordered]@{
