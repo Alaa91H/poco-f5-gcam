@@ -115,6 +115,66 @@ OFE_SAMPLE = r'''.class public final Lofe;
 '''
 
 
+MTA_SAMPLE = r'''.class public final Lmta;
+.super Ljava/lang/Object;
+
+.method public final synthetic a()Ljava/lang/Object;
+    .registers 17
+
+    invoke-virtual {v0, v1}, Lklm;->q(Lkiz;)Z
+
+    move-result v0
+
+    if-eqz v0, :cond_2d9
+
+    sget-object v0, Ltdi;->a:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {v4}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
+
+    move-result-object v1
+
+    new-instance v2, Lupd;
+
+    invoke-direct {v2, v0, v1}, Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V
+
+    new-instance v0, Lyjh;
+
+    invoke-direct {v0, v2}, Lyjh;-><init>(Ljava/lang/Object;)V
+
+    goto :goto_2db
+
+    :cond_2d9
+    sget-object v0, Lyiu;->a:Lyiu;
+
+    :goto_2db
+    return-object v0
+.end method
+'''
+
+
+UA_SAMPLE = r'''.class public final synthetic Lua;
+.super Ljava/lang/Object;
+
+.method public final fe(Ljava/lang/Object;)Ljava/lang/Object;
+    .registers 10
+
+    invoke-static {v6}, Landroid/os/Trace;->beginSection(Ljava/lang/String;)V
+
+    invoke-virtual {v3}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+
+    check-cast v5, Landroid/hardware/camera2/CameraDevice$StateCallback;
+
+    check-cast v0, Ljava/lang/String;
+
+    invoke-virtual {v3, v0, p1, v5}, Landroid/hardware/camera2/CameraManager;->openCamera(Ljava/lang/String;Ljava/util/concurrent/Executor;Landroid/hardware/camera2/CameraDevice$StateCallback;)V
+
+    invoke-static {}, Landroid/os/Trace;->endSection()V
+
+    return-object v1
+.end method
+'''
+
+
 GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 .super Ljava/lang/Object;
 
@@ -431,6 +491,68 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Ltdn.a no longer uses Optional.ofNullable",
         ):
             patcher.patch_onecamera_optional_key_smali_text(changed)
+
+    def test_allows_absent_mta_vendor_request_key(self):
+        patched, metadata = patcher.patch_onecamera_missing_request_key_smali_text(
+            MTA_SAMPLE
+        )
+
+        self.assertIn(
+            "sget-object v0, Ltdi;->a:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    # POCO F5: optional vendor CaptureRequest key is absent.\n"
+            "    if-eqz v0, :cond_2d9",
+            patched,
+        )
+        self.assertEqual(
+            metadata["status"],
+            "allow_absent_ldti_a_capture_request_key",
+        )
+        self.assertEqual(metadata["key"], "Ltdi.a")
+        self.assertEqual(metadata["fallback_label"], "cond_2d9")
+
+    def test_mta_vendor_request_key_patch_fails_closed_if_key_moves(self):
+        changed = MTA_SAMPLE.replace("Ltdi;->a:", "Ltdi;->b:")
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "exactly one Ltdi.a CaptureRequest key",
+        ):
+            patcher.patch_onecamera_missing_request_key_smali_text(changed)
+
+    def test_redirects_xiaomi_logical_rear_open_to_physical_rear(self):
+        patched, metadata = patcher.patch_onecamera_open_camera_fallback_smali_text(
+            UA_SAMPLE
+        )
+
+        self.assertIn('const-string v6, "4"', patched)
+        self.assertIn('const-string v0, "0"', patched)
+        self.assertIn(":poco_physical_rear_camera_ready", patched)
+        self.assertIn(
+            "CameraManager;->openCamera(Ljava/lang/String;"
+            "Ljava/util/concurrent/Executor;"
+            "Landroid/hardware/camera2/CameraDevice$StateCallback;)V",
+            patched,
+        )
+        self.assertEqual(
+            metadata["status"],
+            "redirect_xiaomi_logical_rear_to_physical_rear",
+        )
+        self.assertEqual(metadata["requested_camera_id"], "4")
+        self.assertEqual(metadata["fallback_camera_id"], "0")
+        self.assertTrue(metadata["other_camera_ids_unchanged"])
+
+    def test_rear_open_fallback_fails_closed_if_call_shape_changes(self):
+        changed = UA_SAMPLE.replace(
+            "invoke-virtual {v3, v0, p1, v5}, "
+            "Landroid/hardware/camera2/CameraManager;->openCamera",
+            "invoke-virtual {v3, v0, p1, v5}, "
+            "Landroid/hardware/camera2/CameraManager;->openCameraForUid",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "exactly one executor CameraManager.openCamera",
+        ):
+            patcher.patch_onecamera_open_camera_fallback_smali_text(changed)
 
     def test_disables_android17_keepalive_background_service(self):
         patched, metadata = patcher.patch_keepalive_receiver_smali_text(
