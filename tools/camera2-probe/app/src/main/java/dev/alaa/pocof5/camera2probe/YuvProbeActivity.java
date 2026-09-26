@@ -160,7 +160,11 @@ public final class YuvProbeActivity extends Activity {
 
         executor.execute(() -> {
             try {
-                JSONObject report = buildRuntimeReport(this);
+                String requestedCameraId = null;
+                if (getIntent() != null) {
+                    requestedCameraId = getIntent().getStringExtra("cameraId");
+                }
+                JSONObject report = buildRuntimeReport(this, requestedCameraId);
                 File output = new File(getFilesDir(), REPORT_NAME);
                 try (OutputStreamWriter writer = new OutputStreamWriter(
                         new FileOutputStream(output, false),
@@ -185,7 +189,9 @@ public final class YuvProbeActivity extends Activity {
         });
     }
 
-    private JSONObject buildRuntimeReport(Context context) throws Exception {
+    private JSONObject buildRuntimeReport(
+            Context context,
+            String requestedCameraId) throws Exception {
         JSONObject root = new JSONObject();
         root.put("schemaVersion", 2);
         root.put("generatedAtUtc", utcNow());
@@ -199,9 +205,24 @@ public final class YuvProbeActivity extends Activity {
         String[] ids = manager.getCameraIdList();
         Arrays.sort(ids);
 
+        if (requestedCameraId != null && !requestedCameraId.isEmpty()) {
+            root.put("requestedCameraId", requestedCameraId);
+        }
+
         JSONArray cameras = new JSONArray();
         for (String id : ids) {
+            if (requestedCameraId != null
+                    && !requestedCameraId.isEmpty()
+                    && !requestedCameraId.equals(id)) {
+                continue;
+            }
             cameras.put(probeCamera(manager, id, ids));
+        }
+        if (requestedCameraId != null
+                && !requestedCameraId.isEmpty()
+                && cameras.length() == 0) {
+            throw new IllegalArgumentException(
+                    "Requested camera ID is not exposed: " + requestedCameraId);
         }
         root.put("cameras", cameras);
         return root;
