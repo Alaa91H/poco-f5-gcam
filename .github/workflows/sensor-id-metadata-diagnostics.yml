@@ -112,7 +112,63 @@ jobs:
               echo
             } >> "$REPORT"
           done
-          sed -n '1,2200p' "$REPORT"
+          python - "$RUNNER_TEMP/sensor-0-smali" "$REPORT" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          root=Path(sys.argv[1]); report=Path(sys.argv[2])
+
+          def methods(path):
+              lines=path.read_text(encoding="utf-8",errors="replace").splitlines()
+              result=[]
+              i=0
+              while i < len(lines):
+                  if not lines[i].startswith(".method "):
+                      i+=1
+                      continue
+                  start=i
+                  while i < len(lines) and lines[i].strip()!=".end method":
+                      i+=1
+                  end=min(i,len(lines)-1)
+                  result.append((lines[start],start,end,lines[start:end+1]))
+                  i+=1
+              return lines,result
+
+          with report.open("a",encoding="utf-8") as out:
+              zoi_path=root/"zoi.smali"
+              if zoi_path.is_file():
+                  lines,ms=methods(zoi_path)
+                  out.write("\n=== zoi fields ===\n")
+                  for i,line in enumerate(lines):
+                      if line.startswith(".field "):
+                          out.write(f"{i+1:06d}: {line}\n")
+                  for sig,s,e,body in ms:
+                      if "<clinit>()V" in sig or "<init>(" in sig:
+                          out.write(f"\n=== zoi method {s+1}-{e+1}: {sig} ===\n")
+                          out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+
+              mjt_path=root/"mjt.smali"
+              if mjt_path.is_file():
+                  _,ms=methods(mjt_path)
+                  wanted=(
+                      " f(Lcom/google/googlex/gcam/StaticMetadata;Lklm;Lnoe;)Lzoi;",
+                      " d(Lzoi;Lcom/google/googlex/gcam/StaticMetadata;ILuus;Lklm;)Lcom/google/googlex/gcam/StaticMetadata;",
+                  )
+                  for sig,s,e,body in ms:
+                      if any(token in sig for token in wanted):
+                          out.write(f"\n=== mjt method {s+1}-{e+1}: {sig} ===\n")
+                          out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+
+              sm_path=root/"com/google/googlex/gcam/StaticMetadata.smali"
+              if sm_path.is_file():
+                  _,ms=methods(sm_path)
+                  for sig,s,e,body in ms:
+                      if " g()Lzoi;" in sig or " u(Lzoi;)V" in sig:
+                          out.write(f"\n=== StaticMetadata method {s+1}-{e+1}: {sig} ===\n")
+                          out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+          PY
+
+          sed -n '1,4200p' "$REPORT"
 
       - name: Upload sensor ID diagnostics
         uses: actions/upload-artifact@v7
