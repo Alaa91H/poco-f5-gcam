@@ -589,6 +589,46 @@ $oneCameraVendorRequestKeyNpeObserved = (
     $logcat -match '(?is)Failed to start OneCamera.*?Caused by:\s*java\.lang\.NullPointerException.*?upd\.<init>\(PG:3\).*?mta\.a\(PG:720\)'
 )
 
+# Preserve the complete stack around non-fatal OneCamera request-key failures.
+# These exceptions are often caught and logged by CameraStarter/OneCamera, so
+# they do not appear in fatalEvidence and a line-only filter loses the caller
+# that identifies the exact nullable vendor CaptureRequest.Key.
+$oneCameraRequestKeyNpeContexts = New-Object System.Collections.Generic.List[string]
+for ($i = 0; $i -lt $logLines.Count; $i++) {
+    $line = $logLines[$i]
+    if ($line -notmatch '(?i)(CAM_oys|CAM_PckOneCamera|CAM_otz).*NullPointerException') {
+        continue
+    }
+
+    $start = [Math]::Max(0, $i - 3)
+    $end = [Math]::Min($logLines.Count - 1, $i + 35)
+    $context = ($logLines[$start..$end] -join [Environment]::NewLine)
+    if ($context -match '(?i)upd\.<init>\(PG:3\)') {
+        $oneCameraRequestKeyNpeContexts.Add($context)
+    }
+}
+
+# Capture evidence that a capture session recovered after an earlier failed
+# configureStreams attempt. A single rejected stream combination should remain
+# visible, but it should not be mistaken for the final pipeline state when a
+# later CameraCaptureSession is configured and starts issuing requests.
+$cameraSessionSuccessLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(CameraCaptureSession.*(configured|onConfigured|ready|active)|CaptureSession.*(configured|onConfigured|ready|active)|process_capture_request|setRepeatingRequest|submitCaptureRequest|first frame|frame number)'
+        } |
+        Select-Object -Last 200
+)
+$cameraSessionSuccessObserved = $cameraSessionSuccessLines.Count -gt 0
+
+$cameraSessionLifecycleLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(CameraCaptureSession|CaptureSession|configure_streams\(\)|Unsupported set of inputs/outputs|CameraService::connect call|disconnect: Disconnected client|process_capture_request|setRepeatingRequest|submitCaptureRequest)'
+        } |
+        Select-Object -Last 300
+)
+
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
 $topActivityMatches = $resumedLines.Count -gt 0
@@ -681,8 +721,12 @@ $report = [ordered]@{
         googleAllowlistLines = $googleAllowlistLines
         cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureObserved
         cameraStreamConfigurationFailureLines = $cameraStreamConfigurationFailureLines
+        cameraSessionSuccessObserved = $cameraSessionSuccessObserved
+        cameraSessionSuccessLines = $cameraSessionSuccessLines
+        cameraSessionLifecycleLines = $cameraSessionLifecycleLines
         oneCameraVendorRequestKeyNpeObserved = $oneCameraVendorRequestKeyNpeObserved
         oneCameraVendorRequestKeyNpeLines = $oneCameraVendorRequestKeyNpeLines
+        oneCameraRequestKeyNpeContexts = $oneCameraRequestKeyNpeContexts.ToArray()
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
@@ -788,7 +832,9 @@ Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsO
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
 Write-Host "Camera stream configuration failure observed: $cameraStreamConfigurationFailureObserved"
+Write-Host "Camera session success observed: $cameraSessionSuccessObserved"
 Write-Host "OneCamera vendor request-key NPE observed: $oneCameraVendorRequestKeyNpeObserved"
+Write-Host "OneCamera request-key NPE contexts: $($oneCameraRequestKeyNpeContexts.Count)"
 Write-Host "Startup passed: $startupPassed"
 Write-Host "Camera pipeline compatibility passed: $cameraPipelineCompatibilityPassed"
 Write-Host "Runtime passed: $runtimePassed"
@@ -809,6 +855,11 @@ if (-not $runtimePassed) {
         Write-Host ""
         Write-Host "Native crash backtrace:"
         $nativeBacktraceLines | Select-Object -Last 80 | ForEach-Object { Write-Host $_ }
+    }
+    if ($oneCameraRequestKeyNpeContexts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "OneCamera request-key NPE context:"
+        Write-Host $oneCameraRequestKeyNpeContexts[0]
     }
 }
 
