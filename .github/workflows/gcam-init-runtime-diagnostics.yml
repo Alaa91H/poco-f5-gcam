@@ -1,4 +1,5 @@
 name: Pixel Camera GCam init runtime diagnostics
+# rerun-token: sensor-id-v2
 
 on:
   workflow_dispatch:
