@@ -408,6 +408,22 @@ $sensorIdUniquenessCrashObserved = (
     $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:\d+\)'
 )
 
+$compatRevisionLines = @(
+    $logLines |
+        Where-Object { $_ -match '(?i)GCamCompatRevision' } |
+        Select-Object -Last 20
+)
+$compatRevisions = @(
+    $compatRevisionLines |
+        ForEach-Object {
+            if ($_ -match 'GCamCompatRevision\s*:\s*(?<revision>\S+)') {
+                $Matches["revision"]
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+)
+
 $cameraSourceTopLines = @(
     $logLines |
         Where-Object {
@@ -885,6 +901,8 @@ $report = [ordered]@{
         cameraSourcePhysicalIds = $cameraSourcePhysicalIds.ToArray()
         preFilterMappingEventLines = $preFilterMappingEventLines
         preFilterMappings = $preFilterMappings.ToArray()
+        compatRevisionLines = $compatRevisionLines
+        compatRevisions = $compatRevisions
         sessionParameterKeyLines = $sessionParameterKeyLines
         sessionParameterKeys = $sessionParameterKeys
         outputConfigurationLines = $outputConfigurationLines
@@ -997,6 +1015,12 @@ Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
 Write-Host "Top-level Camera2 IDs: $($cameraSourceTopIds -join ', ')"
 Write-Host "Physical Camera2 IDs: $($cameraSourcePhysicalIds -join ', ')"
+if ($compatRevisions.Count -gt 0) {
+    Write-Host "Pixel Camera compatibility revision: $($compatRevisions -join ', ')"
+}
+else {
+    Write-Host "Pixel Camera compatibility revision: none observed"
+}
 if ($sessionParameterKeys.Count -gt 0) {
     Write-Host "OneCamera session parameter keys:"
     $sessionParameterKeys | ForEach-Object { Write-Host ("  " + $_) }
