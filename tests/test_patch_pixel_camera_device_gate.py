@@ -682,6 +682,25 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn('const-string v25, "4"', patched)
         self.assertIn('const-string v25, "5"', patched)
         self.assertIn('const-string v25, "6"', patched)
+        self.assertIn('const-string v25, "GCamMappedCameraId"', patched)
+        self.assertIn('const-string v25, "GCamMappedSensorId"', patched)
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
+                "camera_id_tag"
+            ],
+            "GCamMappedCameraId",
+        )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
+                "sensor_id_tag"
+            ],
+            "GCamMappedSensorId",
+        )
+        self.assertFalse(
+            metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
+                "behavior_changed"
+            ],
+        )
         self.assertTrue(
             metadata["sensor_id_uniqueness"]["native_check_preserved"],
         )
