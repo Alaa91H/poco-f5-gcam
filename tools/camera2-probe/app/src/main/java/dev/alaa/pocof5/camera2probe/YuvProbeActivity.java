@@ -602,6 +602,12 @@ public final class YuvProbeActivity extends Activity {
             return;
         }
 
+        if (android.os.Build.VERSION.SDK_INT < 28) {
+            item.put("supported", JSONObject.NULL);
+            matrix.put(item);
+            return;
+        }
+
         List<OutputConfiguration> outputs = new ArrayList<>();
         for (Surface surface : surfaces) {
             if (surface == null) {
@@ -616,22 +622,18 @@ public final class YuvProbeActivity extends Activity {
             return;
         }
 
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
-            try {
-                SessionConfiguration config = new SessionConfiguration(
-                        SessionConfiguration.SESSION_REGULAR,
-                        outputs,
-                        executor,
-                        callback);
-                item.put(
-                        "supported",
-                        camera.isSessionConfigurationSupported(config));
-            } catch (RuntimeException e) {
-                item.put("supported", JSONObject.NULL);
-                item.put("error", e.toString());
-            }
-        } else {
+        try {
+            SessionConfiguration config = new SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR,
+                    outputs,
+                    executor,
+                    callback);
+            item.put(
+                    "supported",
+                    camera.isSessionConfigurationSupported(config));
+        } catch (RuntimeException e) {
             item.put("supported", JSONObject.NULL);
+            item.put("error", e.toString());
         }
 
         matrix.put(item);
