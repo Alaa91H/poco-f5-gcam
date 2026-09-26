@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.1"
+$ExpectedProbeVersion = "0.3.2"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
