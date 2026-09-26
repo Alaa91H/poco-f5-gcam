@@ -605,7 +605,6 @@ public final class YuvProbeActivity extends Activity {
 
     @SuppressLint("NewApi")
     @android.annotation.TargetApi(35)
-    @SuppressLint("NewApi")
     private static boolean addSetupSessionCandidate(
             JSONArray matrix,
             CameraDevice.CameraDeviceSetup setup,
