@@ -47,6 +47,7 @@ ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
 ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
+ONECAMERA_SESSION_CONFIG_DESCRIPTOR = "Lrp;"
 # Runtime-verified on marble: Lodr is in base classes.dex.
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
@@ -2237,6 +2238,146 @@ def find_and_patch_onecamera_odr_missing_request_key_smali_tree(
     return metadata
 
 
+def patch_onecamera_session_parameter_logging_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Log OneCamera session/request parameter key names without changing behavior."""
+
+    lines = text.splitlines()
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\\.class\\s+.*"
+            + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
+            + r"\\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera session class Lrp;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = ".method public final e(Lve;)Z"
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == signature
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Lrp.e(Lve;) method; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lrp.e(Lve;) is unterminated")
+
+    method_lines = lines[method_start : method_end + 1]
+    if any(re.search(r"\\bv1[67]\\b", line) for line in method_lines):
+        raise PatchError(
+            "Lrp.e(Lve;) now uses diagnostic scratch registers v16/v17"
+        )
+
+    name_call = (
+        "invoke-virtual {v14}, "
+        "Landroid/hardware/camera2/CaptureRequest$Key;->getName()Ljava/lang/String;"
+    )
+    name_call_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == name_call
+    ]
+    if len(name_call_indexes) != 1:
+        raise PatchError(
+            "expected exactly one session-parameter key-name lookup in Lrp.e(Lve;); "
+            f"found {len(name_call_indexes)}"
+        )
+    call_index = name_call_indexes[0]
+
+    cursor = call_index + 1
+    while cursor < method_end and not lines[cursor].strip():
+        cursor += 1
+    if cursor >= method_end or lines[cursor].strip() != "move-result-object v14":
+        actual = lines[cursor].strip() if cursor < method_end else "<end>"
+        raise PatchError(
+            "session-parameter key name no longer lands in v14; "
+            f"found {actual!r}"
+        )
+
+    next_cursor = cursor + 1
+    while next_cursor < method_end and not lines[next_cursor].strip():
+        next_cursor += 1
+    expected_next = (
+        "invoke-interface {v9, v14}, "
+        "Ljava/util/List;->contains(Ljava/lang/Object;)Z"
+    )
+    if next_cursor >= method_end or lines[next_cursor].strip() != expected_next:
+        actual = lines[next_cursor].strip() if next_cursor < method_end else "<end>"
+        raise PatchError(
+            "session-parameter key-name flow changed before allowlist check; "
+            f"found {actual!r}"
+        )
+
+    indent = re.match(r"^(\\s*)", lines[cursor]).group(1)
+    injected = [
+        "",
+        f'{indent}const-string v16, "GCamSessionParamKey"',
+        "",
+        f"{indent}invoke-static {{v16, v14}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{indent}move-result v17",
+    ]
+    lines = lines[: cursor + 1] + injected + lines[cursor + 1 :]
+
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "diagnostic_logging",
+        "class": ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
+        "method": signature,
+        "tag": "GCamSessionParamKey",
+        "behavior_changed": False,
+        "source": "Lve.g CaptureRequest.Key map before session configuration",
+    }
+
+
+def find_and_patch_onecamera_session_parameter_logging_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\\.class\\s+.*"
+        + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
+        + r"\\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera session class Lrp; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_session_parameter_logging_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def patch_onecamera_open_camera_fallback_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
@@ -2633,6 +2774,9 @@ def patch_apk(
                     report_for_dex["onecamera_odr_missing_request_key"] = (
                         find_and_patch_onecamera_odr_missing_request_key_smali_tree(smali_dir)
                     )
+                    report_for_dex["onecamera_session_parameter_logging"] = (
+                        find_and_patch_onecamera_session_parameter_logging_smali_tree(smali_dir)
+                    )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
                         find_and_patch_keepalive_receiver_smali_tree(smali_dir)
@@ -2701,6 +2845,9 @@ def patch_apk(
     onecamera_odr_missing_request_key_metadata = dex_reports[gcam_init_dex][
         "onecamera_odr_missing_request_key"
     ]
+    onecamera_session_parameter_logging_metadata = dex_reports[gcam_init_dex][
+        "onecamera_session_parameter_logging"
+    ]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -2727,6 +2874,10 @@ def patch_apk(
         "onecamera_odr_missing_request_key_patch": {
             "target_dex": gcam_init_dex,
             **onecamera_odr_missing_request_key_metadata,
+        },
+        "onecamera_session_parameter_logging": {
+            "target_dex": gcam_init_dex,
+            **onecamera_session_parameter_logging_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,
