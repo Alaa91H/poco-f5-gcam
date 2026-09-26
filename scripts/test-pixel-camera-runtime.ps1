@@ -570,7 +570,15 @@ $finalOutputConfigurationLines = @(
 $finalOutputConfigurations = @(
     $finalOutputConfigurationLines |
         ForEach-Object {
-            if ($_ -match 'GCamOCFinal\s*:\s*(?<value>.*)
+            if ($_ -match 'GCamOCFinal\s*:\s*(?<value>.*)$') {
+                $Matches["value"].Trim()
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
+
+$sensorVectorLines = @(
+    $logLines |
         Where-Object {
             $_ -match '(?i)GCamSensorIds'
         } |
