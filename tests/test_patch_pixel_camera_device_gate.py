@@ -697,8 +697,16 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(
-            "if-eq v13, v15, :goto_123",
+            "CONTROL_VIDEO_STABILIZATION_MODE:",
             patched,
+        )
+        self.assertIn(
+            "CONTROL_AE_TARGET_FPS_RANGE:",
+            patched,
+        )
+        self.assertGreaterEqual(
+            patched.count("if-eq v13, v15, :goto_123"),
+            2,
         )
         self.assertIn(
             'const-string v15, "GCamSessionParamKey"',
@@ -739,13 +747,19 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn("Lpi.d()", metadata["source"])
         self.assertTrue(metadata["behavior_changed"])
         self.assertEqual(
-            metadata["skipped_session_key"],
-            "android.control.videoStabilizationMode",
+            metadata["skipped_session_keys"],
+            [
+                "android.control.videoStabilizationMode",
+                "android.control.aeTargetFpsRange",
+            ],
         )
         self.assertEqual(metadata["skip_scope"], "session_parameters_only")
         self.assertEqual(
-            metadata["preserved_session_keys"],
-            ["android.control.aeTargetFpsRange"],
+            metadata["preserved_capture_request_keys"],
+            [
+                "android.control.videoStabilizationMode",
+                "android.control.aeTargetFpsRange",
+            ],
         )
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
