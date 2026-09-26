@@ -290,6 +290,66 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             self.assertIn("goto/32 :cond_2a", patched)
             self.assertIn("goto/32 :cond_2c", patched)
 
+    def test_native_cpu_fallback_patches_exact_verified_bytes(self):
+        patches = (
+            (
+                "first",
+                2,
+                bytes.fromhex("aabb"),
+                bytes.fromhex("1122"),
+            ),
+            (
+                "second",
+                6,
+                bytes.fromhex("ccdd"),
+                bytes.fromhex("3344"),
+            ),
+        )
+        original = bytes.fromhex("0000aabb0000ccdd0000")
+        patched, metadata = patcher.patch_native_bytes(original, patches=patches)
+
+        self.assertEqual(patched, bytes.fromhex("00001122000033440000"))
+        self.assertEqual([item["status"] for item in metadata], ["patched", "patched"])
+
+    def test_native_cpu_fallback_is_idempotent(self):
+        patches = (
+            (
+                "first",
+                1,
+                bytes.fromhex("aabb"),
+                bytes.fromhex("1122"),
+            ),
+        )
+        original = bytes.fromhex("00112200")
+        patched, metadata = patcher.patch_native_bytes(original, patches=patches)
+
+        self.assertEqual(patched, original)
+        self.assertEqual(metadata[0]["status"], "already_patched")
+
+    def test_native_cpu_fallback_fails_closed_on_unknown_bytes(self):
+        patches = (
+            (
+                "first",
+                1,
+                bytes.fromhex("aabb"),
+                bytes.fromhex("1122"),
+            ),
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "native bytes"):
+            patcher.patch_native_bytes(bytes.fromhex("00ffff00"), patches=patches)
+
+    def test_native_cpu_fallback_fails_closed_on_short_library(self):
+        patches = (
+            (
+                "first",
+                8,
+                bytes.fromhex("aabb"),
+                bytes.fromhex("1122"),
+            ),
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "exceeds native library size"):
+            patcher.patch_native_bytes(b"short", patches=patches)
+
     def test_finds_gcam_init_dex_by_exact_symbol_set(self):
         with tempfile.TemporaryDirectory() as temp:
             apk = Path(temp) / "camera.apk"
