@@ -857,6 +857,107 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         symbol=PORTRAIT_BRIGHTENING_SYMBOL,
     )
 
+    # Gcam.g() is only a wrapper around native Gcam_AllSensorIdsUnique().
+    # POCO F5 runtime proves Gcam_Create returns a non-null object and camera
+    # streaming starts, but this Pixel-specific sensor-ID uniqueness assertion
+    # is false for Xiaomi's logical/physical camera mapping. The stock provider
+    # turns that result into IllegalArgumentException on the main thread.
+    #
+    # Keep the native Gcam object and continue through the provider's existing
+    # success path. This is deliberately caller-local: Gcam.g() remains
+    # unchanged everywhere else, and the patch fails closed if the exact
+    # control-flow shape changes.
+    create_indexes = [
+        i for i, line in enumerate(lines) if GCAM_CREATE_SYMBOL in line
+    ]
+    if len(create_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Gcam_Create after InitParams patching; "
+            f"found {len(create_indexes)}"
+        )
+    method_start, method_end = _method_bounds(lines, create_indexes[0])
+
+    ready_calls = [
+        i
+        for i in range(method_start, method_end)
+        if "Lcom/google/googlex/gcam/Gcam;->g()Z" in lines[i]
+    ]
+    if len(ready_calls) != 1:
+        raise PatchError(
+            "expected exactly one Gcam.g() sensor-ID uniqueness check; "
+            f"found {len(ready_calls)}"
+        )
+    ready_call = ready_calls[0]
+
+    def _next_code_line(index: int) -> int:
+        cursor = index + 1
+        while cursor < method_end:
+            stripped = lines[cursor].strip()
+            if stripped and not stripped.startswith("#"):
+                return cursor
+            cursor += 1
+        raise PatchError("Gcam.g() sensor-ID check ended unexpectedly")
+
+    move_index = _next_code_line(ready_call)
+    move_match = re.match(
+        r"^\s*move-result\s+(?P<reg>[vp]\d+)\s*$",
+        lines[move_index],
+    )
+    if not move_match:
+        raise PatchError("Gcam.g() is not followed by move-result")
+    ready_reg = move_match.group("reg")
+
+    branch_index = _next_code_line(move_index)
+    branch_match = re.match(
+        rf"^\s*if-eqz\s+{re.escape(ready_reg)},\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$",
+        lines[branch_index],
+    )
+    if not branch_match:
+        raise PatchError(
+            "Gcam sensor-ID result is not followed by the expected if-eqz"
+        )
+    failure_label = branch_match.group("label")
+
+    failure_indexes = [
+        i
+        for i in range(branch_index + 1, method_end)
+        if lines[i].strip() == f":{failure_label}"
+    ]
+    if len(failure_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Gcam sensor-ID failure label; "
+            f"found {len(failure_indexes)}"
+        )
+    failure_index = failure_indexes[0]
+
+    success_block = "\n".join(lines[branch_index + 1 : failure_index])
+    if "return-object" not in success_block:
+        raise PatchError(
+            "Gcam sensor-ID success path no longer returns the Gcam object"
+        )
+
+    failure_block = "\n".join(lines[failure_index : method_end])
+    if failure_block.count("Ljava/lang/IllegalArgumentException;") != 2:
+        raise PatchError(
+            "Gcam sensor-ID failure block no longer has exactly one "
+            "IllegalArgumentException construction"
+        )
+    if "throw " not in failure_block:
+        raise PatchError(
+            "Gcam sensor-ID failure block no longer throws the exception"
+        )
+
+    indent = re.match(r"^(\s*)", lines[branch_index]).group(1)
+    lines[branch_index] = (
+        f"{indent}nop    # POCO F5: accept Xiaomi sensor-ID mapping"
+    )
+    sensor_id_metadata = {
+        "status": "accepted_existing_nonnull_gcam",
+        "native_check": "Gcam_AllSensorIdsUnique",
+        "original_failure_label": failure_label,
+        "original_failure": "IllegalArgumentException",
+    }
+
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
         "status": "patched",
@@ -870,6 +971,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             "continuation_label": tomte_label,
         },
         "portrait_brightening": portrait_metadata,
+        "sensor_id_uniqueness": sensor_id_metadata,
     }
 
 
