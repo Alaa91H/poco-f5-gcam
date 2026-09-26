@@ -208,19 +208,39 @@ def _inject_nontensor_guard(
     if end >= len(lines):
         raise PatchError(f"unterminated method: {signature}")
 
-    locals_index = None
-    locals_count = None
-    for i in range(start + 1, min(end, start + 12)):
-        match = re.match(r"^\s*\.locals\s+(\d+)\s*$", lines[i])
-        if match:
-            locals_index = i
-            locals_count = int(match.group(1))
+    register_index = None
+    register_mode = None
+    register_count = None
+    for i in range(start + 1, end):
+        locals_match = re.match(r"^\s*\.locals\s+(\d+)\s*$", lines[i])
+        registers_match = re.match(r"^\s*\.registers\s+(\d+)\s*$", lines[i])
+        if locals_match:
+            register_index = i
+            register_mode = "locals"
+            register_count = int(locals_match.group(1))
             break
-    if locals_index is None or locals_count is None:
-        raise PatchError(f"{signature} does not use an expected .locals declaration")
-    if locals_count < 2:
+        if registers_match:
+            register_index = i
+            register_mode = "registers"
+            register_count = int(registers_match.group(1))
+            break
+
+    if register_index is None or register_mode is None or register_count is None:
         raise PatchError(
-            f"{signature} has only {locals_count} locals; refusing register-unsafe patch"
+            f"{signature} does not use an expected .locals or .registers declaration"
+        )
+
+    # q/x are instance methods with one object parameter: p0 + p1 consume two
+    # parameter registers. The injected guard uses v0 and v1, so either two
+    # explicit locals or at least four total registers are required.
+    if register_mode == "locals" and register_count < 2:
+        raise PatchError(
+            f"{signature} has only {register_count} locals; refusing register-unsafe patch"
+        )
+    if register_mode == "registers" and register_count < 4:
+        raise PatchError(
+            f"{signature} has only {register_count} total registers; "
+            "v0/v1 would overlap p0/p1"
         )
 
     false_label = f"poco_nontensor_false_{suffix}"
@@ -278,13 +298,14 @@ def _inject_nontensor_guard(
         f"    :{original_label}",
     ]
 
-    patched_lines = lines[: locals_index + 1] + guard + lines[locals_index + 1 :]
+    patched_lines = lines[: register_index + 1] + guard + lines[register_index + 1 :]
     patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
 
     return patched, {
         "method": signature,
         "false_label": false_label,
         "original_label": original_label,
+        "register_declaration": f".{register_mode} {register_count}",
     }
 
 
