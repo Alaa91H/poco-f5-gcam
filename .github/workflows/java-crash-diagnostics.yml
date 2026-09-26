@@ -269,69 +269,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "$RUNNER_TEMP/onecamera-paths"
+          mkdir -p "$RUNNER_TEMP/onecamera-paths"
+
           python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/onecamera-paths" <<'PY'
           import io, json, sys, zipfile
           from pathlib import Path
 
           package=Path(sys.argv[1])
           outdir=Path(sys.argv[2])
-          outdir.mkdir(parents=True, exist_ok=True)
-          targets=("upd","mta","oys","oyt","oty")
-          needles={name:("L"+name+";").encode() for name in targets}
-          hits={name:[] for name in targets}
-          camera_manager_dexes=[]
+          dex_files=[]
 
           with zipfile.ZipFile(package) as outer:
-              for info in outer.infolist():
-                  if not info.filename.lower().endswith(".apk"):
+              base_infos=[i for i in outer.infolist() if i.filename == "base.apk"]
+              if len(base_infos) != 1:
+                  raise SystemExit(f"expected exactly one base.apk, found {[i.filename for i in base_infos]}")
+              blob=outer.read(base_infos[0])
+
+          with zipfile.ZipFile(io.BytesIO(blob)) as apk:
+              for dex_name in apk.namelist():
+                  if not (dex_name.startswith("classes") and dex_name.endswith(".dex")):
                       continue
-                  blob=outer.read(info)
-                  if not zipfile.is_zipfile(io.BytesIO(blob)):
-                      continue
-                  with zipfile.ZipFile(io.BytesIO(blob)) as apk:
-                      for dex_name in apk.namelist():
-                          if not (dex_name.startswith("classes") and dex_name.endswith(".dex")):
-                              continue
-                          data=apk.read(dex_name)
-                          for name,needle in needles.items():
-                              if needle in data:
-                                  hits[name].append((info.filename,dex_name,data))
-                          if b"Landroid/hardware/camera2/CameraManager;" in data:
-                              camera_manager_dexes.append((info.filename,dex_name,data))
+                  data=apk.read(dex_name)
+                  idx=len(dex_files)
+                  (outdir/f"dex-{idx}.dex").write_bytes(data)
+                  dex_files.append({"index":idx,"apk":"base.apk","dex":dex_name,"size":len(data)})
 
-          unique={}
-          for candidates in hits.values():
-              for apk_name,dex_name,data in candidates:
-                  unique[(apk_name,dex_name)]=data
-          for apk_name,dex_name,data in camera_manager_dexes:
-              unique[(apk_name,dex_name)]=data
-          if not unique:
-              raise SystemExit("no candidate dex files found")
+          if not dex_files:
+              raise SystemExit("no base.apk dex files found")
 
-          manifest={"targets":{}, "camera_manager_dexes":[], "dex_files":[]}
-          for name,candidates in hits.items():
-              if not candidates:
-                  raise SystemExit(f"no dex references L{name};")
-              manifest["targets"][name]=[
-                  {"apk":a,"dex":b} for a,b,_ in candidates
-              ]
-          manifest["camera_manager_dexes"]=[
-              {"apk":a,"dex":b} for a,b,_ in camera_manager_dexes
-          ]
-
-          pair_to_index={}
-          for idx,((apk_name,dex_name),data) in enumerate(unique.items()):
-              (outdir/f"dex-{idx}.dex").write_bytes(data)
-              pair_to_index[(apk_name,dex_name)]=idx
-              manifest["dex_files"].append(
-                  {"index":idx,"apk":apk_name,"dex":dex_name,"size":len(data)}
-              )
-          for name,candidates in manifest["targets"].items():
-              for item in candidates:
-                  item["index"]=pair_to_index[(item["apk"],item["dex"])]
-          for item in manifest["camera_manager_dexes"]:
-              item["index"]=pair_to_index[(item["apk"],item["dex"])]
-
+          manifest={"dex_files":dex_files}
           (outdir/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
           print(json.dumps(manifest,indent=2))
           PY
@@ -360,20 +327,21 @@ jobs:
                   e+=1
               return s,min(e,len(lines)-1)
 
-          for name,candidates in manifest["targets"].items():
+          targets=("upd","mta","oys","oyt","oty")
+          target_locations={}
+          for name in targets:
               matches=[]
-              for src in candidates:
-                  smali_root=root/f"smali-{src['index']}"
-                  matches.extend(smali_root.rglob(name+".smali"))
-              # de-duplicate in case candidate metadata repeats
-              matches=sorted(set(matches))
+              for dex_info in manifest["dex_files"]:
+                  smali_root=root/f"smali-{dex_info['index']}"
+                  matches.extend((dex_info["index"],p) for p in smali_root.rglob(name+".smali"))
               if len(matches)!=1:
-                  raise SystemExit(f"expected one actual {name}.smali definition, found {matches}")
-              p=matches[0]
+                  raise SystemExit(f"expected one definition for {name}.smali, found {[(idx,str(p)) for idx,p in matches]}")
+              idx,p=matches[0]
+              target_locations[name]={"index":idx,"path":str(p.relative_to(root))}
               lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
               out.append("="*100)
-              out.append(f"TARGET {name} path={p.relative_to(root)}")
-              out.extend(f"{idx+1:06d}: {line}" for idx,line in enumerate(lines))
+              out.append(f"TARGET {name} dex_index={idx} path={p.relative_to(root)}")
+              out.extend(f"{i+1:06d}: {line}" for i,line in enumerate(lines))
               out.append("")
 
           seen_methods=set()
@@ -390,21 +358,23 @@ jobs:
                   for idx,line in enumerate(lines):
                       if not any(token in line for token in patterns):
                           continue
-                      s,e=method_bounds(lines,idx)
-                      key=(str(p),s,e)
+                      ms,me=method_bounds(lines,idx)
+                      key=(str(p),ms,me)
                       if key in seen_methods:
                           continue
                       seen_methods.add(key)
                       out.append("="*100)
-                      out.append(f"CAMERA2 CALLSITE {p.relative_to(root)} lines {s+1}-{e+1}: {lines[s]}")
-                      lo=max(s,idx-120); hi=min(e,idx+180)
-                      out.extend(f"{n+1:06d}: {lines[n]}" for n in range(lo,hi+1))
+                      out.append(f"CAMERA2 CALLSITE {p.relative_to(root)} lines {ms+1}-{me+1}: {lines[ms]}")
+                      lo=max(ms,idx-140); hi=min(me,idx+220)
+                      out.extend(f"{i+1:06d}: {lines[i]}" for i in range(lo,hi+1))
                       out.append("")
 
+          manifest["target_locations"]=target_locations
+          (root/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
           out_path.write_text("\n".join(out)+"\n",encoding="utf-8")
           PY
 
-          sed -n '1,4200p' "$RUNNER_TEMP/onecamera-stream-selection-analysis.txt"
+          sed -n '1,4600p' "$RUNNER_TEMP/onecamera-stream-selection-analysis.txt"
 
       - name: Upload OneCamera stream-selection diagnostics
         uses: actions/upload-artifact@v7
