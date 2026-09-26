@@ -529,6 +529,29 @@ def find_and_patch_smali_tree(root: Path) -> dict[str, str]:
     return metadata
 
 
+def _has_gcam_init_callsites(text: str) -> bool:
+    """Return true only for the smali provider that *calls* the JNI setters.
+
+    GcamModuleJNI.smali itself contains the same symbol names in native method
+    declarations. Matching raw symbol strings therefore produces a false second
+    candidate. Require invoke-static callsites for every startup symbol instead.
+    """
+
+    lines = text.splitlines()
+    for symbol in (
+        GCAM_CREATE_SYMBOL,
+        ALMOND_TPU_SYMBOL,
+        TOMTE_GRAIN_SYMBOL,
+    ):
+        if not any(
+            "invoke-static" in line
+            and f"Lcom/google/googlex/gcam/GcamModuleJNI;->{symbol}" in line
+            for line in lines
+        ):
+            return False
+    return True
+
+
 def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
     matches: list[Path] = []
     for path in root.rglob("*.smali"):
@@ -536,20 +559,13 @@ def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if all(
-            symbol in text
-            for symbol in (
-                GCAM_CREATE_SYMBOL,
-                ALMOND_TPU_SYMBOL,
-                TOMTE_GRAIN_SYMBOL,
-            )
-        ):
+        if _has_gcam_init_callsites(text):
             matches.append(path)
 
     if len(matches) != 1:
         rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
         raise PatchError(
-            "expected native GCam init symbols in exactly one smali file; "
+            "expected native GCam InitParams callsites in exactly one smali file; "
             f"found {rendered}"
         )
 
