@@ -73,17 +73,23 @@ That path:
 4. disassembles only that DEX with checksum-pinned baksmali;
 5. redirects the rejection block to Pixel Camera's existing common constructor finalization path and fails closed if the bytecode shape is not exactly recognized;
 6. injects narrow guards into `klm.q(...)` and `klm.x(...)` so POCO F5 never selects feature names containing `use_tpu`, `darwinn`, or `edgetpu`, and disables the `camera.lasagna*` Tensor/GXP motion path;
-7. rebuilds the DEX with checksum-pinned smali;
-8. aligns native libraries for 16 KiB page-size devices;
-9. replaces Google's signing identity with the project signing key;
-10. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
+7. keeps the startup GCam InitParams provider from enabling `almond_use_tpu` and Tomte grain;
+8. verifies three exact AArch64 instruction sequences in `lib/arm64-v8a/libgcastartup.so` and redirects only the GXP/DarwiNN delegate-selection path to the library's existing CPU/TFLite fallback;
+9. does **not** bypass TFLite/model verification or PairIP;
+10. rebuilds the modified DEX files with checksum-pinned smali;
+11. aligns native libraries for 16 KiB page-size devices;
+12. replaces Google's signing identity with the project signing key;
+13. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
 
 The first compatibility patch removed the explicit unsupported-device startup
 exception. Real-device testing then progressed far enough to connect to
 CameraService, but the Snapdragon POCO F5 logged repeated `libgxp.so` /
 DarwiNN initialization failures and later dereferenced a null native `Gcam`
-object. The current build therefore also prevents Tensor-only accelerator
-feature queries from being selected on POCO F5.
+object. Java-side feature and InitParams guards were not sufficient: a later
+real-device run still entered the native `libgxp.so` path and returned a null
+GCam object. The current build therefore also applies an exact-version,
+fail-closed native patch that selects the existing CPU/TFLite delegate path
+instead of the unavailable GXP/DarwiNN path.
 
 A bare `dlopen failed` line is kept as runtime diagnostics but is no longer
 treated as a fatal crash by itself; the strict smoke test still fails on real
@@ -115,8 +121,10 @@ Scheduled or manually dispatched upstream refreshes continue to:
 3. audit all APK signatures and the split dependency graph;
 4. upload the original Google-signed package together with the audit report,
    split plan, and installation/runtime-test scripts;
-5. when Telegram credentials are available, deliver the original Google-signed
-   bundle rather than the merged project-signed APK.
+5. on an explicit manual standalone build, when Telegram credentials are
+   available, deliver only the generated compatibility-patched standalone APK;
+   scheduled upstream refreshes do not automatically distribute the modified
+   APK.
 
 Pull requests run static/unit validation without downloading or redistributing
 the proprietary upstream package.
@@ -133,6 +141,9 @@ layout.
 
 ## Protection policy
 
-PairIP remains untouched. The compatibility patch is limited to the explicit
-unsupported-device constructor exception shown by the POCO F5 runtime report.
-The pipeline does not remove PairIP or delete feature modules.
+PairIP remains untouched. Compatibility changes are limited to concrete
+POCO F5 runtime failures: the unsupported-device constructor gate, Tensor-only
+feature/InitParams selection, and three exact same-version native
+GXP/DarwiNN delegate-selection instructions. Every patch fails closed when the
+expected bytecode or machine-code shape changes. The pipeline does not bypass
+model verification, remove PairIP, or delete feature modules.
