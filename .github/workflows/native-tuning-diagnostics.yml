@@ -2,6 +2,9 @@ name: Pixel Camera native tuning diagnostics
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/native-tuning-diagnostics.yml"
 
 permissions:
   contents: read
