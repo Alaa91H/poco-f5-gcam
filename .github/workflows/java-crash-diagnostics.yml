@@ -345,7 +345,7 @@ jobs:
               out.append("")
 
           seen_methods=set()
-          patterns=(
+          camera2_patterns=(
               "Landroid/hardware/camera2/CameraManager;->openCamera",
               "Landroid/hardware/camera2/CameraDevice;->createCaptureSession",
               "Landroid/hardware/camera2/CameraDevice;->createReprocessableCaptureSession",
@@ -353,6 +353,17 @@ jobs:
               "Landroid/hardware/camera2/params/SessionConfiguration;->setSessionParameters",
               "Landroid/hardware/camera2/CaptureRequest$Builder;->set(",
               "Landroid/hardware/camera2/CaptureRequest$Builder;->build()",
+              "Landroid/hardware/camera2/params/OutputConfiguration;-><init>",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setPhysicalCameraId",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setStreamUseCase",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setDynamicRangeProfile",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->enableSurfaceSharing",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->addSurface",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setTimestampBase",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setReadoutTimestampEnabled",
+              "Landroid/hardware/camera2/params/OutputConfiguration;->setSensorPixelModesUsed",
+          )
+          support_patterns=(
               "Lrr;-><init>",
               "Lua;-><init>",
               "Lupd;-><init>",
@@ -362,11 +373,9 @@ jobs:
               for p in smali_root.rglob("*.smali"):
                   lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
                   for idx,line in enumerate(lines):
-                      camera2_hit=any(token in line for token in patterns[:7])
-                      rr_ctor_hit="Lrr;-><init>" in line
-                      lua_hit="Lua;-><init>" in line
-                      upd_ctor_hit="Lupd;-><init>" in line
-                      if not (camera2_hit or rr_ctor_hit or lua_hit or upd_ctor_hit):
+                      camera2_hit=any(token in line for token in camera2_patterns)
+                      support_hit=any(token in line for token in support_patterns)
+                      if not (camera2_hit or support_hit):
                           continue
                       ms,me=method_bounds(lines,idx)
                       key=(str(p),ms,me)
