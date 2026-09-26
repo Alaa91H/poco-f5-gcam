@@ -1,3 +1,4 @@
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -289,6 +290,59 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched = (root / "mjy.smali").read_text(encoding="utf-8")
             self.assertIn("goto/32 :cond_2a", patched)
             self.assertIn("goto/32 :cond_2c", patched)
+
+    def test_libgcam_tuning_diagnostics_find_adrp_add_string_xref(self):
+        size = 0x3000
+        blob = bytearray(size)
+        blob[:4] = b"\x7fELF"
+        blob[4] = 2
+        blob[5] = 1
+        struct.pack_into("<Q", blob, 32, 64)
+        struct.pack_into("<H", blob, 54, 56)
+        struct.pack_into("<H", blob, 56, 1)
+        struct.pack_into(
+            "<IIQQQQQQ",
+            blob,
+            64,
+            1,
+            5,
+            0,
+            0,
+            0,
+            size,
+            size,
+            0x1000,
+        )
+
+        marker = patcher.TUNING_DIAGNOSTIC_STRINGS[0].encode("utf-8")
+        blob[0x2000 : 0x2000 + len(marker)] = marker
+        struct.pack_into("<I", blob, 0x1000, 0xB0000000)
+        struct.pack_into("<I", blob, 0x1004, 0x91000000)
+
+        report = patcher.analyze_libgcam_tuning(bytes(blob))
+        unknown = report["strings"][patcher.TUNING_DIAGNOSTIC_STRINGS[0]]
+
+        self.assertEqual(unknown["count"], 1)
+        self.assertEqual(
+            unknown["occurrences"][0]["xref_offsets"],
+            ["0x1000", "0x1004"],
+        )
+        self.assertFalse(report["tuning_bypass_performed"])
+        self.assertFalse(report["profile_spoof_performed"])
+
+    def test_libgcam_tuning_diagnostics_reject_non_elf(self):
+        with self.assertRaisesRegex(patcher.PatchError, "not an ELF"):
+            patcher.analyze_libgcam_tuning(b"not-an-elf")
+
+    def test_aarch64_control_flow_decoder_reports_branch_targets(self):
+        self.assertEqual(
+            patcher._decode_aarch64_branch(0x14000002, 0x1000),
+            "b 0x1008",
+        )
+        self.assertEqual(
+            patcher._decode_aarch64_branch(0xD503201F, 0x1000),
+            "nop",
+        )
 
     def test_native_cpu_fallback_patches_exact_verified_bytes(self):
         patches = (
