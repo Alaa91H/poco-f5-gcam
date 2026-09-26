@@ -55,6 +55,7 @@ public final class YuvProbeActivity extends Activity {
     private static final int CAMERA_PERMISSION_REQUEST = 1001;
     private static final int TARGET_FRAMES = 12;
     private static final long CAMERA_TIMEOUT_MS = 7000;
+    private static final long CAMERA_AVAILABILITY_TIMEOUT_MS = 2500;
     private static final String REPORT_NAME = "yuv-runtime-report.json";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -191,6 +192,7 @@ public final class YuvProbeActivity extends Activity {
         root.put("packageName", context.getPackageName());
         root.put("targetFramesPerCamera", TARGET_FRAMES);
         root.put("timeoutMsPerCamera", CAMERA_TIMEOUT_MS);
+        root.put("availabilityTimeoutMsPerCamera", CAMERA_AVAILABILITY_TIMEOUT_MS);
 
         CameraManager manager =
                 (CameraManager) context.getSystemService(Context.CAMERA_SERVICE);
@@ -267,6 +269,38 @@ public final class YuvProbeActivity extends Activity {
         AtomicLong lastImageTimestampNs = new AtomicLong(-1);
         CountDownLatch done = new CountDownLatch(1);
         long startedAtNs = System.nanoTime();
+
+        CountDownLatch availableLatch = new CountDownLatch(1);
+        AtomicInteger unavailableEventsBeforeOpen = new AtomicInteger();
+        CameraManager.AvailabilityCallback availabilityCallback =
+                new CameraManager.AvailabilityCallback() {
+                    @Override
+                    public void onCameraAvailable(String id) {
+                        if (cameraId.equals(id)) {
+                            availableLatch.countDown();
+                        }
+                    }
+
+                    @Override
+                    public void onCameraUnavailable(String id) {
+                        if (cameraId.equals(id) && availableLatch.getCount() > 0) {
+                            unavailableEventsBeforeOpen.incrementAndGet();
+                        }
+                    }
+                };
+
+        long availabilityStartedAtNs = System.nanoTime();
+        manager.registerAvailabilityCallback(availabilityCallback, cameraHandler);
+        boolean availableBeforeOpen = availableLatch.await(
+                CAMERA_AVAILABILITY_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS);
+        long availabilityWaitMs = TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - availabilityStartedAtNs);
+        result.put("availableBeforeOpen", availableBeforeOpen);
+        result.put("availabilityWaitMs", availabilityWaitMs);
+        result.put(
+                "unavailableEventsBeforeOpen",
+                unavailableEventsBeforeOpen.get());
 
         reader.setOnImageAvailableListener(source -> {
             Image image = null;
@@ -413,6 +447,7 @@ public final class YuvProbeActivity extends Activity {
                 result.put("error", "Timed out waiting for sustained YUV frames");
             }
         } finally {
+            manager.unregisterAvailabilityCallback(availabilityCallback);
             CameraCaptureSession session = sessionRef.get();
             if (session != null) {
                 try {
