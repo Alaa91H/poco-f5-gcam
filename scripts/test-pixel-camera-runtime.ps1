@@ -146,7 +146,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|mjy\\.a\\(PG:1626\\)|sensor-ID uniqueness)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|mjy\\.a\\(PG:\\d+\\)|sensor-ID uniqueness)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -179,7 +179,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|mjy\\.a\\(PG:1626\\))"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|mjy\\.a\\(PG:\\d+\\))"
         } |
         Select-Object -Last 200
 )
@@ -273,12 +273,37 @@ $aionFatalCheckObserved = $aionFatalCheckLines.Count -gt 0
 $sensorIdUniquenessCrashLines = @(
     $logLines |
         Where-Object {
-            $_ -match '(?i)(mjy\.a\(PG:1626\)|Gcam_AllSensorIdsUnique)'
+            $_ -match '(?i)(mjy\.a\(PG:\d+\)|Gcam_AllSensorIdsUnique)'
         } |
         Select-Object -Last 50
 )
 $sensorIdUniquenessCrashObserved = (
-    $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:1626\)'
+    $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:\d+\)'
+)
+
+$sensorVectorLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)GCamSensorIds'
+        } |
+        Select-Object -Last 100
+)
+$sensorVectorIds = New-Object System.Collections.Generic.List[string]
+foreach ($line in $sensorVectorLines) {
+    if ($line -match 'GCamSensorIds\s*:\s*(?<sensor>\S+)') {
+        $sensorVectorIds.Add($Matches["sensor"])
+    }
+}
+$sensorVectorDuplicateIds = @(
+    $sensorVectorIds |
+        Group-Object |
+        Where-Object { $_.Count -gt 1 } |
+        ForEach-Object {
+            [ordered]@{
+                sensor = $_.Name
+                count = $_.Count
+            }
+        }
 )
 
 $logicalCameraMappingLines = @(
@@ -372,6 +397,9 @@ $report = [ordered]@{
         aionFatalCheckLines = $aionFatalCheckLines
         sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
         sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
+        sensorVectorLines = $sensorVectorLines
+        sensorVectorIds = @($sensorVectorIds)
+        sensorVectorDuplicateIds = $sensorVectorDuplicateIds
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
         logicalCameraMappingLines = $logicalCameraMappingLines
         oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
@@ -430,6 +458,16 @@ Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserv
 Write-Host "AION missing library observed: $aionMissingLibraryObserved"
 Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
+Write-Host "Sensor vector IDs: $($sensorVectorIds -join ', ')"
+if ($sensorVectorDuplicateIds.Count -gt 0) {
+    Write-Host "Duplicate sensor vector IDs:"
+    $sensorVectorDuplicateIds | ForEach-Object {
+        Write-Host ("  " + $_.sensor + " x" + $_.count)
+    }
+}
+else {
+    Write-Host "Duplicate sensor vector IDs: none observed"
+}
 Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
