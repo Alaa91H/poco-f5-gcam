@@ -1,0 +1,23 @@
+name: Force-cancel stale callback build once
+
+on:
+  push:
+    paths:
+      - ".github/workflows/force-cancel-stale-callback-build.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Force-cancel stale build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/runs/36250586310/force-cancel"
