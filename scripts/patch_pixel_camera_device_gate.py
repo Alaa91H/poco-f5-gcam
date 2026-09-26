@@ -787,39 +787,71 @@ def _patch_logical_camera_sensor_ids(
             "top-level metadata source is no longer preserved after conversion"
         )
 
-    add_index = _next_code_line_local(saved_source_index)
     add_call = (
         "invoke-virtual {v14, v7}, "
         "Lcom/google/googlex/gcam/StaticMetadataVector;->"
         "c(Lcom/google/googlex/gcam/StaticMetadata;)V"
     )
-    if lines[add_index].strip() != add_call:
+    add_indexes = [
+        i
+        for i in range(saved_source_index + 1, min(method_end, saved_source_index + 40))
+        if lines[i].strip() == add_call
+    ]
+    if len(add_indexes) != 1:
         raise PatchError(
-            "top-level metadata result is no longer added to StaticMetadataVector"
+            "top-level metadata result is no longer paired with exactly one "
+            "StaticMetadataVector add in its local block"
         )
+    add_index = add_indexes[0]
 
-    post_add_code: list[tuple[int, str]] = []
-    cursor = add_index + 1
-    while cursor < method_end and len(post_add_code) < 8:
-        stripped = lines[cursor].strip()
-        if stripped and not stripped.startswith("#"):
-            post_add_code.append((cursor, stripped))
-        cursor += 1
+    # Pixel Camera stamps package/version metadata and reads the converted
+    # sensor ID before adding the top-level metadata. Verify those operations
+    # in order without requiring them to be adjacent.
+    expected_pre_add_flow = (
+        "invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->q(Ljava/lang/String;)V",
+        "invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->r(Ljava/lang/String;)V",
+        "invoke-virtual {v7}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
+    )
+    cursor = saved_source_index + 1
+    for token in expected_pre_add_flow:
+        matches = [
+            i
+            for i in range(cursor, add_index)
+            if lines[i].strip() == token
+        ]
+        if len(matches) != 1:
+            raise PatchError(
+                "top-level metadata pre-add flow changed; expected one "
+                f"{token!r}, found {len(matches)}"
+            )
+        cursor = matches[0] + 1
 
-    expected_post_add_prefix = (
+    physical_set_indexes = [
+        i
+        for i in range(add_index + 1, min(method_end, add_index + 48))
+        if lines[i].strip() == "iget-object v5, v5, Luur;->b:Lyfm;"
+    ]
+    if len(physical_set_indexes) != 1:
+        raise PatchError(
+            "top-level metadata add is no longer followed by exactly one "
+            "physical-ID set in its local block"
+        )
+    physical_set_index = physical_set_indexes[0]
+    post_add_window = "\n".join(
+        lines[add_index + 1 : min(method_end, physical_set_index + 10)]
+    )
+    for token in (
         "move-object/from16 v5, v24",
         "check-cast v5, Luur;",
         "iget-object v5, v5, Luur;->b:Lyfm;",
         "invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;",
-    )
-    actual_post_add_prefix = tuple(
-        item[1] for item in post_add_code[: len(expected_post_add_prefix)]
-    )
-    if actual_post_add_prefix != expected_post_add_prefix:
-        raise PatchError(
-            "top-level metadata physical-ID sequence changed after vector add; "
-            f"expected {expected_post_add_prefix!r}, got {actual_post_add_prefix!r}"
-        )
+    ):
+        count = post_add_window.count(token)
+        if count != 1:
+            raise PatchError(
+                "top-level metadata physical-ID flow changed; expected one "
+                f"{token!r}, found {count}"
+            )
 
     labels = (
         "poco_top_level_front_logical",
