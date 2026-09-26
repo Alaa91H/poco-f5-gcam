@@ -901,6 +901,96 @@ def _patch_logical_camera_sensor_ids(
     }
 
 
+def _inject_camera_source_runtime_diagnostics(
+    lines: list[str],
+) -> tuple[list[str], dict[str, Any]]:
+    """Log Android Camera2 IDs in the same order metadata enters the GCam vector.
+
+    Top-level camera IDs are logged while Pixel Camera iterates Luut.h(Luve).
+    Physical IDs are logged later when the deduplicated Luuv list is converted.
+    The final GCamSensorIds dump therefore lets real-device reports correlate
+    Xiaomi camera IDs with the generated GCam sensor enums without changing
+    camera selection or sensor metadata.
+    """
+
+    method_text = "\n".join(lines)
+    for tag in ("GCamTopCameraId", "GCamPhysicalCameraId"):
+        if tag in method_text:
+            raise PatchError(f"camera-source diagnostic tag already exists: {tag}")
+
+    top_id_get = "iget-object v7, v5, Luuv;->a:Ljava/lang/String;"
+    top_indexes = [i for i, line in enumerate(lines) if line.strip() == top_id_get]
+    if len(top_indexes) != 1:
+        raise PatchError(
+            "expected exactly one top-level Luuv camera-ID read; "
+            f"found {len(top_indexes)}"
+        )
+    top_index = top_indexes[0]
+
+    top_null_index = top_index + 1
+    while top_null_index < len(lines) and not lines[top_null_index].strip():
+        top_null_index += 1
+    if top_null_index >= len(lines) or lines[top_null_index].strip() != "if-eqz v7, :cond_131":
+        raise PatchError("top-level Luuv camera-ID null guard changed")
+
+    top_call_index = top_null_index + 1
+    while top_call_index < len(lines) and not lines[top_call_index].strip():
+        top_call_index += 1
+    if (
+        top_call_index >= len(lines)
+        or lines[top_call_index].strip()
+        != "invoke-interface {v2, v5}, Luut;->a(Luuv;)Luus;"
+    ):
+        raise PatchError("top-level Luuv metadata lookup changed")
+
+    top_block = [
+        "",
+        '    const-string v24, "GCamTopCameraId"',
+        "",
+        "    invoke-static {v24, v7}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+    ]
+    lines = lines[:top_call_index] + top_block + lines[top_call_index:]
+
+    physical_cast = "check-cast v0, Luuv;"
+    physical_indexes = [i for i, line in enumerate(lines) if line.strip() == physical_cast]
+    if len(physical_indexes) != 1:
+        raise PatchError(
+            "expected exactly one physical Luuv conversion loop; "
+            f"found {len(physical_indexes)}"
+        )
+    physical_index = physical_indexes[0]
+
+    physical_call_index = physical_index + 1
+    while physical_call_index < len(lines) and not lines[physical_call_index].strip():
+        physical_call_index += 1
+    if (
+        physical_call_index >= len(lines)
+        or lines[physical_call_index].strip()
+        != "invoke-interface {v2, v0}, Luut;->a(Luuv;)Luus;"
+    ):
+        raise PatchError("physical Luuv metadata lookup changed")
+
+    physical_block = [
+        "",
+        "    iget-object v18, v0, Luuv;->a:Ljava/lang/String;",
+        "",
+        '    const-string v25, "GCamPhysicalCameraId"',
+        "",
+        "    invoke-static {v25, v18}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+    ]
+    lines = lines[:physical_call_index] + physical_block + lines[physical_call_index:]
+
+    return lines, {
+        "status": "logged_android_camera_ids",
+        "top_level_tag": "GCamTopCameraId",
+        "physical_tag": "GCamPhysicalCameraId",
+        "ordering": "top_level_then_physical_matches_StaticMetadataVector",
+        "behavior_changed": False,
+    }
+
+
 def _inject_sensor_vector_runtime_diagnostics(
     lines: list[str],
 ) -> tuple[list[str], dict[str, Any]]:
@@ -1075,6 +1165,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         method_start=method_start,
         method_end=method_end,
     )
+    lines, camera_source_diagnostics = _inject_camera_source_runtime_diagnostics(lines)
     lines, sensor_vector_diagnostics = _inject_sensor_vector_runtime_diagnostics(lines)
 
     # Preserve Pixel Camera's native uniqueness check. The compatibility fix
@@ -1180,6 +1271,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             "continuation_label": tomte_label,
         },
         "sensor_id_uniqueness": sensor_id_metadata,
+        "camera_source_diagnostics": camera_source_diagnostics,
         "sensor_vector_diagnostics": sensor_vector_diagnostics,
     }
 
