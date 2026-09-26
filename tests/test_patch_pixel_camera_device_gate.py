@@ -128,13 +128,43 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             ".registers 4",
         )
 
-    def test_nontensor_guard_rejects_overlapping_registers(self):
+    def test_nontensor_guard_expands_minimal_registers(self):
         changed = FLAG_QUERY_REGISTERS_SAMPLE.replace(
             ".registers 4",
-            ".registers 3",
+            ".registers 2",
         )
-        with self.assertRaisesRegex(patcher.PatchError, "would overlap p0/p1"):
-            patcher.patch_nontensor_flag_queries(changed)
+        patched, metadata = patcher.patch_nontensor_flag_queries(changed)
+
+        self.assertIn(".registers 4", patched)
+        self.assertEqual(
+            metadata["methods"]["q"]["original_register_declaration"],
+            ".registers 2",
+        )
+        self.assertEqual(
+            metadata["methods"]["x"]["original_register_declaration"],
+            ".registers 2",
+        )
+        self.assertTrue(metadata["methods"]["q"]["registers_expanded"])
+        self.assertTrue(metadata["methods"]["x"]["registers_expanded"])
+
+    def test_nontensor_guard_expands_minimal_locals(self):
+        changed = FLAG_QUERY_SAMPLE.replace(
+            ".locals 3",
+            ".locals 0",
+        )
+        patched, metadata = patcher.patch_nontensor_flag_queries(changed)
+
+        self.assertIn(".locals 2", patched)
+        self.assertEqual(
+            metadata["methods"]["q"]["original_register_declaration"],
+            ".locals 0",
+        )
+        self.assertEqual(
+            metadata["methods"]["x"]["original_register_declaration"],
+            ".locals 0",
+        )
+        self.assertTrue(metadata["methods"]["q"]["registers_expanded"])
+        self.assertTrue(metadata["methods"]["x"]["registers_expanded"])
 
     def test_nontensor_guard_preserves_original_method_fallthrough(self):
         patched, _ = patcher.patch_nontensor_flag_queries(FLAG_QUERY_SAMPLE)
