@@ -88,6 +88,33 @@ KEEPALIVE_SAMPLE = r'''.class public final Lcom/google/android/apps/camera/keepa
 '''
 
 
+OFE_SAMPLE = r'''.class public final Lofe;
+.super Ljava/lang/Object;
+
+.field public final a:I
+
+.method public final synthetic a()Ljava/lang/Object;
+    .registers 21
+
+    sget-object v0, Ltdn;->a:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {v0}, Lj$/util/Optional;->ofNullable(Ljava/lang/Object;)Lj$/util/Optional;
+
+    move-result-object v10
+
+    sget-object v0, Ltdn;->b:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {v0}, Lj$/util/Optional;->of(Ljava/lang/Object;)Lj$/util/Optional;
+
+    move-result-object v11
+
+    new-instance v1, Lofp;
+
+    return-object v1
+.end method
+'''
+
+
 GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 .super Ljava/lang/Object;
 
@@ -347,6 +374,63 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(patcher.PatchError, "exactly one"):
             patcher.patch_nontensor_flag_queries(changed)
+
+    def test_allows_absent_onecamera_request_key(self):
+        patched, metadata = patcher.patch_onecamera_optional_key_smali_text(
+            OFE_SAMPLE
+        )
+
+        self.assertIn(
+            "sget-object v0, Ltdn;->b:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;",
+            patched,
+        )
+        self.assertNotIn(
+            "sget-object v0, Ltdn;->b:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    invoke-static {v0}, Lj$/util/Optional;->"
+            "of(Ljava/lang/Object;)Lj$/util/Optional;",
+            patched,
+        )
+        self.assertIn(
+            "sget-object v0, Ltdn;->b:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    invoke-static {v0}, Lj$/util/Optional;->"
+            "ofNullable(Ljava/lang/Object;)Lj$/util/Optional;",
+            patched,
+        )
+        self.assertEqual(
+            metadata["status"],
+            "allow_absent_ldtn_b_capture_request_key",
+        )
+        self.assertEqual(metadata["key"], "Ltdn.b")
+        self.assertEqual(metadata["old_wrapper"], "Optional.of")
+        self.assertEqual(metadata["new_wrapper"], "Optional.ofNullable")
+
+    def test_onecamera_optional_patch_fails_closed_if_wrapper_changes(self):
+        changed = OFE_SAMPLE.replace(
+            "invoke-static {v0}, Lj$/util/Optional;->"
+            "of(Ljava/lang/Object;)Lj$/util/Optional;",
+            "invoke-static {v0}, Lj$/util/Optional;->"
+            "empty()Lj$/util/Optional;",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "no longer wrapped by the expected Optional.of",
+        ):
+            patcher.patch_onecamera_optional_key_smali_text(changed)
+
+    def test_onecamera_optional_patch_fails_closed_without_nullable_sibling(self):
+        changed = OFE_SAMPLE.replace(
+            "ofNullable(Ljava/lang/Object;)Lj$/util/Optional;",
+            "of(Ljava/lang/Object;)Lj$/util/Optional;",
+            1,
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "Ltdn.a no longer uses Optional.ofNullable",
+        ):
+            patcher.patch_onecamera_optional_key_smali_text(changed)
 
     def test_disables_android17_keepalive_background_service(self):
         patched, metadata = patcher.patch_keepalive_receiver_smali_text(
