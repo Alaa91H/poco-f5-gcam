@@ -2479,7 +2479,7 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
     class_matches = [
         i for i, line in enumerate(lines)
         if re.match(
-            r"^\\.class\\s+.*" + re.escape(descriptor) + r"\\s*$",
+            r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$",
             line,
         )
     ]
@@ -2508,7 +2508,7 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
 
     register_lines = [
         i for i in range(method_start + 1, method_end)
-        if re.fullmatch(r"\\s*\\.registers\\s+21\\s*", lines[i])
+        if re.fullmatch(r"\s*\.registers\s+21\s*", lines[i])
     ]
     if len(register_lines) != 1:
         raise PatchError(
@@ -2570,7 +2570,7 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
     later_v18 = [
         line.strip()
         for line in lines[add_cursor + 1 : method_end]
-        if re.search(r"\\bv18\\b", line)
+        if re.search(r"\bv18\b", line)
     ]
     if not later_v18 or later_v18[0] != "move-object/from16 v18, v13":
         actual = later_v18[0] if later_v18 else "<none>"
@@ -2583,7 +2583,7 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
     if "GCamOCFinal" in method_text:
         raise PatchError("final OutputConfiguration diagnostic tag already exists")
 
-    indent = re.match(r"^(\\s*)", lines[add_cursor]).group(1)
+    indent = re.match(r"^(\s*)", lines[add_cursor]).group(1)
     injected = [
         "",
         f'{indent}const-string v18, "GCamOCFinal"',
@@ -2624,9 +2624,9 @@ def find_and_patch_onecamera_final_output_configuration_logging_smali_tree(
 ) -> dict[str, Any]:
     matches: list[Path] = []
     class_line_re = re.compile(
-        r"^\\.class\\s+.*"
+        r"^\.class\s+.*"
         + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
-        + r"\\s*$",
+        + r"\s*$",
         re.MULTILINE,
     )
     for path in root.rglob("*.smali"):
