@@ -107,14 +107,16 @@ jobs:
           Path(sys.argv[2]).write_bytes(data)
           PY
 
-          DISASM="$(command -v llvm-objdump || command -v objdump || true)"
-          if [ -z "$DISASM" ]; then
-            echo "::error::No objdump implementation is available on the runner."
-            exit 1
-          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu >/dev/null
+          DISASM="$(command -v aarch64-linux-gnu-objdump)"
+          test -x "$DISASM"
 
           {
             echo "tool=$DISASM"
+            echo
+            echo "=== unknown-device uncalibrated/abort decision ==="
+            "$DISASM" -d --start-address=0x69244a0 --stop-address=0x6924cc0 "$LIB"
             echo
             echo "=== failed tuning / abort region ==="
             "$DISASM" -d --start-address=0x691be80 --stop-address=0x691c300 "$LIB"
