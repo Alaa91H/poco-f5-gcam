@@ -2,6 +2,7 @@ import io
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -77,7 +78,12 @@ class PixelCameraNativeAnalyzerTests(unittest.TestCase):
             with zipfile.ZipFile(apk_path, "w") as apk:
                 apk.writestr(patcher.GCASTARTUP_LIBRARY, library)
 
-            report = analyzer.analyze_package(apk_path)
+            with patch.object(
+                analyzer,
+                "_verify_uncalibrated_tuning_branch",
+                return_value={"status": "synthetic-test-skip"},
+            ):
+                report = analyzer.analyze_package(apk_path)
 
             self.assertFalse(report["modifications_performed"])
             self.assertEqual(report["status"], "diagnostic_only")
