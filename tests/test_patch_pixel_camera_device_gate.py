@@ -68,6 +68,10 @@ FLAG_QUERY_SAMPLE = r'''.class public final Lklm;
 '''
 
 
+
+FLAG_QUERY_REGISTERS_SAMPLE = FLAG_QUERY_SAMPLE.replace(".locals 3", ".registers 4")
+
+
 class PixelCameraDeviceGatePatchTests(unittest.TestCase):
     def test_redirects_unsupported_device_throw_to_common_finalization(self):
         patched, metadata = patcher.patch_smali_text(SAMPLE)
@@ -107,6 +111,30 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["forced_false_patterns"],
             ["camera.lasagna*", "*use_tpu*", "*darwinn*", "*edgetpu*"],
         )
+
+    def test_nontensor_guards_accept_baksmali_registers_directive(self):
+        patched, metadata = patcher.patch_nontensor_flag_queries(
+            FLAG_QUERY_REGISTERS_SAMPLE
+        )
+
+        self.assertIn(":poco_nontensor_false_q", patched)
+        self.assertIn(":poco_nontensor_false_x", patched)
+        self.assertEqual(
+            metadata["methods"]["q"]["register_declaration"],
+            ".registers 4",
+        )
+        self.assertEqual(
+            metadata["methods"]["x"]["register_declaration"],
+            ".registers 4",
+        )
+
+    def test_nontensor_guard_rejects_overlapping_registers(self):
+        changed = FLAG_QUERY_REGISTERS_SAMPLE.replace(
+            ".registers 4",
+            ".registers 3",
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "would overlap p0/p1"):
+            patcher.patch_nontensor_flag_queries(changed)
 
     def test_nontensor_guard_preserves_original_method_fallthrough(self):
         patched, _ = patcher.patch_nontensor_flag_queries(FLAG_QUERY_SAMPLE)
