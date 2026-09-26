@@ -179,7 +179,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|mjy\\.a\\(PG:\\d+\\))"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|GCamSensorIds|GCamTopCameraId|GCamPhysicalCameraId|mjy\\.a\\(PG:\\d+\\))"
         } |
         Select-Object -Last 200
 )
@@ -334,6 +334,74 @@ $sensorVectorDuplicateIds = @(
         }
 )
 
+# Correlate the Android Camera2 sources with the final GCam sensor vector per
+# native-create thread. Source IDs are emitted while the vector is built, and
+# GCamSensorIds is emitted immediately before Gcam_Create on that same thread.
+$cameraSensorEventLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(GCamTopCameraId|GCamPhysicalCameraId|GCamSensorIds)'
+        } |
+        Select-Object -Last 300
+)
+$cameraSensorThreadGroups = [ordered]@{}
+foreach ($line in $cameraSensorEventLines) {
+    if ($line -notmatch '^\S+\s+\S+\s+(?<pid>\d+)\s+(?<tid>\d+)\s+\S+\s+(?<tag>GCamTopCameraId|GCamPhysicalCameraId|GCamSensorIds)\s*:\s*(?<value>\S+)') {
+        continue
+    }
+
+    $threadKey = "$($Matches["pid"]):$($Matches["tid"])"
+    if (-not $cameraSensorThreadGroups.Contains($threadKey)) {
+        $cameraSensorThreadGroups[$threadKey] = [ordered]@{
+            pid = $Matches["pid"]
+            tid = $Matches["tid"]
+            sources = New-Object System.Collections.Generic.List[object]
+            sensors = New-Object System.Collections.Generic.List[string]
+        }
+    }
+
+    $group = $cameraSensorThreadGroups[$threadKey]
+    if ($Matches["tag"] -eq "GCamSensorIds") {
+        $group.sensors.Add($Matches["value"])
+    }
+    else {
+        $group.sources.Add([ordered]@{
+            sourceType = if ($Matches["tag"] -eq "GCamTopCameraId") { "top_level" } else { "physical" }
+            cameraId = $Matches["value"]
+        })
+    }
+}
+
+$sensorSourceMappings = New-Object System.Collections.Generic.List[object]
+$sensorSourceMappingThreads = New-Object System.Collections.Generic.List[object]
+foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
+    $group = $entry.Value
+    $pairedCount = [Math]::Min($group.sources.Count, $group.sensors.Count)
+    $complete = (
+        $group.sources.Count -gt 0 -and
+        $group.sources.Count -eq $group.sensors.Count
+    )
+
+    for ($i = 0; $i -lt $pairedCount; $i++) {
+        $sensorSourceMappings.Add([ordered]@{
+            pid = $group.pid
+            tid = $group.tid
+            index = $i
+            sourceType = $group.sources[$i].sourceType
+            cameraId = $group.sources[$i].cameraId
+            sensor = $group.sensors[$i]
+        })
+    }
+
+    $sensorSourceMappingThreads.Add([ordered]@{
+        pid = $group.pid
+        tid = $group.tid
+        sourceCount = $group.sources.Count
+        sensorCount = $group.sensors.Count
+        complete = $complete
+    })
+}
+
 $logicalCameraMappingLines = @(
     $logLines |
         Where-Object {
@@ -432,6 +500,8 @@ $report = [ordered]@{
         sensorVectorLines = $sensorVectorLines
         sensorVectorIds = @($sensorVectorIds)
         sensorVectorDuplicateIds = $sensorVectorDuplicateIds
+        sensorSourceMappingThreads = @($sensorSourceMappingThreads)
+        sensorSourceMappings = @($sensorSourceMappings)
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
         logicalCameraMappingLines = $logicalCameraMappingLines
         oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
@@ -501,6 +571,15 @@ if ($sensorVectorDuplicateIds.Count -gt 0) {
 }
 else {
     Write-Host "Duplicate sensor vector IDs: none observed"
+}
+if ($sensorSourceMappings.Count -gt 0) {
+    Write-Host "Camera2 -> GCam sensor mappings:"
+    $sensorSourceMappings | ForEach-Object {
+        Write-Host ("  PID " + $_.pid + " TID " + $_.tid + " [" + $_.sourceType + "] camera " + $_.cameraId + " -> " + $_.sensor)
+    }
+}
+else {
+    Write-Host "Camera2 -> GCam sensor mappings: none observed"
 }
 Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
