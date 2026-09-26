@@ -281,6 +281,35 @@ $sensorIdUniquenessCrashObserved = (
     $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:1626\)'
 )
 
+$logicalCameraMappingLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Cannot map logical camera type|Invalid logical camera id|CreateUsecaseObject failed|Failed to initialize Multicamera)'
+        } |
+        Select-Object -Last 100
+)
+$logicalCameraMappingErrorsObserved = $logicalCameraMappingLines.Count -gt 0
+
+$oneCameraOptionalNpeLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Failed to start OneCamera|j\$\.util\.Optional\.of|ofe\.a\(PG:413\)|NullPointerException.*null object reference)'
+        } |
+        Select-Object -Last 100
+)
+$oneCameraOptionalNpeObserved = (
+    $logcat -match '(?is)Failed to start OneCamera.*?Caused by:\s*java\.lang\.NullPointerException.*?j\$\.util\.Optional\.of.*?ofe\.a\(PG:413\)'
+)
+
+$googleAllowlistLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(GoogleCertificatesRslt: not allowed|Package not on allowlist|CBVerifier: Fail to register phenotypeflags)'
+        } |
+        Select-Object -Last 100
+)
+$googleAllowlistRejectionObserved = $googleAllowlistLines.Count -gt 0
+
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
 $topActivityMatches = $resumedLines.Count -gt 0
@@ -343,6 +372,12 @@ $report = [ordered]@{
         aionFatalCheckLines = $aionFatalCheckLines
         sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
         sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
+        logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
+        logicalCameraMappingLines = $logicalCameraMappingLines
+        oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
+        oneCameraOptionalNpeLines = $oneCameraOptionalNpeLines
+        googleAllowlistRejectionObserved = $googleAllowlistRejectionObserved
+        googleAllowlistLines = $googleAllowlistLines
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
@@ -395,6 +430,9 @@ Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserv
 Write-Host "AION missing library observed: $aionMissingLibraryObserved"
 Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
+Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
+Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
+Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
