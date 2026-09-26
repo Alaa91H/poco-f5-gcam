@@ -2183,10 +2183,7 @@ def patch_onecamera_odr_missing_request_key_smali_text(
         "",
         f"{result_indent}:{label_first_absent}",
         "",
-        f"{result_indent}invoke-static {{}}, "
-        "Ljava/util/Collections;->emptySet()Ljava/util/Set;",
-        "",
-        f"{result_indent}move-result-object p1",
+        f"{result_indent}return-void",
         "",
         f"{result_indent}:{label_ready}",
     ]
@@ -2200,10 +2197,10 @@ def patch_onecamera_odr_missing_request_key_smali_text(
         "key": "Ltdn.b",
         "preserved_key": "Ltdn.a",
         "additional_nullable_key": "Ltdn.a",
-        "fallback": "singleton(Ltdn.a) when only Ltdn.b is absent; emptySet when Ltdn.a is absent",
+        "fallback": "singleton(Ltdn.a) when only Ltdn.b is absent; skip callback update when Ltdn.a is absent",
         "behavior": (
-            "omit only the absent Pixel-only Ltdn.b request entry while "
-            "preserving the supported Ltdn.a request"
+            "omit absent Pixel-only request entries locally without "
+            "adding new DEX method references or weakening Lupd"
         ),
     }
 
