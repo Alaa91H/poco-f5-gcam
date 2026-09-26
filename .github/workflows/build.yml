@@ -101,7 +101,7 @@ jobs:
             [ -z "$file" ] && continue
 
             case "$file" in
-              tools/camera2-probe/*|tools/lens-verifier/*|.github/workflows/build.yml)
+              tools/camera2-probe/*|tools/lens-verifier/*|scripts/run-camera2-probe.ps1|.github/workflows/build.yml)
                 android=true
                 ;;
             esac
