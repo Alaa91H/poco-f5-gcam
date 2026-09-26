@@ -39,6 +39,13 @@ GCAM_INIT_SYMBOLS = (
     TOMTE_GRAIN_SYMBOL.encode("utf-8"),
 )
 GCASTARTUP_LIBRARY = "lib/arm64-v8a/libgcastartup.so"
+KEEPALIVE_RECEIVER_DESCRIPTOR = (
+    "Lcom/google/android/apps/camera/keepalive/KeepAliveBroadcastReceiver;"
+)
+KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
+KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
+    "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
+)
 GCASTARTUP_11_0_073_SHA256 = (
     "34487551ea95b83b76ff41a742c83a6fb27f19ae07d3210139215313e3cacdbe"
 )
@@ -48,6 +55,9 @@ TUNING_DIAGNOSTIC_STRINGS = (
     "Device has not been calibrated for HDR+",
     "Unsupported sensor ID. Using tuning defaults.",
     "Using tuning defaults.",
+    "lib_aion_buffer.so",
+    "aion_context.cc",
+    "Check failed: valid_",
 )
 # Exact AArch64 instructions for Pixel Camera 11.0.073.972752740.32.
 # These patches select existing fallback behavior only. They do not spoof a
@@ -543,6 +553,28 @@ def find_gcam_init_dex(apk: Path) -> str:
     return matches[0]
 
 
+def find_keepalive_receiver_dex(apk: Path) -> str:
+    """Locate the dex that contains the Pixel-only keepalive receiver."""
+
+    with zipfile.ZipFile(apk, "r") as archive:
+        matches: list[tuple[str, int]] = []
+        for info in archive.infolist():
+            if not DEX_NAME_RE.fullmatch(info.filename):
+                continue
+            data = archive.read(info)
+            count = data.count(KEEPALIVE_RECEIVER_BYTES)
+            if count:
+                matches.append((info.filename, count))
+
+    if len(matches) != 1:
+        rendered = ", ".join(f"{name}:{count}" for name, count in matches) or "none"
+        raise PatchError(
+            "expected KeepAliveBroadcastReceiver in exactly one classes*.dex; "
+            f"found {rendered}"
+        )
+    return matches[0][0]
+
+
 def _find_skip_branch_for_call(
     lines: list[str],
     *,
@@ -989,6 +1021,104 @@ def _has_gcam_init_callsites(text: str) -> bool:
     return True
 
 
+def patch_keepalive_receiver_smali_text(text: str) -> tuple[str, dict[str, Any]]:
+    """No-op Pixel Camera's keepalive broadcast receiver on POCO F5.
+
+    Android 17 rejects the receiver's background startService() call and throws
+    BackgroundServiceStartNotAllowedException before the camera activity can
+    stay alive. The receiver only drives Pixel keepalive/prewarm behavior, so
+    this compatibility patch leaves the receiver class registered but makes its
+    onReceive(Context, Intent) implementation return immediately.
+    """
+
+    lines = text.splitlines()
+    method_indexes = [
+        i
+        for i, line in enumerate(lines)
+        if line.lstrip().startswith(".method ")
+        and KEEPALIVE_ON_RECEIVE_DESCRIPTOR in line
+    ]
+    if len(method_indexes) != 1:
+        raise PatchError(
+            "expected exactly one KeepAliveBroadcastReceiver.onReceive method; "
+            f"found {len(method_indexes)}"
+        )
+
+    method_start = method_indexes[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("KeepAliveBroadcastReceiver.onReceive is unterminated")
+
+    body = "\n".join(lines[method_start : method_end + 1])
+    if "->startService(Landroid/content/Intent;)Landroid/content/ComponentName;" not in body:
+        raise PatchError(
+            "KeepAliveBroadcastReceiver.onReceive no longer contains the expected "
+            "background startService call"
+        )
+
+    register_indexes = [
+        i
+        for i in range(method_start + 1, method_end)
+        if re.match(r"^\s*\.(?:locals|registers)\s+\d+\s*$", lines[i])
+    ]
+    if len(register_indexes) != 1:
+        raise PatchError(
+            "expected exactly one register declaration in "
+            "KeepAliveBroadcastReceiver.onReceive"
+        )
+
+    register_index = register_indexes[0]
+    indent = re.match(r"^(\s*)", lines[register_index]).group(1)
+    patched_lines = (
+        lines[: register_index + 1]
+        + [
+            "",
+            f"{indent}# POCO F5 / Android 17: skip Pixel keepalive background service.",
+            f"{indent}return-void",
+        ]
+        + lines[method_end:]
+    )
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "disabled_pixel_keepalive_receiver",
+        "method": lines[method_start].strip(),
+        "reason": "Android 17 forbids this background startService path",
+    }
+
+
+def find_and_patch_keepalive_receiver_smali_tree(root: Path) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*"
+        + re.escape(KEEPALIVE_RECEIVER_DESCRIPTOR)
+        + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected KeepAliveBroadcastReceiver class in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    original = target.read_text(encoding="utf-8")
+    patched, metadata = patch_keepalive_receiver_smali_text(original)
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
     matches: list[Path] = []
     for path in root.rglob("*.smali"):
@@ -1070,6 +1200,7 @@ def patch_apk(
 
     target_dex = find_target_dex(source)
     gcam_init_dex = find_gcam_init_dex(source)
+    keepalive_dex = find_keepalive_receiver_dex(source)
 
     with tempfile.TemporaryDirectory(prefix="poco-f5-device-gate-") as temp:
         root = Path(temp)
@@ -1078,7 +1209,7 @@ def patch_apk(
         command_tails: dict[str, dict[str, str]] = {}
 
         with zipfile.ZipFile(source, "r") as archive:
-            for dex_name in sorted({target_dex, gcam_init_dex}):
+            for dex_name in sorted({target_dex, gcam_init_dex, keepalive_dex}):
                 safe_name = dex_name.replace(".", "_")
                 input_dex = root / dex_name
                 smali_dir = root / f"smali-{safe_name}"
@@ -1103,6 +1234,10 @@ def patch_apk(
                 if dex_name == gcam_init_dex:
                     report_for_dex["gcam_init"] = find_and_patch_gcam_init_smali_tree(
                         smali_dir
+                    )
+                if dex_name == keepalive_dex:
+                    report_for_dex["keepalive"] = (
+                        find_and_patch_keepalive_receiver_smali_tree(smali_dir)
                     )
 
                 assemble_output = run(
@@ -1155,6 +1290,7 @@ def patch_apk(
 
     device_metadata = dex_reports[target_dex]["device_gate"]
     gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
+    keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
         "status": "patched",
@@ -1164,6 +1300,10 @@ def patch_apk(
         "gcam_init_patch": {
             "target_dex": gcam_init_dex,
             **gcam_metadata,
+        },
+        "keepalive_receiver_patch": {
+            "target_dex": keepalive_dex,
+            **keepalive_metadata,
         },
         "native_gxp_cpu_fallback": native_gxp_report,
         "dex_command_tails": command_tails,
