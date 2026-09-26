@@ -441,6 +441,13 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "invoke-static/range {v24 .. v25}, Landroid/util/Log;->e",
             patched,
         )
+        self.assertIn("move-object/from16 v24, v3", patched)
+        self.assertIn("iget-object v3, v0, Luuv;->a:Ljava/lang/String;", patched)
+        self.assertIn("move-object/from16 v3, v24", patched)
+        self.assertIn(
+            "invoke-static/range {v25 .. v26}, Landroid/util/Log;->e",
+            patched,
+        )
         self.assertEqual(
             metadata["camera_source_diagnostics"]["status"],
             "logged_android_camera_ids",
