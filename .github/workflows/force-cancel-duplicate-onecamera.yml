@@ -1,0 +1,23 @@
+name: Force-cancel duplicate OneCamera build once
+
+on:
+  push:
+    paths:
+      - ".github/workflows/force-cancel-duplicate-onecamera.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Force-cancel duplicate build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/actions/runs/36248530741/force-cancel"
