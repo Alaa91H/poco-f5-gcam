@@ -45,7 +45,7 @@ KEEPALIVE_RECEIVER_DESCRIPTOR = (
 KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
 ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
-ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lua;"
+ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
@@ -1971,12 +1971,18 @@ def find_and_patch_onecamera_missing_request_key_smali_tree(
 def patch_onecamera_open_camera_fallback_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
-    """Open POCO F5's physical rear camera when Pixel Camera requests ID 4.
+    """Remap Xiaomi logical rear ID 4 before OneCamera creates its callback.
 
-    Runtime CameraService/CHI evidence shows camera ID 4 is Xiaomi's logical
-    rear MultiCameraSAT endpoint and cannot initialize its graph for this app.
-    Camera ID 0 is the physical rear camera. Redirect only the exact ID 4 at
-    the CameraManager.openCamera callsite; all other camera IDs are unchanged.
+    Real-device evidence shows POCO F5 camera ID 4 is Xiaomi's logical rear
+    MultiCameraSAT endpoint and cannot initialize reliably for Pixel Camera.
+    The physical rear camera is ID 0.
+
+    The remap must happen in Lug.a(), before the camera ID is stored in the
+    coroutine state and before Lrr (CameraDevice.StateCallback) is constructed.
+    Patching only CameraManager.openCamera is too late: Lrr keeps the original
+    ID and its onOpened() invariant rejects CameraDevice.getId() == "0" while
+    expecting "4". Remapping v1 here keeps metadata lookup, callback state, and
+    the eventual openCamera request consistent.
     """
 
     lines = text.splitlines()
@@ -1989,17 +1995,21 @@ def patch_onecamera_open_camera_fallback_smali_text(
     ]
     if len(class_matches) != 1:
         raise PatchError(
-            "expected exactly one CameraManager coroutine class Lua;; "
+            "expected exactly one OneCamera camera-open coordinator Lug;; "
             f"found {len(class_matches)}"
         )
 
+    signature = (
+        ".method public final "
+        "a(Ljava/lang/String;IJLsz;Lsb;Ladel;)Ljava/lang/Object;"
+    )
     method_starts = [
         i for i, line in enumerate(lines)
-        if line.strip() == ".method public final fe(Ljava/lang/Object;)Ljava/lang/Object;"
+        if line.strip() == signature
     ]
     if len(method_starts) != 1:
         raise PatchError(
-            "expected exactly one Lua.fe(Object) open-camera coroutine; "
+            "expected exactly one Lug.a(String,...) camera-open coroutine; "
             f"found {len(method_starts)}"
         )
     method_start = method_starts[0]
@@ -2007,70 +2017,89 @@ def patch_onecamera_open_camera_fallback_smali_text(
     while method_end < len(lines) and lines[method_end].strip() != ".end method":
         method_end += 1
     if method_end >= len(lines):
-        raise PatchError("Lua.fe() is unterminated")
+        raise PatchError("Lug.a() is unterminated")
 
-    open_call = (
-        "invoke-virtual {v3, v0, p1, v5}, "
-        "Landroid/hardware/camera2/CameraManager;->"
-        "openCamera(Ljava/lang/String;Ljava/util/concurrent/Executor;"
-        "Landroid/hardware/camera2/CameraDevice$StateCallback;)V"
-    )
-    open_indexes = [
-        i for i in range(method_start, method_end)
-        if lines[i].strip() == open_call
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    for token in (
+        "invoke-direct/range {v9 .. v19}, "
+        "Lrr;-><init>(Ljava/lang/String;Lpi;IJLjom;Lsz;Lufk;Ldan;Lsb;)V",
+        "invoke-direct {v1, v0, v10, v9, v8}, "
+        "Luf;-><init>(Lug;Ljava/lang/String;Lrr;Ladel;)V",
+        "move-object v10, v1",
+    ):
+        if method_text.count(token) != 1:
+            raise PatchError(
+                "Lug camera-ID/callback flow changed; expected exactly one "
+                f"{token!r}"
+            )
+
+    camera_move = "move-object/from16 v1, p1"
+    camera_move_indexes = [
+        i for i in range(method_start, min(method_end, method_start + 20))
+        if lines[i].strip() == camera_move
     ]
-    if len(open_indexes) != 1:
+    if len(camera_move_indexes) != 1:
         raise PatchError(
-            "expected exactly one executor CameraManager.openCamera call in Lua.fe(); "
-            f"found {len(open_indexes)}"
+            "expected initial camera ID copy move-object/from16 v1, p1 in Lug.a(); "
+            f"found {len(camera_move_indexes)}"
         )
-    open_index = open_indexes[0]
+    camera_move_index = camera_move_indexes[0]
 
+    # Verify the exact neighboring register flow so this remains fail-closed.
     previous_code = []
-    cursor = open_index - 1
-    while cursor >= method_start and len(previous_code) < 2:
+    cursor = camera_move_index - 1
+    while cursor > method_start and len(previous_code) < 1:
         stripped = lines[cursor].strip()
         if stripped and not stripped.startswith("#"):
-            previous_code.append((cursor, stripped))
+            previous_code.append(stripped)
         cursor -= 1
-    if len(previous_code) < 2:
-        raise PatchError("openCamera call has insufficient preceding instructions")
-    if previous_code[0][1] != "check-cast v0, Ljava/lang/String;":
-        raise PatchError(
-            "Camera ID register before openCamera is no longer v0/String"
-        )
-    if previous_code[1][1] != "check-cast v5, Landroid/hardware/camera2/CameraDevice$StateCallback;":
-        raise PatchError(
-            "openCamera callback register flow changed"
-        )
+    next_code = []
+    cursor = camera_move_index + 1
+    while cursor < method_end and len(next_code) < 1:
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#"):
+            next_code.append(stripped)
+        cursor += 1
+    if previous_code != ["move-object/from16 v0, p0"]:
+        raise PatchError("Lug camera ID predecessor register flow changed")
+    if next_code != ["move-object/from16 v2, p7"]:
+        raise PatchError("Lug camera ID successor register flow changed")
 
     label = "poco_physical_rear_camera_ready"
     if any(line.strip() == f":{label}" for line in lines[method_start:method_end]):
         raise PatchError("physical rear camera fallback label already exists")
 
-    indent = re.match(r"^(\s*)", lines[open_index]).group(1)
+    indent = re.match(r"^(\s*)", lines[camera_move_index]).group(1)
     guard = [
-        f'{indent}const-string v6, "4"',
         "",
-        f"{indent}invoke-virtual {{v6, v0}}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        f"{indent}# POCO F5: normalize Xiaomi logical rear ID before callback creation.",
+        f'{indent}const-string v9, "4"',
         "",
-        f"{indent}move-result v6",
+        f"{indent}invoke-virtual {{v9, v1}}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
         "",
-        f"{indent}if-eqz v6, :{label}",
+        f"{indent}move-result v9",
         "",
-        f'{indent}const-string v0, "0"',
+        f"{indent}if-eqz v9, :{label}",
+        "",
+        f'{indent}const-string v1, "0"',
         "",
         f"{indent}:{label}",
     ]
-    patched_lines = lines[:open_index] + guard + lines[open_index:]
+    patched_lines = (
+        lines[: camera_move_index + 1]
+        + guard
+        + lines[camera_move_index + 1 :]
+    )
     patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
         "status": "redirect_xiaomi_logical_rear_to_physical_rear",
         "class": ONECAMERA_OPEN_CAMERA_DESCRIPTOR,
-        "method": lines[method_start].strip(),
+        "method": signature,
         "requested_camera_id": "4",
         "fallback_camera_id": "0",
-        "scope": "CameraManager.openCamera only",
+        "scope": "before_coroutine_state_and_CameraDevice_StateCallback_creation",
+        "callback_expected_id_remapped": True,
+        "metadata_lookup_id_remapped": True,
         "other_camera_ids_unchanged": True,
     }
 
@@ -2096,7 +2125,7 @@ def find_and_patch_onecamera_open_camera_fallback_smali_tree(
     if len(matches) != 1:
         rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
         raise PatchError(
-            "expected Lua; in exactly one smali file; "
+            "expected Lug; in exactly one smali file; "
             f"found {rendered}"
         )
 
@@ -2107,6 +2136,7 @@ def find_and_patch_onecamera_open_camera_fallback_smali_tree(
     target.write_text(patched, encoding="utf-8")
     metadata["smali_path"] = os.fspath(target.relative_to(root))
     return metadata
+
 
 def patch_keepalive_receiver_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     """No-op Pixel Camera's keepalive broadcast receiver on POCO F5.
