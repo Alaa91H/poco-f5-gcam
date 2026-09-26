@@ -104,6 +104,12 @@ jobs:
               echo "=== $NAME: StaticMetadata sensor-ID related calls ==="
               grep -R -n -B 35 -A 60 -E "StaticMetadata_.*sensor|sensor_id" "$OUT" || true
               echo
+              echo "=== $NAME: StaticMetadata.u(zoi) callsites ==="
+              grep -R -n -B 90 -A 120 -F "Lcom/google/googlex/gcam/StaticMetadata;->u(Lzoi;)V" "$OUT" || true
+              echo
+              echo "=== $NAME: zoi.z sensor-ID field reads/writes ==="
+              grep -R -n -B 90 -A 120 -F "Lzoi;->z:I" "$OUT" || true
+              echo
             } >> "$REPORT"
           done
           sed -n '1,2200p' "$REPORT"
