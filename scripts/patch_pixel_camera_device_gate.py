@@ -719,6 +719,11 @@ def _patch_logical_camera_sensor_ids(
     non-empty set are remapped. The enclosing Luve array is verified as
     BACK-first / FRONT-second, so v12 selects kRearLogical or kFrontLogical.
     Physical cameras and synthetic binned/max-resolution entries remain intact.
+
+    Runtime Camera2 probing on marble confirms that exposed IDs 0, 1, 2 and 3
+    can deliver sustained YUV frames, while logical IDs 4/5 are not reliable
+    application-facing capture endpoints. Keep the mapping diagnostics active
+    so camera 3 can be classified before changing the retained-ID policy.
     """
 
     method_text = "\n".join(lines[method_start : method_end + 1])
