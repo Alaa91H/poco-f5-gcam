@@ -2586,17 +2586,21 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
     indent = re.match(r"^(\s*)", lines[add_cursor]).group(1)
     injected = [
         "",
-        f'{indent}const-string v18, "GCamOCFinal"',
+        f"{indent}move/from16 v18, v14",
+        "",
+        f'{indent}const-string v14, "GCamOCFinal"',
         "",
         f"{indent}invoke-static {{v9}}, "
         "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
         "",
         f"{indent}move-result-object v13",
         "",
-        f"{indent}invoke-static {{v18, v13}}, "
+        f"{indent}invoke-static {{v14, v13}}, "
         "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
         f"{indent}move-result v13",
+        "",
+        f"{indent}move/from16 v14, v18",
     ]
     lines = lines[:add_cursor] + injected + lines[add_cursor:]
 
@@ -2607,8 +2611,9 @@ def patch_onecamera_final_output_configuration_logging_smali_text(
         "method": signature,
         "tag": "GCamOCFinal",
         "behavior_changed": False,
-        "scratch_registers": ["v13", "v18"],
+        "scratch_registers": ["v13", "v14", "v18"],
         "scratch_liveness": (
+            "v14 is saved to dead v18 and restored before original flow; "
             "v13 is reset immediately after the list add; v18 is redefined "
             "before its first later read"
         ),
