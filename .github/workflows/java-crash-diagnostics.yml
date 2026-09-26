@@ -269,7 +269,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - "$RUNNER_TEMP/ofe-smali" "$RUNNER_TEMP/ofe-key-provider-analysis.txt" <<'PY'
+          rm -rf "$RUNNER_TEMP/base-dex" "$RUNNER_TEMP/base-smali"
+          mkdir -p "$RUNNER_TEMP/base-dex" "$RUNNER_TEMP/base-smali"
+
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/base-dex" <<'PY'
+          import io, sys, zipfile
+          from pathlib import Path
+
+          bundle=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          with zipfile.ZipFile(bundle) as outer:
+              base=outer.read("base.apk")
+          with zipfile.ZipFile(io.BytesIO(base)) as apk:
+              dexes=[n for n in apk.namelist() if n.startswith("classes") and n.endswith(".dex")]
+              if not dexes:
+                  raise SystemExit("base.apk contains no classes*.dex")
+              for name in dexes:
+                  target=out/name
+                  target.write_bytes(apk.read(name))
+                  print(f"extracted {name} size={target.stat().st_size}")
+          PY
+
+          for dex in "$RUNNER_TEMP"/base-dex/classes*.dex; do
+            name="$(basename "$dex" .dex)"
+            mkdir -p "$RUNNER_TEMP/base-smali/$name"
+            java -jar "$RUNNER_TEMP/baksmali.jar" d "$dex" -o "$RUNNER_TEMP/base-smali/$name"
+          done
+
+          python - "$RUNNER_TEMP/base-smali" "$RUNNER_TEMP/ofe-key-provider-analysis.txt" <<'PY'
           import sys
           from pathlib import Path
 
@@ -280,7 +307,7 @@ jobs:
           for name in names:
               matches=list(root.rglob(name + ".smali"))
               if len(matches) != 1:
-                  raise SystemExit(f"expected one {name}.smali, found {matches}")
+                  raise SystemExit(f"expected one {name}.smali across base dexes, found {matches}")
               p=matches[0]
               text=p.read_text(encoding="utf-8", errors="replace")
               chunks.append("="*80)
@@ -289,7 +316,7 @@ jobs:
           out.write_text("\n".join(chunks)+"\n", encoding="utf-8")
           PY
 
-          sed -n '1,3200p' "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
+          sed -n '1,4200p' "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
 
       - name: Upload OneCamera key-provider diagnostics
         uses: actions/upload-artifact@v7
