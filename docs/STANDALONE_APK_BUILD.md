@@ -72,15 +72,26 @@ That path:
 3. locates the exact `Device is not recognized or not supported` constructor guard in one DEX;
 4. disassembles only that DEX with checksum-pinned baksmali;
 5. redirects the rejection block to Pixel Camera's existing common constructor finalization path and fails closed if the bytecode shape is not exactly recognized;
-6. rebuilds the DEX with checksum-pinned smali;
-7. aligns native libraries for 16 KiB page-size devices;
-8. replaces Google's signing identity with the project signing key;
-9. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
+6. injects narrow guards into `klm.q(...)` and `klm.x(...)` so POCO F5 never selects feature names containing `use_tpu`, `darwinn`, or `edgetpu`, and disables the `camera.lasagna*` Tensor/GXP motion path;
+7. rebuilds the DEX with checksum-pinned smali;
+8. aligns native libraries for 16 KiB page-size devices;
+9. replaces Google's signing identity with the project signing key;
+10. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
 
-The patch addresses the concrete startup crash observed on POCO F5, but those
-checks still prove package structure and the targeted bytecode transformation
-only. They do **not** prove the rest of Pixel Camera's runtime behavior on a
-non-Pixel camera HAL.
+The first compatibility patch removed the explicit unsupported-device startup
+exception. Real-device testing then progressed far enough to connect to
+CameraService, but the Snapdragon POCO F5 logged repeated `libgxp.so` /
+DarwiNN initialization failures and later dereferenced a null native `Gcam`
+object. The current build therefore also prevents Tensor-only accelerator
+feature queries from being selected on POCO F5.
+
+A bare `dlopen failed` line is kept as runtime diagnostics but is no longer
+treated as a fatal crash by itself; the strict smoke test still fails on real
+Java/native fatal exceptions, process death, or launcher failure.
+
+These checks still prove package structure and targeted bytecode
+transformations only. They do **not** prove the rest of Pixel Camera's runtime
+behavior on a non-Pixel camera HAL.
 
 For that reason the merged output is now explicitly recorded as:
 

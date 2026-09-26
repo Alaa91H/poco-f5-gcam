@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Patch Pixel Camera's unsupported-device constructor gate in a merged APK.
+"""Patch Pixel Camera's POCO F5 startup compatibility gates in a merged APK.
 
-The patch is intentionally narrow and fail-closed. It looks for the exact
-"Device is not recognized or not supported" guard in one classes*.dex file,
-disassembles only that dex, and redirects the guard's throw block to the
-constructor's existing common finalization path. No feature flags or PairIP
-checks are modified.
+The patch is intentionally fail-closed. It locates the exact
+"Device is not recognized or not supported" constructor guard in one
+classes*.dex file, redirects that rejection block to the existing common
+finalization path, and then hard-disables Tensor-only GXP/TPU/DarwiNN feature
+queries in the same klm class. PairIP and unrelated feature gates are untouched.
 """
 
 from __future__ import annotations
@@ -174,6 +174,146 @@ def patch_smali_text(text: str) -> tuple[str, dict[str, str]]:
     }
 
 
+def _inject_nontensor_guard(
+    text: str,
+    *,
+    signature: str,
+    suffix: str,
+) -> tuple[str, dict[str, str]]:
+    """Inject a narrow early-return guard into a klm boolean feature query.
+
+    Pixel Camera's generic configuration can still expose Tensor-only paths
+    after the unsupported-device constructor rejection is bypassed. On POCO F5
+    those paths attempt to load libgxp.so / DarwiNN and can leave Gcam_Create
+    without a usable native object. The guard only forces false for:
+      * camera.lasagna* (motion pipelines that require Google GXP/EdgeTPU)
+      * any flag name containing use_tpu
+      * any flag name containing darwinn
+      * any flag name containing edgetpu
+
+    Everything else falls through to the original method body.
+    """
+
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == signature]
+    if len(starts) != 1:
+        raise PatchError(
+            f"expected exactly one {signature} method in klm smali; found {len(starts)}"
+        )
+    start = starts[0]
+
+    end = start + 1
+    while end < len(lines) and lines[end].strip() != ".end method":
+        end += 1
+    if end >= len(lines):
+        raise PatchError(f"unterminated method: {signature}")
+
+    locals_index = None
+    locals_count = None
+    for i in range(start + 1, min(end, start + 12)):
+        match = re.match(r"^\s*\.locals\s+(\d+)\s*$", lines[i])
+        if match:
+            locals_index = i
+            locals_count = int(match.group(1))
+            break
+    if locals_index is None or locals_count is None:
+        raise PatchError(f"{signature} does not use an expected .locals declaration")
+    if locals_count < 2:
+        raise PatchError(
+            f"{signature} has only {locals_count} locals; refusing register-unsafe patch"
+        )
+
+    false_label = f"poco_nontensor_false_{suffix}"
+    original_label = f"poco_nontensor_orig_{suffix}"
+    method_text = "\n".join(lines[start : end + 1])
+    if f":{false_label}" in method_text or f":{original_label}" in method_text:
+        raise PatchError(f"{signature} already contains POCO non-Tensor guard labels")
+
+    guard = [
+        "",
+        "    # POCO F5 / Snapdragon compatibility: skip Tensor-only accelerators.",
+        f"    if-eqz p1, :{original_label}",
+        "",
+        "    iget-object v0, p1, Lkix;->a:Ljava/lang/String;",
+        "",
+        f"    if-eqz v0, :{original_label}",
+        "",
+        '    const-string v1, "camera.lasagna"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->startsWith(Ljava/lang/String;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-nez v1, :{false_label}",
+        "",
+        '    const-string v1, "use_tpu"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-nez v1, :{false_label}",
+        "",
+        '    const-string v1, "darwinn"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-nez v1, :{false_label}",
+        "",
+        '    const-string v1, "edgetpu"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-eqz v1, :{original_label}",
+        "",
+        f"    :{false_label}",
+        "    const/4 v0, 0x0",
+        "",
+        "    return v0",
+        "",
+        f"    :{original_label}",
+    ]
+
+    patched_lines = lines[: locals_index + 1] + guard + lines[locals_index + 1 :]
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+
+    return patched, {
+        "method": signature,
+        "false_label": false_label,
+        "original_label": original_label,
+    }
+
+
+def patch_nontensor_flag_queries(text: str) -> tuple[str, dict[str, Any]]:
+    patched, q_meta = _inject_nontensor_guard(
+        text,
+        signature=".method public final q(Lkiz;)Z",
+        suffix="q",
+    )
+    patched, x_meta = _inject_nontensor_guard(
+        patched,
+        signature=".method public final x(Lkiz;)Z",
+        suffix="x",
+    )
+    return patched, {
+        "status": "patched",
+        "forced_false_patterns": [
+            "camera.lasagna*",
+            "*use_tpu*",
+            "*darwinn*",
+            "*edgetpu*",
+        ],
+        "methods": {
+            "q": q_meta,
+            "x": x_meta,
+        },
+    }
+
+
 def find_and_patch_smali_tree(root: Path) -> dict[str, str]:
     matches: list[Path] = []
     for path in root.rglob("*.smali"):
@@ -194,8 +334,10 @@ def find_and_patch_smali_tree(root: Path) -> dict[str, str]:
     target = matches[0]
     original = target.read_text(encoding="utf-8")
     patched, metadata = patch_smali_text(original)
+    patched, nontensor_metadata = patch_nontensor_flag_queries(patched)
     target.write_text(patched, encoding="utf-8")
     metadata["smali_path"] = os.fspath(target.relative_to(root))
+    metadata["nontensor_flag_guards"] = nontensor_metadata
     return metadata
 
 

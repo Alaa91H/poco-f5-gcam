@@ -137,7 +137,11 @@ $diagnosticLines = @(
 $fatalEvidence = New-Object System.Collections.Generic.List[string]
 for ($i = 0; $i -lt $logLines.Count; $i++) {
     $line = $logLines[$i]
-    $isFatalMarker = $line -match "(?i)(FATAL EXCEPTION|Fatal signal|Abort message|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|Resources(\$|\.)NotFoundException|VerifyError|IncompatibleClassChangeError|dlopen failed)"
+    # A bare native "dlopen failed" line is diagnostic, not necessarily fatal.
+    # Pixel Camera probes optional Pixel-only libraries such as libgxp.so on
+    # non-Tensor hardware; only a real Java/native fatal marker should fail a
+    # run by itself. Loader failures remain in diagnosticLines/rootCauseLines.
+    $isFatalMarker = $line -match "(?i)(FATAL EXCEPTION|Fatal signal|Abort message|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|Resources(\$|\.)NotFoundException|VerifyError|IncompatibleClassChangeError)"
     if (-not $isFatalMarker) {
         continue
     }
@@ -156,7 +160,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException)"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_)"
         } |
         Select-Object -Last 200
 )

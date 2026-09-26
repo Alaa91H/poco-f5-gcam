@@ -35,6 +35,39 @@ SAMPLE = r'''.method public constructor <init>(Luyv;Luyu;Lqxe;Lacku;Lklk;)V
 '''
 
 
+FLAG_QUERY_SAMPLE = r'''.class public final Lklm;
+.super Ljava/lang/Object;
+
+.method public final q(Lkiz;)Z
+    .locals 3
+
+    iget-object v0, p0, Lklm;->b:Ljava/util/Map;
+    invoke-interface {v0, p1}, Ljava/util/Map;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Lovu;
+    iget-object v0, v0, Lovu;->a:Ljava/lang/Object;
+    check-cast v0, Ljava/lang/Boolean;
+    invoke-static {v0}, Lklk;->e(Ljava/lang/Boolean;)Z
+    move-result v0
+    return v0
+.end method
+
+.method public final x(Lkiz;)Z
+    .locals 3
+
+    iget-object p0, p0, Lklm;->b:Ljava/util/Map;
+    invoke-interface {p0, p1}, Ljava/util/Map;->get(Ljava/lang/Object;)Ljava/lang/Object;
+    move-result-object p0
+    check-cast p0, Lovu;
+    iget-object p0, p0, Lovu;->a:Ljava/lang/Object;
+    check-cast p0, Ljava/lang/Boolean;
+    invoke-static {p0}, Lklk;->e(Ljava/lang/Boolean;)Z
+    move-result p0
+    return p0
+.end method
+'''
+
+
 class PixelCameraDeviceGatePatchTests(unittest.TestCase):
     def test_redirects_unsupported_device_throw_to_common_finalization(self):
         patched, metadata = patcher.patch_smali_text(SAMPLE)
@@ -58,6 +91,44 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         changed = SAMPLE.replace("throw p0", "return-void")
         with self.assertRaisesRegex(patcher.PatchError, "no throw"):
             patcher.patch_smali_text(changed)
+
+    def test_injects_nontensor_guards_into_boolean_flag_queries(self):
+        patched, metadata = patcher.patch_nontensor_flag_queries(FLAG_QUERY_SAMPLE)
+
+        self.assertIn('const-string v1, "camera.lasagna"', patched)
+        self.assertIn('const-string v1, "use_tpu"', patched)
+        self.assertIn('const-string v1, "darwinn"', patched)
+        self.assertIn('const-string v1, "edgetpu"', patched)
+        self.assertIn(":poco_nontensor_false_q", patched)
+        self.assertIn(":poco_nontensor_orig_q", patched)
+        self.assertIn(":poco_nontensor_false_x", patched)
+        self.assertIn(":poco_nontensor_orig_x", patched)
+        self.assertEqual(
+            metadata["forced_false_patterns"],
+            ["camera.lasagna*", "*use_tpu*", "*darwinn*", "*edgetpu*"],
+        )
+
+    def test_nontensor_guard_preserves_original_method_fallthrough(self):
+        patched, _ = patcher.patch_nontensor_flag_queries(FLAG_QUERY_SAMPLE)
+
+        self.assertIn(
+            ":poco_nontensor_orig_q\n\n"
+            "    iget-object v0, p0, Lklm;->b:Ljava/util/Map;",
+            patched,
+        )
+        self.assertIn(
+            ":poco_nontensor_orig_x\n\n"
+            "    iget-object p0, p0, Lklm;->b:Ljava/util/Map;",
+            patched,
+        )
+
+    def test_nontensor_guard_fails_closed_when_query_shape_changes(self):
+        changed = FLAG_QUERY_SAMPLE.replace(
+            ".method public final x(Lkiz;)Z",
+            ".method public final renamed(Lkiz;)Z",
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "exactly one"):
+            patcher.patch_nontensor_flag_queries(changed)
 
     def test_finds_exactly_one_target_dex(self):
         with tempfile.TemporaryDirectory() as temp:
