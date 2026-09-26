@@ -402,7 +402,7 @@ foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
         complete = $complete
     })
 
-    @($group.sensors) |
+    $group.sensors.ToArray() |
         Group-Object |
         Where-Object { $_.Count -gt 1 } |
         ForEach-Object {
@@ -478,7 +478,7 @@ $report = [ordered]@{
         commandOutput = $launch.Text
         launcherAccepted = $launcherAccepted
         firstObservedPid = $firstObservedPid
-        launchPidSamples = @($launchPidSamples)
+        launchPidSamples = $launchPidSamples.ToArray()
         earlyPid = $earlyPid
         finalPid = $finalPid
         processAliveAfterWait = $processAlive
@@ -507,15 +507,15 @@ $report = [ordered]@{
         sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
         sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
         cameraSourceTopLines = $cameraSourceTopLines
-        cameraSourceTopIds = @($cameraSourceTopIds)
+        cameraSourceTopIds = $cameraSourceTopIds.ToArray()
         cameraSourcePhysicalLines = $cameraSourcePhysicalLines
-        cameraSourcePhysicalIds = @($cameraSourcePhysicalIds)
+        cameraSourcePhysicalIds = $cameraSourcePhysicalIds.ToArray()
         sensorVectorLines = $sensorVectorLines
-        sensorVectorIds = @($sensorVectorIds)
+        sensorVectorIds = $sensorVectorIds.ToArray()
         sensorVectorDuplicateIds = $sensorVectorDuplicateIds
-        sensorVectorDuplicateIdsPerThread = @($sensorVectorDuplicateIdsPerThread)
-        sensorSourceMappingThreads = @($sensorSourceMappingThreads)
-        sensorSourceMappings = @($sensorSourceMappings)
+        sensorVectorDuplicateIdsPerThread = $sensorVectorDuplicateIdsPerThread.ToArray()
+        sensorSourceMappingThreads = $sensorSourceMappingThreads.ToArray()
+        sensorSourceMappings = $sensorSourceMappings.ToArray()
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
         logicalCameraMappingLines = $logicalCameraMappingLines
         oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
@@ -525,7 +525,7 @@ $report = [ordered]@{
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
-        fatalContexts = @($fatalEvidence)
+        fatalContexts = $fatalEvidence.ToArray()
         rootCauseLineCount = $rootCauseLines.Count
         rootCauseLines = $rootCauseLines
         diagnosticLineCount = $diagnosticLines.Count
