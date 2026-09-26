@@ -43,6 +43,7 @@ KEEPALIVE_RECEIVER_DESCRIPTOR = (
     "Lcom/google/android/apps/camera/keepalive/KeepAliveBroadcastReceiver;"
 )
 KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
+ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
@@ -1651,6 +1652,154 @@ def _has_gcam_init_callsites(text: str) -> bool:
     return True
 
 
+def patch_onecamera_optional_key_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Allow the Pixel-only Ltdn.b request key to be absent on POCO F5.
+
+    Real-device Android 17 evidence shows OneCamera crashes in ofe.a(PG:413)
+    because Ltdn.b is null while this provider wraps it with Optional.of().
+    The immediately preceding sibling Ltdn.a already uses ofNullable(), which
+    defines the intended absent-key representation for this provider. Change
+    only the exact Ltdn.b site and fail closed if its shape moves.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i
+        for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*" + re.escape(ONECAMERA_PROVIDER_DESCRIPTOR) + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera provider class Lofe;; "
+            f"found {len(class_matches)}"
+        )
+
+    method_starts = [
+        i
+        for i, line in enumerate(lines)
+        if line.strip() == ".method public final synthetic a()Ljava/lang/Object;"
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one ofe synthetic provider a() method; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("ofe.a() is unterminated")
+
+    key_line = (
+        "sget-object v0, Ltdn;->b:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    key_indexes = [
+        i
+        for i in range(method_start, method_end)
+        if lines[i].strip() == key_line
+    ]
+    if len(key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdn.b CaptureRequest key in ofe.a(); "
+            f"found {len(key_indexes)}"
+        )
+    key_index = key_indexes[0]
+
+    cursor = key_index + 1
+    while cursor < method_end and not lines[cursor].strip():
+        cursor += 1
+    expected_of = (
+        "invoke-static {v0}, Lj$/util/Optional;->"
+        "of(Ljava/lang/Object;)Lj$/util/Optional;"
+    )
+    if cursor >= method_end or lines[cursor].strip() != expected_of:
+        actual = lines[cursor].strip() if cursor < method_end else "<end>"
+        raise PatchError(
+            "Ltdn.b is no longer wrapped by the expected Optional.of call; "
+            f"found {actual!r}"
+        )
+
+    # Verify the neighboring Ltdn.a key still uses Google's nullable-safe form.
+    sibling_line = (
+        "sget-object v0, Ltdn;->a:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    sibling_indexes = [
+        i
+        for i in range(max(method_start, key_index - 12), key_index)
+        if lines[i].strip() == sibling_line
+    ]
+    if len(sibling_indexes) != 1:
+        raise PatchError(
+            "expected the neighboring Ltdn.a key immediately before Ltdn.b"
+        )
+    sibling_cursor = sibling_indexes[0] + 1
+    while sibling_cursor < key_index and not lines[sibling_cursor].strip():
+        sibling_cursor += 1
+    expected_nullable = (
+        "invoke-static {v0}, Lj$/util/Optional;->"
+        "ofNullable(Ljava/lang/Object;)Lj$/util/Optional;"
+    )
+    if (
+        sibling_cursor >= key_index
+        or lines[sibling_cursor].strip() != expected_nullable
+    ):
+        raise PatchError(
+            "neighboring Ltdn.a no longer uses Optional.ofNullable"
+        )
+
+    indent = re.match(r"^(\s*)", lines[cursor]).group(1)
+    lines[cursor] = indent + expected_nullable
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "allow_absent_ldtn_b_capture_request_key",
+        "class": ONECAMERA_PROVIDER_DESCRIPTOR,
+        "method": lines[method_start].strip(),
+        "key": "Ltdn.b",
+        "old_wrapper": "Optional.of",
+        "new_wrapper": "Optional.ofNullable",
+        "behavior": "represent absent Pixel-only request key as Optional.empty",
+    }
+
+
+def find_and_patch_onecamera_optional_key_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*" + re.escape(ONECAMERA_PROVIDER_DESCRIPTOR) + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera provider Lofe; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    original = target.read_text(encoding="utf-8")
+    patched, metadata = patch_onecamera_optional_key_smali_text(original)
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def patch_keepalive_receiver_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     """No-op Pixel Camera's keepalive broadcast receiver on POCO F5.
 
@@ -1865,6 +2014,9 @@ def patch_apk(
                     report_for_dex["gcam_init"] = find_and_patch_gcam_init_smali_tree(
                         smali_dir
                     )
+                    report_for_dex["onecamera_optional"] = (
+                        find_and_patch_onecamera_optional_key_smali_tree(smali_dir)
+                    )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
                         find_and_patch_keepalive_receiver_smali_tree(smali_dir)
@@ -1923,6 +2075,7 @@ def patch_apk(
 
     device_metadata = dex_reports[target_dex]["device_gate"]
     gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
+    onecamera_optional_metadata = dex_reports[gcam_init_dex]["onecamera_optional"]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -1933,6 +2086,10 @@ def patch_apk(
         "gcam_init_patch": {
             "target_dex": gcam_init_dex,
             **gcam_metadata,
+        },
+        "onecamera_optional_key_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_optional_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,
