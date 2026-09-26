@@ -1,0 +1,89 @@
+name: Pixel Camera native tuning diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-camera-native-tuning-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze libgcam tuning control flow
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate native analyzer
+        run: |
+          python -m unittest tests.test_analyze_pixel_camera_native -v
+          python -m unittest tests.test_patch_pixel_camera_device_gate -v
+
+      - name: Download selected Pixel Camera bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
+
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          echo "PIXEL_CAMERA_SOURCE=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
+      - name: Analyze libgcastartup tuning paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT="$RUNNER_TEMP/pixel-camera-native-tuning.json"
+
+          python scripts/analyze_pixel_camera_native.py \
+            --input "$PIXEL_CAMERA_SOURCE" \
+            --output "$REPORT" \
+            >/dev/null
+
+          python - "$REPORT" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          tuning = report["tuning"]
+          strings = tuning["strings"]
+
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("### Native libgcam tuning diagnostics\n\n")
+              out.write(f"- Library: `{report['library']['nested_apk'] or report['library']['container']}`\n")
+              out.write(f"- libgcastartup SHA-256: `{report['library']['sha256']}`\n")
+              out.write("- Tuning modifications: `false`\n")
+              out.write("- Profile spoof: `false`\n")
+              for marker, entry in strings.items():
+                  xrefs = sum(
+                      len(item.get("xref_offsets") or [])
+                      for item in entry.get("occurrences") or []
+                  )
+                  out.write(
+                      f"- `{marker}`: occurrences={entry['count']}, xrefs={xrefs}\n"
+                  )
+          PY
+
+          cat "$REPORT"
+
+      - name: Upload tuning diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-native-tuning-diagnostics
+          path: ${{ runner.temp }}/pixel-camera-native-tuning.json
+          if-no-files-found: error
+          retention-days: 14
