@@ -327,7 +327,7 @@ jobs:
                   e+=1
               return s,min(e,len(lines)-1)
 
-          targets=("upd","mta","oys","oyt","oty")
+          targets=("upd","mta","oys","oyt","oty","tdi")
           target_locations={}
           for name in targets:
               matches=[]
@@ -350,13 +350,17 @@ jobs:
               "Landroid/hardware/camera2/CameraDevice;->createCaptureSession",
               "Landroid/hardware/camera2/CameraDevice;->createReprocessableCaptureSession",
               "Landroid/hardware/camera2/params/SessionConfiguration;",
+              "new-instance v",
+              "Lua;-><init>",
           )
           for dex_info in manifest["dex_files"]:
               smali_root=root/f"smali-{dex_info['index']}"
               for p in smali_root.rglob("*.smali"):
                   lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
                   for idx,line in enumerate(lines):
-                      if not any(token in line for token in patterns):
+                      camera2_hit=any(token in line for token in patterns[:4])
+                      lua_hit=("Lua;-><init>" in line) or ("new-instance" in line and "Lua;" in line)
+                      if not (camera2_hit or lua_hit):
                           continue
                       ms,me=method_bounds(lines,idx)
                       key=(str(p),ms,me)
