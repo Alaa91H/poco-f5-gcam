@@ -399,6 +399,18 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patcher._decode_aarch64_branch(0xD503201F, 0x1000),
             "nop",
         )
+        self.assertEqual(
+            patcher._decode_aarch64_branch(0x370000B3, 0x682E610),
+            "tbnz 0x682e624",
+        )
+        self.assertEqual(
+            patcher.AION_FALLBACK_PATCHES[0][1],
+            0x682E610,
+        )
+        self.assertEqual(
+            patcher.AION_FALLBACK_PATCHES[0][2],
+            bytes.fromhex("b3000037"),
+        )
 
     def test_native_cpu_fallback_patches_exact_verified_bytes(self):
         patches = (
