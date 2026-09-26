@@ -250,6 +250,29 @@ RP_SAMPLE = r'''.class public final Lrp;
 '''
 
 
+RP_FINAL_OUTPUT_SAMPLE = r'''.class public final Lrp;
+.super Ljava/lang/Object;
+
+.method public final e(Lve;)Z
+    .registers 21
+
+    const-class v13, Landroid/hardware/camera2/params/OutputConfiguration;
+
+    invoke-interface {v9, v13}, Lzq;->g(Ljava/lang/Class;)Ljava/lang/Object;
+
+    move-result-object v9
+
+    invoke-interface {v5, v9}, Ljava/util/Collection;->add(Ljava/lang/Object;)Z
+
+    const/16 v13, 0xa
+
+    move-object/from16 v18, v13
+
+    return v14
+.end method
+'''
+
+
 VZ_OUTPUT_CONFIGURATION_SAMPLE = r'''.class public final Lvz;
 .super Ljava/lang/Object;
 
@@ -705,6 +728,42 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Ltdn.a/Ltdn.b request-entry shape changed",
         ):
             patcher.patch_onecamera_odr_missing_request_key_smali_text(
+                changed
+            )
+
+    def test_logs_final_output_configurations_before_session_creation(self):
+        patched, metadata = (
+            patcher.patch_onecamera_final_output_configuration_logging_smali_text(
+                RP_FINAL_OUTPUT_SAMPLE
+            )
+        )
+
+        self.assertIn('const-string v18, "GCamOCFinal"', patched)
+        self.assertIn(
+            "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+            patched,
+        )
+        self.assertLess(
+            patched.index('const-string v18, "GCamOCFinal"'),
+            patched.index(
+                "invoke-interface {v5, v9}, "
+                "Ljava/util/Collection;->add(Ljava/lang/Object;)Z"
+            ),
+        )
+        self.assertFalse(metadata["behavior_changed"])
+        self.assertEqual(metadata["tag"], "GCamOCFinal")
+        self.assertEqual(metadata["scratch_registers"], ["v13", "v18"])
+
+    def test_final_output_logging_fails_closed_if_register_layout_moves(self):
+        changed = RP_FINAL_OUTPUT_SAMPLE.replace(
+            ".registers 21",
+            ".registers 22",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "register layout changed",
+        ):
+            patcher.patch_onecamera_final_output_configuration_logging_smali_text(
                 changed
             )
 
