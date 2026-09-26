@@ -593,10 +593,21 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
 
         self.assertIn(
+            "sget-object v1, Ltdn;->a:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    # POCO F5: Ltdn.a is optional on non-Pixel camera HALs.\n"
+            "    if-eqz v1, :poco_odr_ldtn_a_absent",
+            patched,
+        )
+        self.assertIn(
             "sget-object v0, Ltdn;->b:"
             "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
             "    # POCO F5: Ltdn.b is an optional Pixel-only request key.\n"
             "    if-eqz v0, :poco_odr_ldtn_b_absent",
+            patched,
+        )
+        self.assertIn(
+            "Ljava/util/Collections;->emptySet()Ljava/util/Set;",
             patched,
         )
         self.assertIn(
@@ -611,6 +622,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(metadata["key"], "Ltdn.b")
         self.assertEqual(metadata["preserved_key"], "Ltdn.a")
+        self.assertEqual(metadata["additional_nullable_key"], "Ltdn.a")
 
     def test_odr_missing_request_key_patch_fails_closed_if_key_moves(self):
         changed = ODR_SAMPLE.replace("Ltdn;->b:", "Ltdn;->c:")
