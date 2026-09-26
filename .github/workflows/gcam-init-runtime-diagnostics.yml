@@ -94,6 +94,53 @@ jobs:
           print(meta.read_text())
           PY
 
+      - name: Inspect native Gcam_AllSensorIdsUnique
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/libgcastartup.so" <<'PY'
+          import sys
+          from pathlib import Path
+          from scripts.analyze_pixel_camera_native import find_native_library
+          data,_=find_native_library(Path(sys.argv[1]))
+          Path(sys.argv[2]).write_bytes(data)
+          PY
+
+          {
+            echo "=== dynamic symbols matching AllSensorIdsUnique ==="
+            readelf -Ws "$RUNNER_TEMP/libgcastartup.so" | grep -i "AllSensorIdsUnique" || true
+            nm -D "$RUNNER_TEMP/libgcastartup.so" | grep -i "AllSensorIdsUnique" || true
+            echo
+            echo "=== strings matching sensor-id uniqueness ==="
+            strings -a -t x "$RUNNER_TEMP/libgcastartup.so" | grep -Ei "AllSensorIdsUnique|sensor.?ids?.?unique|duplicate sensor|sensor id" | head -n 120 || true
+          } | tee "$RUNNER_TEMP/gcam-sensor-id-symbols.txt"
+
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu >/dev/null
+          python - "$RUNNER_TEMP/libgcastartup.so" "$RUNNER_TEMP/gcam-sensor-id-native.txt" <<'PY'
+          import re, subprocess, sys
+          lib=sys.argv[1]; out=sys.argv[2]
+          syms=subprocess.run(["readelf","-Ws",lib],check=True,text=True,stdout=subprocess.PIPE).stdout.splitlines()
+          matches=[]
+          for line in syms:
+              if "AllSensorIdsUnique" not in line:
+                  continue
+              m=re.search(r"\s([0-9a-fA-F]+)\s+(\d+)\s+FUNC\s+",line)
+              if m:
+                  matches.append((int(m.group(1),16),int(m.group(2)),line))
+          with open(out,"w",encoding="utf-8") as f:
+              f.write(f"symbol_matches={len(matches)}\n")
+              for addr,size,line in matches:
+                  f.write(line+"\n")
+                  start=max(0,addr-0x100); stop=addr+max(size,0x300)+0x100
+                  p=subprocess.run([
+                      "aarch64-linux-gnu-objdump","-d",
+                      f"--start-address=0x{start:x}",f"--stop-address=0x{stop:x}",lib
+                  ],check=True,text=True,stdout=subprocess.PIPE)
+                  f.write(p.stdout+"\n")
+          print(open(out,encoding="utf-8").read())
+          PY
+
       - name: Disassemble and inspect mjy.a(PG:1626)
         shell: bash
         run: |
@@ -180,5 +227,7 @@ jobs:
           path: |
             ${{ runner.temp }}/gcam-init-location.json
             ${{ runner.temp }}/gcam-init-mjy-diagnostics.txt
+            ${{ runner.temp }}/gcam-sensor-id-symbols.txt
+            ${{ runner.temp }}/gcam-sensor-id-native.txt
           if-no-files-found: error
           retention-days: 14
