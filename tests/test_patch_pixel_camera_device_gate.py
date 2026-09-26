@@ -738,13 +738,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             )
         )
 
-        self.assertIn('const-string v18, "GCamOCFinal"', patched)
+        self.assertIn('const-string v14, "GCamOCFinal"', patched)
+        self.assertIn("move/from16 v18, v14", patched)
+        self.assertIn("move/from16 v14, v18", patched)
         self.assertIn(
             "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
             patched,
         )
         self.assertLess(
-            patched.index('const-string v18, "GCamOCFinal"'),
+            patched.index('const-string v14, "GCamOCFinal"'),
             patched.index(
                 "invoke-interface {v5, v9}, "
                 "Ljava/util/Collection;->add(Ljava/lang/Object;)Z"
@@ -752,7 +754,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertFalse(metadata["behavior_changed"])
         self.assertEqual(metadata["tag"], "GCamOCFinal")
-        self.assertEqual(metadata["scratch_registers"], ["v13", "v18"])
+        self.assertEqual(metadata["scratch_registers"], ["v13", "v14", "v18"])
 
     def test_final_output_logging_fails_closed_if_register_layout_moves(self):
         changed = RP_FINAL_OUTPUT_SAMPLE.replace(
