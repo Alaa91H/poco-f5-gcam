@@ -478,7 +478,15 @@ $sessionParameterKeyLines = @(
 $sessionParameterKeys = @(
     $sessionParameterKeyLines |
         ForEach-Object {
-            if ($_ -match 'GCamSessionParamKey\s*:\s*(?<key>.+)
+            if ($_ -match 'GCamSessionParamKey\s*:\s*(?<key>.+)$') {
+                $Matches["key"].Trim()
+            }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -Unique
+)
+
+$sensorVectorLines = @(
     $logLines |
         Where-Object {
             $_ -match '(?i)GCamSensorIds'
