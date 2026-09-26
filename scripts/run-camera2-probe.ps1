@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.8"
+$ExpectedProbeVersion = "0.3.9"
 # YUV runtime probing is isolated per Camera2 ID so a stuck logical camera cannot block the full capture.
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
