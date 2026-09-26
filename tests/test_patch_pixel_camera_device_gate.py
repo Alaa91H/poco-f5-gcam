@@ -250,6 +250,32 @@ RP_SAMPLE = r'''.class public final Lrp;
 '''
 
 
+VZ_OUTPUT_CONFIGURATION_SAMPLE = r'''.class public final Lvz;
+.super Ljava/lang/Object;
+
+.method public static synthetic u(Landroid/view/Surface;Lqw;Lqv;Lra;Lqu;Lqy;Ljava/util/List;Landroid/util/Size;ZILjava/lang/String;I)Lry;
+    .registers 13
+
+    and-int/lit8 p11, p11, 0x4
+
+    if-eqz p11, :cond_6
+
+    sget-object p1, Lqw;->a:Lqw;
+
+    :cond_6
+    invoke-virtual {p1}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+
+    sget-object p11, Lqw;->d:Lqw;
+
+    invoke-static {p1, p11}, Ladhh;->f(Ljava/lang/Object;Ljava/lang/Object;)Z
+
+    move-result v0
+
+    return-object p0
+.end method
+'''
+
+
 UG_SAMPLE = r'''.class public final Lug;
 .super Ljava/lang/Object;
 
@@ -679,6 +705,58 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Ltdn.a/Ltdn.b request-entry shape changed",
         ):
             patcher.patch_onecamera_odr_missing_request_key_smali_text(
+                changed
+            )
+
+    def test_logs_output_configuration_inputs_without_changing_behavior(self):
+        patched, metadata = (
+            patcher.patch_onecamera_output_configuration_logging_smali_text(
+                VZ_OUTPUT_CONFIGURATION_SAMPLE
+            )
+        )
+
+        for tag in (
+            "GCamOCSurface",
+            "GCamOCType",
+            "GCamOCMirror",
+            "GCamOCTimestamp",
+            "GCamOCDynamicRange",
+            "GCamOCStreamUseCase",
+            "GCamOCPixelModes",
+            "GCamOCSize",
+            "GCamOCSharing",
+            "GCamOCGroupId",
+            "GCamOCPhysicalId",
+        ):
+            self.assertIn(f'const-string p11, "{tag}"', patched)
+
+        self.assertLess(
+            patched.index('const-string p11, "GCamOCSurface"'),
+            patched.index("sget-object p11, Lqw;->d:Lqw;"),
+        )
+        self.assertIn(
+            "Ljava/lang/String;->valueOf(Z)Ljava/lang/String;",
+            patched,
+        )
+        self.assertIn(
+            "Ljava/lang/String;->valueOf(I)Ljava/lang/String;",
+            patched,
+        )
+        self.assertFalse(metadata["behavior_changed"])
+        self.assertEqual(metadata["class"], "Lvz;")
+        self.assertEqual(metadata["scratch_registers"], ["v0", "p11"])
+        self.assertIn("1280x720", metadata["evidence"])
+
+    def test_output_configuration_logging_fails_closed_if_register_layout_moves(self):
+        changed = VZ_OUTPUT_CONFIGURATION_SAMPLE.replace(
+            ".registers 13",
+            ".registers 14",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "register layout changed",
+        ):
+            patcher.patch_onecamera_output_configuration_logging_smali_text(
                 changed
             )
 
