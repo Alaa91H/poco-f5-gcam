@@ -2410,8 +2410,17 @@ def patch_onecamera_session_parameter_logging_smali_text(
             f"found {actual!r}"
         )
 
-    indent = re.match(r"^(\s*)", lines[set_cursor]).group(1)
+    indent = re.match(r"^(\\s*)", lines[set_cursor]).group(1)
     injected = [
+        "",
+        f"{indent}# POCO F5: Xiaomi camera 0 does not advertise "
+        "CONTROL_VIDEO_STABILIZATION_MODE as a session key.",
+        f"{indent}sget-object v15, "
+        "Landroid/hardware/camera2/CaptureRequest;->"
+        "CONTROL_VIDEO_STABILIZATION_MODE:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;",
+        "",
+        f"{indent}if-eq v13, v15, :goto_123",
         "",
         f'{indent}const-string v15, "GCamSessionParamKey"',
         "",
@@ -2434,7 +2443,9 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "class": ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
         "method": signature,
         "tag": "GCamSessionParamKey",
-        "behavior_changed": False,
+        "behavior_changed": True,
+        "skipped_session_key": "android.control.videoStabilizationMode",
+        "skip_scope": "session_parameters_only",
         "scratch_register": "v15",
         "scratch_liveness": "verified unused after key-name lookup",
         "stream_graph_evidence": (
@@ -2446,6 +2457,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "Lpi.d() session-key allowlist"
         ),
         "logs_only_applied_session_parameters": True,
+        "preserved_session_keys": ["android.control.aeTargetFpsRange"],
     }
 
 
