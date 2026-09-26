@@ -44,6 +44,8 @@ KEEPALIVE_RECEIVER_DESCRIPTOR = (
 )
 KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
 ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
+ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
+ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lua;"
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
@@ -1814,6 +1816,298 @@ def find_and_patch_onecamera_optional_key_smali_tree(
     return metadata
 
 
+
+def patch_onecamera_missing_request_key_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Reuse OneCamera's empty-request path when Ltdi.a is absent.
+
+    POCO F5 runtime evidence reaches mta.a(PG:720), where the enabled feature
+    constructs Lupd(Ltdi.a, Integer(1)). Ltdi.a is null on this device, and the
+    Lupd constructor immediately dereferences the key. The same provider
+    already has an empty collection branch for the feature-disabled case.
+    Branch to that existing empty path only when Ltdi.a is null.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*" + re.escape(ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR) + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera request provider class Lmta;; "
+            f"found {len(class_matches)}"
+        )
+
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == ".method public final synthetic a()Ljava/lang/Object;"
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one mta synthetic provider a() method; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("mta.a() is unterminated")
+
+    key_line = (
+        "sget-object v0, Ltdi;->a:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    key_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == key_line
+    ]
+    if len(key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdi.a CaptureRequest key in mta.a(); "
+            f"found {len(key_indexes)}"
+        )
+    key_index = key_indexes[0]
+
+    # The feature-disabled branch immediately before the key already returns
+    # Google's canonical empty collection. Reuse exactly that label.
+    branch_indexes = []
+    branch_label = None
+    for i in range(max(method_start, key_index - 12), key_index):
+        match = re.match(
+            r"^\s*if-eqz\s+v0,\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$",
+            lines[i],
+        )
+        if match:
+            branch_indexes.append(i)
+            branch_label = match.group("label")
+    if len(branch_indexes) != 1 or branch_label is None:
+        raise PatchError(
+            "expected exactly one feature-disabled if-eqz branch before Ltdi.a"
+        )
+
+    label_indexes = [
+        i for i in range(key_index + 1, min(method_end, key_index + 32))
+        if lines[i].strip() == f":{branch_label}"
+    ]
+    if len(label_indexes) != 1:
+        raise PatchError(
+            "existing empty-request branch for Ltdi.a moved or disappeared"
+        )
+    label_index = label_indexes[0]
+
+    local_window = "\n".join(lines[key_index:label_index + 8])
+    for token in (
+        "invoke-static {v4}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;",
+        "new-instance v2, Lupd;",
+        "invoke-direct {v2, v0, v1}, "
+        "Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V",
+        "new-instance v0, Lyjh;",
+        "sget-object v0, Lyiu;->a:Lyiu;",
+    ):
+        if local_window.count(token) != 1:
+            raise PatchError(
+                "mta Ltdi.a request-provider shape changed; expected one "
+                f"{token!r}"
+            )
+
+    indent = re.match(r"^(\s*)", lines[key_index]).group(1)
+    guard = [
+        "",
+        f"{indent}# POCO F5: optional vendor CaptureRequest key is absent.",
+        f"{indent}if-eqz v0, :{branch_label}",
+    ]
+    patched_lines = lines[: key_index + 1] + guard + lines[key_index + 1 :]
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "allow_absent_ldti_a_capture_request_key",
+        "class": ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR,
+        "method": lines[method_start].strip(),
+        "key": "Ltdi.a",
+        "fallback_label": branch_label,
+        "behavior": "reuse existing empty request-key collection when vendor key is absent",
+    }
+
+
+def find_and_patch_onecamera_missing_request_key_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*"
+        + re.escape(ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR)
+        + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera request provider Lmta; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_missing_request_key_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
+def patch_onecamera_open_camera_fallback_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Open POCO F5's physical rear camera when Pixel Camera requests ID 4.
+
+    Runtime CameraService/CHI evidence shows camera ID 4 is Xiaomi's logical
+    rear MultiCameraSAT endpoint and cannot initialize its graph for this app.
+    Camera ID 0 is the physical rear camera. Redirect only the exact ID 4 at
+    the CameraManager.openCamera callsite; all other camera IDs are unchanged.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*" + re.escape(ONECAMERA_OPEN_CAMERA_DESCRIPTOR) + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one CameraManager coroutine class Lua;; "
+            f"found {len(class_matches)}"
+        )
+
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == ".method public final fe(Ljava/lang/Object;)Ljava/lang/Object;"
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Lua.fe(Object) open-camera coroutine; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lua.fe() is unterminated")
+
+    open_call = (
+        "invoke-virtual {v3, v0, p1, v5}, "
+        "Landroid/hardware/camera2/CameraManager;->"
+        "openCamera(Ljava/lang/String;Ljava/util/concurrent/Executor;"
+        "Landroid/hardware/camera2/CameraDevice$StateCallback;)V"
+    )
+    open_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == open_call
+    ]
+    if len(open_indexes) != 1:
+        raise PatchError(
+            "expected exactly one executor CameraManager.openCamera call in Lua.fe(); "
+            f"found {len(open_indexes)}"
+        )
+    open_index = open_indexes[0]
+
+    previous_code = []
+    cursor = open_index - 1
+    while cursor >= method_start and len(previous_code) < 2:
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#"):
+            previous_code.append((cursor, stripped))
+        cursor -= 1
+    if len(previous_code) < 2:
+        raise PatchError("openCamera call has insufficient preceding instructions")
+    if previous_code[0][1] != "check-cast v0, Ljava/lang/String;":
+        raise PatchError(
+            "Camera ID register before openCamera is no longer v0/String"
+        )
+    if previous_code[1][1] != "check-cast v5, Landroid/hardware/camera2/CameraDevice$StateCallback;":
+        raise PatchError(
+            "openCamera callback register flow changed"
+        )
+
+    label = "poco_physical_rear_camera_ready"
+    if any(line.strip() == f":{label}" for line in lines[method_start:method_end]):
+        raise PatchError("physical rear camera fallback label already exists")
+
+    indent = re.match(r"^(\s*)", lines[open_index]).group(1)
+    guard = [
+        f'{indent}const-string v6, "4"',
+        "",
+        f"{indent}invoke-virtual {{v6, v0}}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        f"{indent}move-result v6",
+        "",
+        f"{indent}if-eqz v6, :{label}",
+        "",
+        f'{indent}const-string v0, "0"',
+        "",
+        f"{indent}:{label}",
+    ]
+    patched_lines = lines[:open_index] + guard + lines[open_index:]
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "redirect_xiaomi_logical_rear_to_physical_rear",
+        "class": ONECAMERA_OPEN_CAMERA_DESCRIPTOR,
+        "method": lines[method_start].strip(),
+        "requested_camera_id": "4",
+        "fallback_camera_id": "0",
+        "scope": "CameraManager.openCamera only",
+        "other_camera_ids_unchanged": True,
+    }
+
+
+def find_and_patch_onecamera_open_camera_fallback_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*"
+        + re.escape(ONECAMERA_OPEN_CAMERA_DESCRIPTOR)
+        + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected Lua; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_open_camera_fallback_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
 def patch_keepalive_receiver_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     """No-op Pixel Camera's keepalive broadcast receiver on POCO F5.
 
@@ -2031,6 +2325,12 @@ def patch_apk(
                     report_for_dex["onecamera_optional"] = (
                         find_and_patch_onecamera_optional_key_smali_tree(smali_dir)
                     )
+                    report_for_dex["onecamera_missing_request_key"] = (
+                        find_and_patch_onecamera_missing_request_key_smali_tree(smali_dir)
+                    )
+                    report_for_dex["onecamera_open_camera_fallback"] = (
+                        find_and_patch_onecamera_open_camera_fallback_smali_tree(smali_dir)
+                    )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
                         find_and_patch_keepalive_receiver_smali_tree(smali_dir)
@@ -2090,6 +2390,12 @@ def patch_apk(
     device_metadata = dex_reports[target_dex]["device_gate"]
     gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
     onecamera_optional_metadata = dex_reports[gcam_init_dex]["onecamera_optional"]
+    onecamera_missing_request_key_metadata = dex_reports[gcam_init_dex][
+        "onecamera_missing_request_key"
+    ]
+    onecamera_open_camera_fallback_metadata = dex_reports[gcam_init_dex][
+        "onecamera_open_camera_fallback"
+    ]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -2104,6 +2410,14 @@ def patch_apk(
         "onecamera_optional_key_patch": {
             "target_dex": gcam_init_dex,
             **onecamera_optional_metadata,
+        },
+        "onecamera_missing_request_key_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_missing_request_key_metadata,
+        },
+        "onecamera_open_camera_fallback_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_open_camera_fallback_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,
