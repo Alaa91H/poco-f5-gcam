@@ -202,6 +202,49 @@ ODR_SAMPLE = r'''.class public final Lodr;
 '''
 
 
+RP_SAMPLE = r'''.class public final Lrp;
+.super Ljava/lang/Object;
+
+.method public final e(Lve;)Z
+    .registers 21
+
+    iget-object v5, v6, Lve;->g:Ljava/util/Map;
+
+    invoke-interface {v5}, Ljava/util/Map;->entrySet()Ljava/util/Set;
+
+    move-result-object v5
+
+    invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;
+
+    move-result-object v5
+
+    invoke-interface {v5}, Ljava/util/Iterator;->next()Ljava/lang/Object;
+
+    move-result-object v6
+
+    check-cast v6, Ljava/util/Map$Entry;
+
+    invoke-interface {v6}, Ljava/util/Map$Entry;->getKey()Ljava/lang/Object;
+
+    move-result-object v13
+
+    move-object v14, v13
+
+    check-cast v14, Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-virtual {v14}, Landroid/hardware/camera2/CaptureRequest$Key;->getName()Ljava/lang/String;
+
+    move-result-object v14
+
+    invoke-interface {v9, v14}, Ljava/util/List;->contains(Ljava/lang/Object;)Z
+
+    move-result v13
+
+    return v13
+.end method
+'''
+
+
 UG_SAMPLE = r'''.class public final Lug;
 .super Ljava/lang/Object;
 
@@ -631,6 +674,47 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Ltdn.a/Ltdn.b request-entry shape changed",
         ):
             patcher.patch_onecamera_odr_missing_request_key_smali_text(
+                changed
+            )
+
+    def test_logs_onecamera_session_parameter_keys_without_changing_flow(self):
+        patched, metadata = (
+            patcher.patch_onecamera_session_parameter_logging_smali_text(
+                RP_SAMPLE
+            )
+        )
+
+        self.assertIn(
+            'const-string v16, "GCamSessionParamKey"',
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {v16, v14}, "
+            "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+            patched,
+        )
+        self.assertLess(
+            patched.index('const-string v16, "GCamSessionParamKey"'),
+            patched.index(
+                "invoke-interface {v9, v14}, "
+                "Ljava/util/List;->contains(Ljava/lang/Object;)Z"
+            ),
+        )
+        self.assertEqual(metadata["status"], "diagnostic_logging")
+        self.assertEqual(metadata["class"], "Lrp;")
+        self.assertEqual(metadata["tag"], "GCamSessionParamKey")
+        self.assertFalse(metadata["behavior_changed"])
+
+    def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
+        changed = RP_SAMPLE.replace(
+            "move-result v13",
+            "move-result v16",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "diagnostic scratch registers",
+        ):
+            patcher.patch_onecamera_session_parameter_logging_smali_text(
                 changed
             )
 
