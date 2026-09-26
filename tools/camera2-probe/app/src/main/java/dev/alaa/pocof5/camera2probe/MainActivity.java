@@ -492,6 +492,17 @@ public final class MainActivity extends Activity {
                 return JSONObject.NULL;
             }
 
+            // android.util.Rational extends Number. Handle it before the generic
+            // Number branch or JSONObject serializes values such as 1/6 as a
+            // bare token, which is not valid JSON.
+            if (value instanceof Rational) {
+                Rational rational = (Rational) value;
+                return new JSONObject()
+                        .put("numerator", rational.getNumerator())
+                        .put("denominator", rational.getDenominator())
+                        .put("decimal", rational.doubleValue());
+            }
+
             if (value instanceof Number ||
                     value instanceof Boolean ||
                     value instanceof String) {
@@ -518,14 +529,6 @@ public final class MainActivity extends Activity {
                         .put("bottom", rect.bottom)
                         .put("width", rect.width())
                         .put("height", rect.height());
-            }
-
-            if (value instanceof Rational) {
-                Rational rational = (Rational) value;
-                return new JSONObject()
-                        .put("numerator", rational.getNumerator())
-                        .put("denominator", rational.getDenominator())
-                        .put("decimal", rational.doubleValue());
             }
 
             if (value instanceof Range) {
