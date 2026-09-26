@@ -123,9 +123,93 @@ jobs:
             echo
             echo "=== tuning defaults region ==="
             "$DISASM" -d --start-address=0x6e3f800 --stop-address=0x6e3fc80 "$LIB"
+            echo
+            echo "=== AION / lib_aion_buffer reference regions ==="
+            python - "$RUNNER_TEMP/pixel-camera-native-tuning.json" "$LIB" <<'PY'
+          import json
+          import struct
+          import sys
+
+          from scripts.patch_pixel_camera_device_gate import _elf64_load_segments
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          data = open(sys.argv[2], "rb").read()
+          segments = _elf64_load_segments(data)
+
+          def file_offset_to_vaddr(offset):
+              for segment in segments:
+                  start = segment["offset"]
+                  end = start + segment["filesz"]
+                  if start <= offset < end:
+                      return segment["vaddr"] + (offset - start)
+              return None
+
+          markers = ("lib_aion_buffer.so", "aion_context.cc", "Check failed: valid_")
+          seen = set()
+          for marker in markers:
+              entry = report["tuning"]["strings"].get(marker) or {}
+              for occurrence in entry.get("occurrences") or []:
+                  print(f"marker={marker!r}")
+                  print(f"context={occurrence.get('c_string_context')!r}")
+                  for rendered in occurrence.get("resolved_xref_offsets") or []:
+                      file_offset = int(rendered, 16)
+                      vaddr = file_offset_to_vaddr(file_offset)
+                      if vaddr is None or vaddr in seen:
+                          continue
+                      seen.add(vaddr)
+                      print(f"xref_file_offset=0x{file_offset:x} xref_vaddr=0x{vaddr:x}")
+          PY
+
+            python - "$RUNNER_TEMP/pixel-camera-native-tuning.json" "$LIB" "$DISASM" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          from scripts.patch_pixel_camera_device_gate import _elf64_load_segments
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          lib = sys.argv[2]
+          disasm = sys.argv[3]
+          data = open(lib, "rb").read()
+          segments = _elf64_load_segments(data)
+
+          def file_offset_to_vaddr(offset):
+              for segment in segments:
+                  start = segment["offset"]
+                  end = start + segment["filesz"]
+                  if start <= offset < end:
+                      return segment["vaddr"] + (offset - start)
+              return None
+
+          seen = set()
+          for marker in ("lib_aion_buffer.so", "aion_context.cc", "Check failed: valid_"):
+              entry = report["tuning"]["strings"].get(marker) or {}
+              for occurrence in entry.get("occurrences") or []:
+                  for rendered in occurrence.get("resolved_xref_offsets") or []:
+                      file_offset = int(rendered, 16)
+                      vaddr = file_offset_to_vaddr(file_offset)
+                      if vaddr is None or vaddr in seen:
+                          continue
+                      seen.add(vaddr)
+                      start = max(0, vaddr - 0x100)
+                      stop = vaddr + 0x180
+                      print(
+                          f"--- {marker} @ file 0x{file_offset:x}, va 0x{vaddr:x} ---"
+                      )
+                      subprocess.run(
+                          [
+                              disasm,
+                              "-d",
+                              f"--start-address=0x{start:x}",
+                              f"--stop-address=0x{stop:x}",
+                              lib,
+                          ],
+                          check=True,
+                      )
+          PY
           } > "$OUT"
 
-          sed -n '1,260p' "$OUT"
+          sed -n '1,720p' "$OUT"
 
       - name: Upload tuning disassembly
         uses: actions/upload-artifact@v7
