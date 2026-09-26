@@ -2274,9 +2274,9 @@ def patch_onecamera_session_parameter_logging_smali_text(
     class_matches = [
         i for i, line in enumerate(lines)
         if re.match(
-            r"^\\.class\\s+.*"
+            r"^\.class\s+.*"
             + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
-            + r"\\s*$",
+            + r"\s*$",
             line,
         )
     ]
@@ -2304,7 +2304,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         raise PatchError("Lrp.e(Lve;) is unterminated")
 
     method_lines = lines[method_start : method_end + 1]
-    if any(re.search(r"\\bv1[67]\\b", line) for line in method_lines):
+    if any(re.search(r"\bv1[67]\b", line) for line in method_lines):
         raise PatchError(
             "Lrp.e(Lve;) now uses diagnostic scratch registers v16/v17"
         )
@@ -2348,7 +2348,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
             f"found {actual!r}"
         )
 
-    indent = re.match(r"^(\\s*)", lines[cursor]).group(1)
+    indent = re.match(r"^(\s*)", lines[cursor]).group(1)
     injected = [
         "",
         f'{indent}const-string v16, "GCamSessionParamKey"',
@@ -2376,9 +2376,9 @@ def find_and_patch_onecamera_session_parameter_logging_smali_tree(
 ) -> dict[str, Any]:
     matches: list[Path] = []
     class_line_re = re.compile(
-        r"^\\.class\\s+.*"
+        r"^\.class\s+.*"
         + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
-        + r"\\s*$",
+        + r"\s*$",
         re.MULTILINE,
     )
     for path in root.rglob("*.smali"):
