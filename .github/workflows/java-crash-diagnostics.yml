@@ -275,7 +275,7 @@ jobs:
 
           package=Path(sys.argv[1])
           outdir=Path(sys.argv[2])
-          targets=("ltdn","louj","louk","ofp")
+          targets=("tdn","ouj","ouk","ofp")
           needles={name:("L"+name+";").encode() for name in targets}
           found={name:[] for name in targets}
 
@@ -305,7 +305,7 @@ jobs:
           PY
 
           : > "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
-          for name in ltdn louj louk ofp; do
+          for name in tdn ouj ouk ofp; do
             rm -rf "$RUNNER_TEMP/$name-smali"
             mkdir -p "$RUNNER_TEMP/$name-smali"
             java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/$name.dex" -o "$RUNNER_TEMP/$name-smali"
