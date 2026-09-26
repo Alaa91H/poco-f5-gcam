@@ -472,6 +472,26 @@ $googleAllowlistLines = @(
 )
 $googleAllowlistRejectionObserved = $googleAllowlistLines.Count -gt 0
 
+$cameraStreamConfigurationFailureLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Unsupported set of inputs/outputs provided|Failed to create capture session; configuration failed|configure_streams\(\).*max_buffers\s*:\s*0|Unable to configure stream .*Function not implemented|End CONFIG failed)'
+        } |
+        Select-Object -Last 100
+)
+$cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureLines.Count -gt 0
+
+$oneCameraVendorRequestKeyNpeLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(upd\.<init>\(PG:3\)|mta\.a\(PG:720\)|Failed to start OneCamera \(retry disabled\)|NullPointerException.*null object reference)'
+        } |
+        Select-Object -Last 100
+)
+$oneCameraVendorRequestKeyNpeObserved = (
+    $logcat -match '(?is)Failed to start OneCamera.*?Caused by:\s*java\.lang\.NullPointerException.*?upd\.<init>\(PG:3\).*?mta\.a\(PG:720\)'
+)
+
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
 $topActivityMatches = $resumedLines.Count -gt 0
@@ -479,7 +499,8 @@ $startupPassed = $launcherAccepted -and $processAlive -and $fatalEvidence.Count 
 $cameraPipelineCompatibilityPassed = (
     $startupPassed -and
     -not $logicalCameraMappingErrorsObserved -and
-    -not $xiaomiMultiCameraGraphFailureObserved
+    -not $xiaomiMultiCameraGraphFailureObserved -and
+    -not $cameraStreamConfigurationFailureObserved
 )
 # Keep runtimePassed as the startup/crash gate for backward compatibility.
 $runtimePassed = $startupPassed
@@ -561,6 +582,10 @@ $report = [ordered]@{
         oneCameraOptionalNpeLines = $oneCameraOptionalNpeLines
         googleAllowlistRejectionObserved = $googleAllowlistRejectionObserved
         googleAllowlistLines = $googleAllowlistLines
+        cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureObserved
+        cameraStreamConfigurationFailureLines = $cameraStreamConfigurationFailureLines
+        oneCameraVendorRequestKeyNpeObserved = $oneCameraVendorRequestKeyNpeObserved
+        oneCameraVendorRequestKeyNpeLines = $oneCameraVendorRequestKeyNpeLines
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
@@ -641,6 +666,8 @@ Write-Host "Xiaomi multi-camera graph failure observed: $xiaomiMultiCameraGraphF
 Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
+Write-Host "Camera stream configuration failure observed: $cameraStreamConfigurationFailureObserved"
+Write-Host "OneCamera vendor request-key NPE observed: $oneCameraVendorRequestKeyNpeObserved"
 Write-Host "Startup passed: $startupPassed"
 Write-Host "Camera pipeline compatibility passed: $cameraPipelineCompatibilityPassed"
 Write-Host "Runtime passed: $runtimePassed"
