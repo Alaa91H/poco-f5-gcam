@@ -2022,8 +2022,6 @@ def patch_onecamera_open_camera_fallback_smali_text(
     method_text = "\n".join(lines[method_start : method_end + 1])
     for token in (
         "iput-object v1, v3, Ltz;->g:Ljava/lang/String;",
-        "invoke-virtual {v13, v1}, "
-        "Landroid/util/ArrayMap;->get(Ljava/lang/Object;)Ljava/lang/Object;",
         "invoke-direct/range {v9 .. v19}, "
         "Lrr;-><init>(Ljava/lang/String;Lpi;IJLjom;Lsz;Lufk;Ldan;Lsb;)V",
         "invoke-direct {v1, v0, v10, v9, v8}, "
