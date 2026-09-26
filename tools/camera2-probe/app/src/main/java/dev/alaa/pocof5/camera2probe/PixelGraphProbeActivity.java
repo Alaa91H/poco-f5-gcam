@@ -135,7 +135,7 @@ public final class PixelGraphProbeActivity extends Activity {
                     cameraId = "0";
                 }
                 if (candidate == null || candidate.isEmpty()) {
-                    candidate = "private800+raw10full+yuv800";
+                    candidate = "private1280+raw10full+yuv1280";
                 }
 
                 JSONObject report = buildReport(this, cameraId, candidate);
@@ -197,25 +197,37 @@ public final class PixelGraphProbeActivity extends Activity {
                     .put("error", "No stream configuration map");
         }
 
-        Size private800 = findExactSize(
-                map.getOutputSizes(SurfaceTexture.class), 800, 600);
-        Size raw10Full = findExactSize(
-                map.getOutputSizes(ImageFormat.RAW10), 4624, 3472);
-        Size yuv800 = findExactSize(
-                map.getOutputSizes(ImageFormat.YUV_420_888), 800, 600);
-
-        boolean needRaw;
-        boolean needYuv;
+        final boolean use1280;
+        final boolean needRaw;
+        final boolean needYuv;
         switch (candidate) {
             case "private800+raw10full":
+                use1280 = false;
                 needRaw = true;
                 needYuv = false;
                 break;
             case "private800+yuv800":
+                use1280 = false;
                 needRaw = false;
                 needYuv = true;
                 break;
             case "private800+raw10full+yuv800":
+                use1280 = false;
+                needRaw = true;
+                needYuv = true;
+                break;
+            case "private1280+raw10full":
+                use1280 = true;
+                needRaw = true;
+                needYuv = false;
+                break;
+            case "private1280+yuv1280":
+                use1280 = true;
+                needRaw = false;
+                needYuv = true;
+                break;
+            case "private1280+raw10full+yuv1280":
+                use1280 = true;
                 needRaw = true;
                 needYuv = true;
                 break;
@@ -226,19 +238,32 @@ public final class PixelGraphProbeActivity extends Activity {
                         .put("error", "Unknown candidate: " + candidate);
         }
 
+        int previewWidth = use1280 ? 1280 : 800;
+        int previewHeight = use1280 ? 720 : 600;
+        Size privateOutput = findExactSize(
+                map.getOutputSizes(SurfaceTexture.class),
+                previewWidth,
+                previewHeight);
+        Size raw10Full = findExactSize(
+                map.getOutputSizes(ImageFormat.RAW10), 4624, 3472);
+        Size yuvOutput = findExactSize(
+                map.getOutputSizes(ImageFormat.YUV_420_888),
+                previewWidth,
+                previewHeight);
+
         JSONArray streams = new JSONArray();
-        streams.put(streamJson("PRIVATE", private800));
+        streams.put(streamJson("PRIVATE", privateOutput));
         if (needRaw) {
             streams.put(streamJson("RAW10", raw10Full));
         }
         if (needYuv) {
-            streams.put(streamJson("YUV_420_888", yuv800));
+            streams.put(streamJson("YUV_420_888", yuvOutput));
         }
         result.put("streams", streams);
 
-        boolean available = private800 != null
+        boolean available = privateOutput != null
                 && (!needRaw || raw10Full != null)
-                && (!needYuv || yuv800 != null);
+                && (!needYuv || yuvOutput != null);
         result.put("available", available);
         if (!available) {
             return result
@@ -252,13 +277,17 @@ public final class PixelGraphProbeActivity extends Activity {
         } else {
             texture = new SurfaceTexture(0);
         }
-        texture.setDefaultBufferSize(800, 600);
+        texture.setDefaultBufferSize(previewWidth, previewHeight);
         Surface privateSurface = new Surface(texture);
         ImageReader rawReader = needRaw
                 ? ImageReader.newInstance(4624, 3472, ImageFormat.RAW10, 2)
                 : null;
         ImageReader yuvReader = needYuv
-                ? ImageReader.newInstance(800, 600, ImageFormat.YUV_420_888, 2)
+                ? ImageReader.newInstance(
+                        previewWidth,
+                        previewHeight,
+                        ImageFormat.YUV_420_888,
+                        2)
                 : null;
 
         List<Surface> surfaces = new ArrayList<>();
