@@ -171,14 +171,18 @@ $nativeTombstoneLines = @()
 $rootProbe = Invoke-Adb -Arguments @(
     "shell", "su", "-c", "id -u"
 ) -AllowFailure
+$rootUidLines = @(
+    $rootProbe.Text -split "\r?\n" |
+        Where-Object { $_.Trim() -eq "0" }
+)
 $nativeTombstoneRootAvailable = (
     $rootProbe.ExitCode -eq 0 -and
-    ($rootProbe.Text -split "\r?\n" | Where-Object { $_.Trim() -eq "0" }).Count -gt 0
+    $rootUidLines.Count -gt 0
 )
 
 $tombstoneFindCommand = @'
 for f in $(ls -1t /data/tombstones/tombstone_* 2>/dev/null | head -n 32); do
-  if grep -aFq 'com.google.android.GoogleCamera' "$f" 2>/dev/null ||      grep -aFq 'id.GoogleCamera' "$f" 2>/dev/null; then
+  if grep -aFq 'com.google.android.GoogleCamera' "$f" 2>/dev/null || grep -aFq 'id.GoogleCamera' "$f" 2>/dev/null; then
     echo "$f"
     break
   fi
