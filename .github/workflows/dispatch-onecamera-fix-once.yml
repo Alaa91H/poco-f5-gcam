@@ -1,0 +1,25 @@
+name: Dispatch OneCamera fix build once
+
+on:
+  push:
+    paths:
+      - ".github/workflows/dispatch-onecamera-fix-once.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch standalone build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f build_experimental_standalone=true
