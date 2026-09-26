@@ -6,11 +6,14 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
+import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.OutputConfiguration;
+import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
@@ -18,6 +21,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Size;
+import android.view.Surface;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -31,12 +35,15 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -179,7 +186,7 @@ public final class YuvProbeActivity extends Activity {
 
     private JSONObject buildRuntimeReport(Context context) throws Exception {
         JSONObject root = new JSONObject();
-        root.put("schemaVersion", 1);
+        root.put("schemaVersion", 2);
         root.put("generatedAtUtc", utcNow());
         root.put("packageName", context.getPackageName());
         root.put("targetFramesPerCamera", TARGET_FRAMES);
@@ -250,6 +257,7 @@ public final class YuvProbeActivity extends Activity {
 
         AtomicReference<CameraDevice> deviceRef = new AtomicReference<>();
         AtomicReference<CameraCaptureSession> sessionRef = new AtomicReference<>();
+        AtomicReference<JSONArray> sessionMatrixRef = new AtomicReference<>();
         AtomicReference<String> errorRef = new AtomicReference<>();
         AtomicInteger frameCount = new AtomicInteger();
         AtomicInteger planeCount = new AtomicInteger(-1);
@@ -298,6 +306,15 @@ public final class YuvProbeActivity extends Activity {
                 @Override
                 public void onOpened(CameraDevice camera) {
                     deviceRef.set(camera);
+                    try {
+                        sessionMatrixRef.set(buildSessionSupportMatrix(camera, map, reader));
+                    } catch (Exception e) {
+                        JSONArray matrixError = new JSONArray();
+                        matrixError.put(new JSONObject()
+                                .put("name", "matrix_probe_error")
+                                .put("error", e.toString()));
+                        sessionMatrixRef.set(matrixError);
+                    }
                     try {
                         camera.createCaptureSession(
                                 Arrays.asList(reader.getSurface()),
@@ -362,6 +379,9 @@ public final class YuvProbeActivity extends Activity {
             boolean success = completed && frames >= TARGET_FRAMES && errorRef.get() == null;
 
             result.put("success", success);
+            JSONArray matrix = sessionMatrixRef.get();
+            result.put("sessionSupportMatrix",
+                    matrix == null ? new JSONArray() : matrix);
             result.put("framesReceived", frames);
             result.put("elapsedMs", elapsedMs);
             result.put("planeCount", planeCount.get());
@@ -401,6 +421,223 @@ public final class YuvProbeActivity extends Activity {
         }
 
         return result;
+    }
+
+    private JSONArray buildSessionSupportMatrix(
+            CameraDevice camera,
+            StreamConfigurationMap map,
+            ImageReader yuvReader) throws Exception {
+        JSONArray matrix = new JSONArray();
+
+        Size[] previewSizes = map.getOutputSizes(SurfaceTexture.class);
+        Size[] jpegSizes = map.getOutputSizes(ImageFormat.JPEG);
+        Size[] yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888);
+
+        Size previewSize = chooseOptionalProbeSize(previewSizes);
+        Size jpegSize = chooseOptionalProbeSize(jpegSizes);
+        Size yuvSize = chooseOptionalProbeSize(yuvSizes);
+
+        SurfaceTexture previewTexture = null;
+        Surface previewSurface = null;
+        ImageReader jpegReader = null;
+        try {
+            if (previewSize != null) {
+                previewTexture = new SurfaceTexture(0);
+                previewTexture.setDefaultBufferSize(
+                        previewSize.getWidth(),
+                        previewSize.getHeight());
+                previewSurface = new Surface(previewTexture);
+            }
+            if (jpegSize != null) {
+                jpegReader = ImageReader.newInstance(
+                        jpegSize.getWidth(),
+                        jpegSize.getHeight(),
+                        ImageFormat.JPEG,
+                        2);
+            }
+
+            Executor sessionExecutor = command -> cameraHandler.post(command);
+            CameraCaptureSession.StateCallback callback =
+                    new CameraCaptureSession.StateCallback() {
+                        @Override
+                        public void onConfigured(CameraCaptureSession session) {}
+
+                        @Override
+                        public void onConfigureFailed(CameraCaptureSession session) {}
+                    };
+
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "preview",
+                    previewSize,
+                    previewSurface);
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "yuv",
+                    yuvSize,
+                    yuvReader.getSurface());
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "jpeg",
+                    jpegSize,
+                    jpegReader == null ? null : jpegReader.getSurface());
+
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "preview+yuv",
+                    new Size[]{previewSize, yuvSize},
+                    new Surface[]{previewSurface, yuvReader.getSurface()});
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "preview+jpeg",
+                    new Size[]{previewSize, jpegSize},
+                    new Surface[]{
+                            previewSurface,
+                            jpegReader == null ? null : jpegReader.getSurface()
+                    });
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "yuv+jpeg",
+                    new Size[]{yuvSize, jpegSize},
+                    new Surface[]{
+                            yuvReader.getSurface(),
+                            jpegReader == null ? null : jpegReader.getSurface()
+                    });
+            addSessionCandidate(
+                    matrix,
+                    camera,
+                    sessionExecutor,
+                    callback,
+                    "preview+yuv+jpeg",
+                    new Size[]{previewSize, yuvSize, jpegSize},
+                    new Surface[]{
+                            previewSurface,
+                            yuvReader.getSurface(),
+                            jpegReader == null ? null : jpegReader.getSurface()
+                    });
+        } finally {
+            if (jpegReader != null) {
+                jpegReader.close();
+            }
+            if (previewSurface != null) {
+                previewSurface.release();
+            }
+            if (previewTexture != null) {
+                previewTexture.release();
+            }
+        }
+
+        return matrix;
+    }
+
+    private static void addSessionCandidate(
+            JSONArray matrix,
+            CameraDevice camera,
+            Executor executor,
+            CameraCaptureSession.StateCallback callback,
+            String name,
+            Size size,
+            Surface surface) throws Exception {
+        addSessionCandidate(
+                matrix,
+                camera,
+                executor,
+                callback,
+                name,
+                new Size[]{size},
+                new Surface[]{surface});
+    }
+
+    private static void addSessionCandidate(
+            JSONArray matrix,
+            CameraDevice camera,
+            Executor executor,
+            CameraCaptureSession.StateCallback callback,
+            String name,
+            Size[] sizes,
+            Surface[] surfaces) throws Exception {
+        JSONObject item = new JSONObject();
+        item.put("name", name);
+
+        JSONArray sizeArray = new JSONArray();
+        boolean available = true;
+        for (Size size : sizes) {
+            if (size == null) {
+                available = false;
+                sizeArray.put(JSONObject.NULL);
+            } else {
+                sizeArray.put(new JSONObject()
+                        .put("width", size.getWidth())
+                        .put("height", size.getHeight()));
+            }
+        }
+        item.put("sizes", sizeArray);
+        item.put("available", available);
+
+        if (!available) {
+            item.put("supported", JSONObject.NULL);
+            matrix.put(item);
+            return;
+        }
+
+        List<OutputConfiguration> outputs = new ArrayList<>();
+        for (Surface surface : surfaces) {
+            if (surface == null) {
+                available = false;
+                break;
+            }
+            outputs.add(new OutputConfiguration(surface));
+        }
+        if (!available) {
+            item.put("supported", JSONObject.NULL);
+            matrix.put(item);
+            return;
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            try {
+                SessionConfiguration config = new SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        outputs,
+                        executor,
+                        callback);
+                item.put(
+                        "supported",
+                        camera.isSessionConfigurationSupported(config));
+            } catch (RuntimeException e) {
+                item.put("supported", JSONObject.NULL);
+                item.put("error", e.toString());
+            }
+        } else {
+            item.put("supported", JSONObject.NULL);
+        }
+
+        matrix.put(item);
+    }
+
+    private static Size chooseOptionalProbeSize(Size[] sizes) {
+        if (sizes == null || sizes.length == 0) {
+            return null;
+        }
+        return chooseProbeSize(sizes);
     }
 
     private static Size chooseProbeSize(Size[] sizes) {
