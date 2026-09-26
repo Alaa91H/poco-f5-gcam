@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.3"
+$ExpectedProbeVersion = "0.3.4"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
@@ -316,6 +316,17 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 if ($YuvRuntime) {
     Write-Host "Running sustained YUV_420_888 runtime probe..."
+
+    # Isolate Camera2 runtime measurements from Pixel Camera. The Pixel Camera
+    # compatibility test intentionally leaves its process alive when startup
+    # succeeds, and Xiaomi's HAL then reports ERROR_MAX_CAMERAS_IN_USE for
+    # every probe ID before any session can be configured.
+    $pixelCameraPackage = "com.google.android.GoogleCamera"
+    Write-Host "Releasing Pixel Camera before Camera2 runtime probing..."
+    Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "am", "force-stop", $pixelCameraPackage)
+    ) -AllowFailure | Out-Null
+    Start-Sleep -Milliseconds 1500
 
     $grant = Invoke-Adb -Arguments @(
         $adbPrefix + @("shell", "pm", "grant", $Package, "android.permission.CAMERA")
