@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,13 @@ GCAM_INIT_SYMBOLS = (
     TOMTE_GRAIN_SYMBOL.encode("utf-8"),
 )
 GCASTARTUP_LIBRARY = "lib/arm64-v8a/libgcastartup.so"
+TUNING_DIAGNOSTIC_STRINGS = (
+    "Unknown device code",
+    "Failed to get tuning for device code",
+    "Device has not been calibrated for HDR+",
+    "Unsupported sensor ID. Using tuning defaults.",
+    "Using tuning defaults.",
+)
 # Exact AArch64 instructions for Pixel Camera 11.0.073.972752740.32.
 # These three patches only select the existing CPU/TFLite fallback and bypass
 # the DarwiNN/GXP branch. Model verification and unrelated native code are left intact.
@@ -67,6 +75,256 @@ BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
 
 class PatchError(RuntimeError):
     pass
+
+
+def _sign_extend(value: int, bits: int) -> int:
+    sign = 1 << (bits - 1)
+    return (value ^ sign) - sign
+
+
+def _elf64_load_segments(data: bytes) -> list[dict[str, int]]:
+    """Return ELF64 PT_LOAD segments needed for file-offset/VA translation."""
+
+    if len(data) < 64 or data[:4] != b"\x7fELF":
+        raise PatchError("libgcastartup is not an ELF file")
+    if data[4] != 2 or data[5] != 1:
+        raise PatchError("libgcastartup must be little-endian ELF64")
+
+    e_phoff = struct.unpack_from("<Q", data, 32)[0]
+    e_phentsize = struct.unpack_from("<H", data, 54)[0]
+    e_phnum = struct.unpack_from("<H", data, 56)[0]
+    if e_phentsize < 56:
+        raise PatchError(f"unexpected ELF64 program-header size: {e_phentsize}")
+
+    segments: list[dict[str, int]] = []
+    for index in range(e_phnum):
+        off = e_phoff + index * e_phentsize
+        if off + 56 > len(data):
+            raise PatchError("ELF64 program-header table is truncated")
+        (
+            p_type,
+            p_flags,
+            p_offset,
+            p_vaddr,
+            _p_paddr,
+            p_filesz,
+            p_memsz,
+            _p_align,
+        ) = struct.unpack_from("<IIQQQQQQ", data, off)
+        if p_type != 1:
+            continue
+        if p_offset + p_filesz > len(data):
+            raise PatchError("ELF64 PT_LOAD segment exceeds file size")
+        segments.append(
+            {
+                "flags": p_flags,
+                "offset": p_offset,
+                "vaddr": p_vaddr,
+                "filesz": p_filesz,
+                "memsz": p_memsz,
+            }
+        )
+
+    if not segments:
+        raise PatchError("ELF64 contains no PT_LOAD segments")
+    return segments
+
+
+def _file_offset_to_vaddr(
+    offset: int,
+    segments: list[dict[str, int]],
+) -> int | None:
+    for segment in segments:
+        start = segment["offset"]
+        end = start + segment["filesz"]
+        if start <= offset < end:
+            return segment["vaddr"] + (offset - start)
+    return None
+
+
+def _instruction_vaddr(
+    offset: int,
+    segments: list[dict[str, int]],
+) -> int | None:
+    return _file_offset_to_vaddr(offset, segments)
+
+
+def _decode_aarch64_branch(word: int, pc: int) -> str | None:
+    if word == 0xD503201F:
+        return "nop"
+    if (word & 0xFFFFFC1F) == 0xD65F0000:
+        return "ret"
+
+    if (word & 0x7C000000) == 0x14000000:
+        imm26 = _sign_extend(word & 0x03FFFFFF, 26) << 2
+        mnemonic = "bl" if (word & 0x80000000) else "b"
+        return f"{mnemonic} 0x{pc + imm26:x}"
+
+    if (word & 0xFF000010) == 0x54000000:
+        imm19 = _sign_extend((word >> 5) & 0x7FFFF, 19) << 2
+        cond = word & 0xF
+        return f"b.cond[{cond}] 0x{pc + imm19:x}"
+
+    if (word & 0x7E000000) == 0x34000000:
+        imm19 = _sign_extend((word >> 5) & 0x7FFFF, 19) << 2
+        mnemonic = "cbnz" if ((word >> 24) & 1) else "cbz"
+        return f"{mnemonic} 0x{pc + imm19:x}"
+
+    if (word & 0x7E000000) == 0x36000000:
+        imm14 = _sign_extend((word >> 5) & 0x3FFF, 14) << 2
+        mnemonic = "tbnz" if ((word >> 24) & 1) else "tbz"
+        return f"{mnemonic} 0x{pc + imm14:x}"
+
+    return None
+
+
+def _aarch64_string_xrefs(
+    data: bytes,
+    target_vaddr: int,
+    segments: list[dict[str, int]],
+) -> list[int]:
+    """Find common ADR/ADRP+ADD references to one in-binary string VA."""
+
+    refs: set[int] = set()
+    for segment in segments:
+        if not (segment["flags"] & 0x1):
+            continue
+        start = segment["offset"]
+        end = start + segment["filesz"]
+        start += (-start) % 4
+        for off in range(start, max(start, end - 3), 4):
+            word = struct.unpack_from("<I", data, off)[0]
+            pc = segment["vaddr"] + (off - segment["offset"])
+
+            # ADR Xd, label.
+            if (word & 0x9F000000) == 0x10000000:
+                immlo = (word >> 29) & 0x3
+                immhi = (word >> 5) & 0x7FFFF
+                imm = _sign_extend((immhi << 2) | immlo, 21)
+                if pc + imm == target_vaddr:
+                    refs.add(off)
+                continue
+
+            # ADRP Xd, page(label), followed shortly by ADD Xd/Xn,#lo12.
+            if (word & 0x9F000000) != 0x90000000:
+                continue
+            rd = word & 0x1F
+            immlo = (word >> 29) & 0x3
+            immhi = (word >> 5) & 0x7FFFF
+            page_delta = _sign_extend((immhi << 2) | immlo, 21) << 12
+            page = (pc & ~0xFFF) + page_delta
+
+            for step in range(1, 6):
+                add_off = off + step * 4
+                if add_off + 4 > end:
+                    break
+                add = struct.unpack_from("<I", data, add_off)[0]
+                if (add & 0xFF000000) != 0x91000000:
+                    continue
+                rn = (add >> 5) & 0x1F
+                if rn != rd:
+                    continue
+                imm12 = (add >> 10) & 0xFFF
+                shift = (add >> 22) & 0x1
+                address = page + (imm12 << (12 if shift else 0))
+                if address == target_vaddr:
+                    refs.add(off)
+                    refs.add(add_off)
+                    break
+
+    return sorted(refs)
+
+
+def _instruction_window(
+    data: bytes,
+    center_offset: int,
+    segments: list[dict[str, int]],
+    *,
+    radius: int = 0x80,
+) -> list[dict[str, str]]:
+    start = max(0, center_offset - radius)
+    end = min(len(data), center_offset + radius + 4)
+    start += (-start) % 4
+    rows: list[dict[str, str]] = []
+    for off in range(start, end - 3, 4):
+        pc = _instruction_vaddr(off, segments)
+        if pc is None:
+            continue
+        word = struct.unpack_from("<I", data, off)[0]
+        decoded = _decode_aarch64_branch(word, pc)
+        rows.append(
+            {
+                "file_offset": f"0x{off:x}",
+                "vaddr": f"0x{pc:x}",
+                "word_le_hex": data[off : off + 4].hex(),
+                "control_flow": decoded or "",
+            }
+        )
+    return rows
+
+
+def analyze_libgcam_tuning(data: bytes) -> dict[str, Any]:
+    """Collect fail-safe static evidence for the current libgcam tuning failure.
+
+    The POCO F5 report proves Gcam_Create aborts because libgcam rejects the
+    Xiaomi/marble device-code tuning key. This function does not modify tuning.
+    It records target strings and AArch64 references so a later patch can be
+    based on the actual same-version control flow rather than guessed offsets.
+    """
+
+    segments = _elf64_load_segments(data)
+    strings: dict[str, Any] = {}
+
+    for marker in TUNING_DIAGNOSTIC_STRINGS:
+        needle = marker.encode("utf-8")
+        offsets: list[int] = []
+        cursor = 0
+        while True:
+            found = data.find(needle, cursor)
+            if found < 0:
+                break
+            offsets.append(found)
+            cursor = found + 1
+
+        occurrences: list[dict[str, Any]] = []
+        for offset in offsets:
+            vaddr = _file_offset_to_vaddr(offset, segments)
+            xrefs = (
+                _aarch64_string_xrefs(data, vaddr, segments)
+                if vaddr is not None
+                else []
+            )
+            occurrences.append(
+                {
+                    "file_offset": f"0x{offset:x}",
+                    "vaddr": f"0x{vaddr:x}" if vaddr is not None else None,
+                    "xref_offsets": [f"0x{item:x}" for item in xrefs],
+                    "xref_windows": [
+                        {
+                            "xref_offset": f"0x{xref:x}",
+                            "instructions": _instruction_window(
+                                data,
+                                xref,
+                                segments,
+                            ),
+                        }
+                        for xref in xrefs[:8]
+                    ],
+                }
+            )
+
+        strings[marker] = {
+            "count": len(offsets),
+            "occurrences": occurrences,
+        }
+
+    return {
+        "status": "diagnostic_only",
+        "library_size": len(data),
+        "strings": strings,
+        "tuning_bypass_performed": False,
+        "profile_spoof_performed": False,
+    }
 
 
 def patch_native_bytes(
@@ -127,6 +385,7 @@ def patch_gcastartup_cpu_fallback(
         )
 
     original = archive.read(GCASTARTUP_LIBRARY)
+    tuning_diagnostics = analyze_libgcam_tuning(original)
     patched, instruction_report = patch_native_bytes(original)
     output = root / "libgcastartup-cpu-fallback.so"
     output.write_bytes(patched)
@@ -137,7 +396,10 @@ def patch_gcastartup_cpu_fallback(
         "original_size": len(original),
         "patched_size": len(patched),
         "instructions": instruction_report,
+        "tuning_diagnostics": tuning_diagnostics,
         "model_verification_bypass_performed": False,
+        "tuning_bypass_performed": False,
+        "tuning_profile_spoof_performed": False,
     }
 
 
