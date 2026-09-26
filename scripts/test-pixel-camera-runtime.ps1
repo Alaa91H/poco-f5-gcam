@@ -374,6 +374,7 @@ foreach ($line in $cameraSensorEventLines) {
 
 $sensorSourceMappings = New-Object System.Collections.Generic.List[object]
 $sensorSourceMappingThreads = New-Object System.Collections.Generic.List[object]
+$sensorVectorDuplicateIdsPerThread = New-Object System.Collections.Generic.List[object]
 foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
     $group = $entry.Value
     $pairedCount = [Math]::Min($group.sources.Count, $group.sensors.Count)
@@ -400,6 +401,18 @@ foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
         sensorCount = $group.sensors.Count
         complete = $complete
     })
+
+    @($group.sensors) |
+        Group-Object |
+        Where-Object { $_.Count -gt 1 } |
+        ForEach-Object {
+            $sensorVectorDuplicateIdsPerThread.Add([ordered]@{
+                pid = $group.pid
+                tid = $group.tid
+                sensor = $_.Name
+                count = $_.Count
+            })
+        }
 }
 
 $logicalCameraMappingLines = @(
@@ -500,6 +513,7 @@ $report = [ordered]@{
         sensorVectorLines = $sensorVectorLines
         sensorVectorIds = @($sensorVectorIds)
         sensorVectorDuplicateIds = $sensorVectorDuplicateIds
+        sensorVectorDuplicateIdsPerThread = @($sensorVectorDuplicateIdsPerThread)
         sensorSourceMappingThreads = @($sensorSourceMappingThreads)
         sensorSourceMappings = @($sensorSourceMappings)
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
@@ -563,14 +577,14 @@ Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserve
 Write-Host "Top-level Camera2 IDs: $($cameraSourceTopIds -join ', ')"
 Write-Host "Physical Camera2 IDs: $($cameraSourcePhysicalIds -join ', ')"
 Write-Host "Sensor vector IDs: $($sensorVectorIds -join ', ')"
-if ($sensorVectorDuplicateIds.Count -gt 0) {
-    Write-Host "Duplicate sensor vector IDs:"
-    $sensorVectorDuplicateIds | ForEach-Object {
-        Write-Host ("  " + $_.sensor + " x" + $_.count)
+if ($sensorVectorDuplicateIdsPerThread.Count -gt 0) {
+    Write-Host "Duplicate sensor vector IDs per create thread:"
+    $sensorVectorDuplicateIdsPerThread | ForEach-Object {
+        Write-Host ("  PID " + $_.pid + " TID " + $_.tid + ": " + $_.sensor + " x" + $_.count)
     }
 }
 else {
-    Write-Host "Duplicate sensor vector IDs: none observed"
+    Write-Host "Duplicate sensor vector IDs per create thread: none observed"
 }
 if ($sensorSourceMappings.Count -gt 0) {
     Write-Host "Camera2 -> GCam sensor mappings:"
