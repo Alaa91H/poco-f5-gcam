@@ -317,6 +317,15 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 if ($YuvRuntime) {
     Write-Host "Running sustained YUV_420_888 runtime probe..."
 
+    $cameraServiceBeforeRelease = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "dumpsys", "media.camera")
+    ) -AllowFailure
+    [System.IO.File]::WriteAllText(
+        (Join-Path $outDir "camera-service-before-release.txt"),
+        $cameraServiceBeforeRelease.Text + [Environment]::NewLine,
+        $utf8NoBom
+    )
+
     # Isolate Camera2 runtime measurements from Pixel Camera. The Pixel Camera
     # compatibility test intentionally leaves its process alive when startup
     # succeeds, and Xiaomi's HAL then reports ERROR_MAX_CAMERAS_IN_USE for
