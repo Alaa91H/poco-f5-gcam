@@ -327,7 +327,7 @@ jobs:
                   e+=1
               return s,min(e,len(lines)-1)
 
-          targets=("upd","mta","odr","oys","oyt","oty","tdi","rr","ug")
+          targets=("upd","mta","odr","oys","oyt","oty","tdi","rr","ug","rp","ve")
           target_locations={}
           for name in targets:
               matches=[]
@@ -350,6 +350,9 @@ jobs:
               "Landroid/hardware/camera2/CameraDevice;->createCaptureSession",
               "Landroid/hardware/camera2/CameraDevice;->createReprocessableCaptureSession",
               "Landroid/hardware/camera2/params/SessionConfiguration;",
+              "Landroid/hardware/camera2/params/SessionConfiguration;->setSessionParameters",
+              "Landroid/hardware/camera2/CaptureRequest$Builder;->set(",
+              "Landroid/hardware/camera2/CaptureRequest$Builder;->build()",
               "Lrr;-><init>",
               "Lua;-><init>",
               "Lupd;-><init>",
@@ -359,7 +362,7 @@ jobs:
               for p in smali_root.rglob("*.smali"):
                   lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
                   for idx,line in enumerate(lines):
-                      camera2_hit=any(token in line for token in patterns[:4])
+                      camera2_hit=any(token in line for token in patterns[:7])
                       rr_ctor_hit="Lrr;-><init>" in line
                       lua_hit="Lua;-><init>" in line
                       upd_ctor_hit="Lupd;-><init>" in line
