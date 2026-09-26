@@ -46,6 +46,7 @@ KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
 ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
+ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
@@ -2009,6 +2010,108 @@ def find_and_patch_onecamera_missing_request_key_smali_tree(
     return metadata
 
 
+
+def inspect_onecamera_odr_request_entries_smali_text(
+    text: str,
+) -> dict[str, Any]:
+    """Report every Lupd request-entry constructor in Lodr.a() without patching it.
+
+    Android 17 runtime evidence on marble identifies odr.a(PG:24) as the
+    immediate caller of Lupd.<init> for the remaining null request-entry crash.
+    Capture the exact smali neighborhoods first so the eventual fix can remain
+    caller-local and fail closed rather than weakening Lupd globally.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\\.class\\s+.*" + re.escape(ONECAMERA_ODR_DESCRIPTOR) + r"\\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera request-entry class Lodr;; "
+            f"found {len(class_matches)}"
+        )
+
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if re.match(r"^\\.method\\s+.*\\sa\\([^)]*\\).*$", line.strip())
+    ]
+    if not method_starts:
+        raise PatchError("expected at least one Lodr.a(...) method")
+
+    entries: list[dict[str, Any]] = []
+    for method_start in method_starts:
+        method_end = method_start + 1
+        while method_end < len(lines) and lines[method_end].strip() != ".end method":
+            method_end += 1
+        if method_end >= len(lines):
+            raise PatchError("Lodr.a() is unterminated")
+
+        constructor_indexes = [
+            i for i in range(method_start, method_end)
+            if (
+                "Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;"
+                "Ljava/lang/Object;)V" in lines[i]
+            )
+        ]
+        for constructor_index in constructor_indexes:
+            start = max(method_start, constructor_index - 12)
+            end = min(method_end, constructor_index + 8)
+            entries.append(
+                {
+                    "method": lines[method_start].strip(),
+                    "constructor_line": lines[constructor_index].strip(),
+                    "window": [line.rstrip() for line in lines[start : end + 1]],
+                }
+            )
+
+    if not entries:
+        raise PatchError("no Lupd request-entry constructors found in Lodr.a()")
+
+    return {
+        "status": "diagnostic_only",
+        "class": ONECAMERA_ODR_DESCRIPTOR,
+        "behavior_changed": False,
+        "entry_count": len(entries),
+        "entries": entries,
+    }
+
+
+def find_and_inspect_onecamera_odr_request_entries_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\\.class\\s+.*" + re.escape(ONECAMERA_ODR_DESCRIPTOR) + r"\\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera request-entry class Lodr; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    metadata = inspect_onecamera_odr_request_entries_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def patch_onecamera_open_camera_fallback_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
@@ -2402,6 +2505,9 @@ def patch_apk(
                     report_for_dex["onecamera_open_camera_fallback"] = (
                         find_and_patch_onecamera_open_camera_fallback_smali_tree(smali_dir)
                     )
+                    report_for_dex["onecamera_odr_request_entries"] = (
+                        find_and_inspect_onecamera_odr_request_entries_smali_tree(smali_dir)
+                    )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
                         find_and_patch_keepalive_receiver_smali_tree(smali_dir)
@@ -2467,6 +2573,9 @@ def patch_apk(
     onecamera_open_camera_fallback_metadata = dex_reports[gcam_init_dex][
         "onecamera_open_camera_fallback"
     ]
+    onecamera_odr_request_entries_metadata = dex_reports[gcam_init_dex][
+        "onecamera_odr_request_entries"
+    ]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -2489,6 +2598,10 @@ def patch_apk(
         "onecamera_open_camera_fallback_patch": {
             "target_dex": gcam_init_dex,
             **onecamera_open_camera_fallback_metadata,
+        },
+        "onecamera_odr_request_entry_diagnostics": {
+            "target_dex": gcam_init_dex,
+            **onecamera_odr_request_entries_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,
