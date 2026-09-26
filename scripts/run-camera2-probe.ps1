@@ -23,6 +23,48 @@ function Fail([string]$Message) {
     exit 1
 }
 
+function Invoke-Adb {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [switch]$AllowFailure,
+        [switch]$StdoutOnly
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5 promotes native stderr to NativeCommandError when
+        # ErrorActionPreference is Stop. adb legitimately emits status/warning
+        # text on stderr, so never let the PowerShell wrapper abort the probe.
+        $ErrorActionPreference = "Continue"
+        if ($StdoutOnly) {
+            # Keep stderr out of JSON payloads exported via exec-out.
+            $output = & adb @Arguments
+        }
+        else {
+            $output = & adb @Arguments 2>&1
+        }
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    $text = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+    if ($exitCode -ne 0 -and -not $AllowFailure) {
+        throw (
+            "adb " + ($Arguments -join " ") +
+            " failed with exit code " + $exitCode +
+            [Environment]::NewLine + $text
+        )
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Text = $text.Trim()
+    }
+}
+
 if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
     Fail "adb was not found. Install Android SDK Platform-Tools and add adb to PATH."
 }
@@ -43,8 +85,9 @@ if (-not (Test-Path -LiteralPath $ApkPath)) {
     Fail "Probe APK not found at '$ApkPath'. Build it with -Build or download the camera2-probe-debug artifact from GitHub Actions."
 }
 
+$deviceResult = Invoke-Adb -Arguments @("devices")
 $deviceLines = @(
-    & adb devices |
+    $deviceResult.Text -split "\r?\n" |
         Select-Object -Skip 1 |
         ForEach-Object { $_.Trim() } |
         Where-Object { $_ -match "\sdevice$" }
@@ -69,25 +112,36 @@ else {
 $adbPrefix = @("-s", $Serial)
 
 Write-Host "Installing Camera2 probe as package $Package..."
-& adb @adbPrefix install -r $ApkPath
-if ($LASTEXITCODE -ne 0) {
-    Fail "APK installation failed."
+$install = Invoke-Adb -Arguments @($adbPrefix + @("install", "-r", $ApkPath)) -AllowFailure
+if ($install.ExitCode -ne 0) {
+    Fail ("APK installation failed." + [Environment]::NewLine + $install.Text)
+}
+if (-not [string]::IsNullOrWhiteSpace($install.Text)) {
+    Write-Host $install.Text
 }
 
 Write-Host "Launching probe and generating report..."
-& adb @adbPrefix shell am force-stop $Package | Out-Null
-& adb @adbPrefix shell run-as $Package rm -f $ReportRelativePath 2>$null | Out-Null
-& adb @adbPrefix shell am start -W -n "$Package/$Activity" --ez autoGenerate true | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Fail "Failed to launch the Camera2 probe."
+Invoke-Adb -Arguments @($adbPrefix + @("shell", "am", "force-stop", $Package)) -AllowFailure | Out-Null
+Invoke-Adb -Arguments @($adbPrefix + @("shell", "run-as", $Package, "rm", "-f", $ReportRelativePath)) -AllowFailure | Out-Null
+$launch = Invoke-Adb -Arguments @(
+    $adbPrefix + @(
+        "shell", "am", "start", "-W",
+        "-n", "$Package/$Activity",
+        "--ez", "autoGenerate", "true"
+    )
+) -AllowFailure
+if ($launch.ExitCode -ne 0) {
+    Fail ("Failed to launch the Camera2 probe." + [Environment]::NewLine + $launch.Text)
 }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $ready = $false
 do {
     Start-Sleep -Milliseconds 500
-    & adb @adbPrefix shell run-as $Package test -f $ReportRelativePath 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    $readyCheck = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "run-as", $Package, "test", "-f", $ReportRelativePath)
+    ) -AllowFailure
+    if ($readyCheck.ExitCode -eq 0) {
         $ready = $true
         break
     }
@@ -97,23 +151,37 @@ if (-not $ready) {
     Fail "Timed out waiting for the Camera2 report after $TimeoutSeconds seconds. Open the app on the phone and check its status."
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$outDir = Join-Path $OutputRoot $timestamp
-New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-$outFile = Join-Path $outDir "camera2-report.json"
-
-$reportLines = & adb @adbPrefix exec-out run-as $Package cat $ReportRelativePath 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Fail "Failed to export the Camera2 report via run-as."
+$reportExport = Invoke-Adb -Arguments @(
+    $adbPrefix + @("exec-out", "run-as", $Package, "cat", $ReportRelativePath)
+) -AllowFailure -StdoutOnly
+if ($reportExport.ExitCode -ne 0) {
+    Fail (
+        "Failed to export the Camera2 report via run-as." +
+        [Environment]::NewLine + $reportExport.Text
+    )
 }
-$reportText = ($reportLines -join [Environment]::NewLine)
+$reportText = $reportExport.Text
 
 try {
     $parsed = $reportText | ConvertFrom-Json
 }
 catch {
-    Fail "The exported report is not valid JSON: $($_.Exception.Message)"
+    Fail (
+        "The exported report is not valid JSON: " +
+        $_.Exception.Message +
+        [Environment]::NewLine +
+        "Payload prefix: " +
+        $reportText.Substring(0, [Math]::Min(500, $reportText.Length))
+    )
 }
+
+# Create the capture directory only after the base report has been exported and
+# parsed successfully. A failed export can no longer leave a misleading empty
+# timestamp directory behind.
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$outDir = Join-Path $OutputRoot $timestamp
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+$outFile = Join-Path $outDir "camera2-report.json"
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($outFile, $reportText + [Environment]::NewLine, $utf8NoBom)
@@ -121,23 +189,41 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 if ($YuvRuntime) {
     Write-Host "Running sustained YUV_420_888 runtime probe..."
 
-    & adb @adbPrefix shell pm grant $Package android.permission.CAMERA 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Failed to grant CAMERA permission to the debug probe package."
+    $grant = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "pm", "grant", $Package, "android.permission.CAMERA")
+    ) -AllowFailure
+    if ($grant.ExitCode -ne 0) {
+        Fail (
+            "Failed to grant CAMERA permission to the debug probe package." +
+            [Environment]::NewLine + $grant.Text
+        )
     }
 
-    & adb @adbPrefix shell run-as $Package rm -f $YuvReportRelativePath 2>$null | Out-Null
-    & adb @adbPrefix shell am start -W -n "$Package/$YuvActivity" --ez autoGenerate true | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Failed to launch the YUV runtime probe."
+    Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "run-as", $Package, "rm", "-f", $YuvReportRelativePath)
+    ) -AllowFailure | Out-Null
+    $yuvLaunch = Invoke-Adb -Arguments @(
+        $adbPrefix + @(
+            "shell", "am", "start", "-W",
+            "-n", "$Package/$YuvActivity",
+            "--ez", "autoGenerate", "true"
+        )
+    ) -AllowFailure
+    if ($yuvLaunch.ExitCode -ne 0) {
+        Fail (
+            "Failed to launch the YUV runtime probe." +
+            [Environment]::NewLine + $yuvLaunch.Text
+        )
     }
 
     $yuvDeadline = (Get-Date).AddSeconds($YuvTimeoutSeconds)
     $yuvReady = $false
     do {
         Start-Sleep -Milliseconds 500
-        & adb @adbPrefix shell run-as $Package test -f $YuvReportRelativePath 2>$null
-        if ($LASTEXITCODE -eq 0) {
+        $yuvReadyCheck = Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "run-as", $Package, "test", "-f", $YuvReportRelativePath)
+        ) -AllowFailure
+        if ($yuvReadyCheck.ExitCode -eq 0) {
             $yuvReady = $true
             break
         }
@@ -148,11 +234,16 @@ if ($YuvRuntime) {
     }
 
     $yuvOutFile = Join-Path $outDir "yuv-runtime-report.json"
-    $yuvLines = & adb @adbPrefix exec-out run-as $Package cat $YuvReportRelativePath 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Fail "Failed to export the YUV runtime report via run-as."
+    $yuvExport = Invoke-Adb -Arguments @(
+        $adbPrefix + @("exec-out", "run-as", $Package, "cat", $YuvReportRelativePath)
+    ) -AllowFailure -StdoutOnly
+    if ($yuvExport.ExitCode -ne 0) {
+        Fail (
+            "Failed to export the YUV runtime report via run-as." +
+            [Environment]::NewLine + $yuvExport.Text
+        )
     }
-    $yuvText = ($yuvLines -join [Environment]::NewLine)
+    $yuvText = $yuvExport.Text
 
     try {
         $yuvParsed = $yuvText | ConvertFrom-Json
