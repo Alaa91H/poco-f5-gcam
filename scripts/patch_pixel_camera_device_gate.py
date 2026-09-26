@@ -2453,6 +2453,189 @@ def patch_onecamera_session_parameter_logging_smali_text(
     }
 
 
+def patch_onecamera_output_configuration_logging_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Log OutputConfiguration inputs without changing OneCamera behavior."""
+
+    lines = text.splitlines()
+    descriptor = "Lvz;"
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(r"^\\.class\\s+.*" + re.escape(descriptor) + r"\\s*$", line)
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OutputConfiguration helper Lvz;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = (
+        ".method public static synthetic "
+        "u(Landroid/view/Surface;Lqw;Lqv;Lra;Lqu;Lqy;Ljava/util/List;"
+        "Landroid/util/Size;ZILjava/lang/String;I)Lry;"
+    )
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == signature
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Lvz.u(...) OutputConfiguration builder; "
+            f"found {len(method_starts)}"
+        )
+
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lvz.u(...) is unterminated")
+
+    register_lines = [
+        i for i in range(method_start + 1, method_end)
+        if re.fullmatch(r"\\s*\\.registers\\s+13\\s*", lines[i])
+    ]
+    if len(register_lines) != 1:
+        raise PatchError(
+            "Lvz.u(...) register layout changed; expected exactly .registers 13"
+        )
+
+    anchor_line = "invoke-virtual {p1}, Ljava/lang/Object;->getClass()Ljava/lang/Class;"
+    anchor_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == anchor_line
+    ]
+    if len(anchor_indexes) != 1:
+        raise PatchError(
+            "Lvz.u(...) output-type validation anchor changed; "
+            f"found {len(anchor_indexes)} matches"
+        )
+    anchor_index = anchor_indexes[0]
+
+    next_cursor = anchor_index + 1
+    while next_cursor < method_end and not lines[next_cursor].strip():
+        next_cursor += 1
+    expected_next = "sget-object p11, Lqw;->d:Lqw;"
+    if next_cursor >= method_end or lines[next_cursor].strip() != expected_next:
+        actual = lines[next_cursor].strip() if next_cursor < method_end else "<end>"
+        raise PatchError(
+            "Lvz.u(...) p11 scratch handoff changed; "
+            f"found {actual!r}"
+        )
+
+    indent = re.match(r"^(\\s*)", lines[anchor_index]).group(1)
+
+    def log_object(tag: str, register: str) -> list[str]:
+        return [
+            "",
+            f'{indent}const-string p11, "{tag}"',
+            "",
+            f"{indent}invoke-static {{{register}}}, "
+            "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+            "",
+            f"{indent}move-result-object v0",
+            "",
+            f"{indent}invoke-static {{p11, v0}}, "
+            "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+            "",
+            f"{indent}move-result v0",
+        ]
+
+    def log_int(tag: str, register: str, descriptor: str) -> list[str]:
+        return [
+            "",
+            f'{indent}const-string p11, "{tag}"',
+            "",
+            f"{indent}invoke-static {{{register}}}, "
+            f"Ljava/lang/String;->valueOf({descriptor})Ljava/lang/String;",
+            "",
+            f"{indent}move-result-object v0",
+            "",
+            f"{indent}invoke-static {{p11, v0}}, "
+            "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+            "",
+            f"{indent}move-result v0",
+        ]
+
+    injected: list[str] = [
+        "",
+        f"{indent}# POCO F5 diagnostic: record OutputConfiguration inputs only.",
+    ]
+    injected += log_object("GCamOCSurface", "p0")
+    injected += log_object("GCamOCType", "p1")
+    injected += log_object("GCamOCMirror", "p2")
+    injected += log_object("GCamOCTimestamp", "p3")
+    injected += log_object("GCamOCDynamicRange", "p4")
+    injected += log_object("GCamOCStreamUseCase", "p5")
+    injected += log_object("GCamOCPixelModes", "p6")
+    injected += log_object("GCamOCSize", "p7")
+    injected += log_int("GCamOCSharing", "p8", "Z")
+    injected += log_int("GCamOCGroupId", "p9", "I")
+    injected += log_object("GCamOCPhysicalId", "p10")
+
+    lines = lines[: anchor_index + 1] + injected + lines[anchor_index + 1 :]
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+    return patched, {
+        "status": "diagnostic_logging",
+        "class": descriptor,
+        "method": signature,
+        "behavior_changed": False,
+        "tags": [
+            "GCamOCSurface",
+            "GCamOCType",
+            "GCamOCMirror",
+            "GCamOCTimestamp",
+            "GCamOCDynamicRange",
+            "GCamOCStreamUseCase",
+            "GCamOCPixelModes",
+            "GCamOCSize",
+            "GCamOCSharing",
+            "GCamOCGroupId",
+            "GCamOCPhysicalId",
+        ],
+        "scratch_registers": ["v0", "p11"],
+        "scratch_liveness": (
+            "p11 is dead after its option-bit test and is overwritten by the "
+            "original Lqw.d load; v0 is overwritten by the next original compare"
+        ),
+        "evidence": (
+            "marble Camera2 probe configured PRIVATE 1280x720 + RAW10 "
+            "4624x3472 + YUV_420_888 1280x720 successfully"
+        ),
+    }
+
+
+def find_and_patch_onecamera_output_configuration_logging_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(r"^\\.class\\s+.*Lvz;\\s*$", re.MULTILINE)
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OutputConfiguration helper Lvz; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_output_configuration_logging_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def find_and_patch_onecamera_session_parameter_logging_smali_tree(
     root: Path,
 ) -> dict[str, Any]:
@@ -2903,6 +3086,11 @@ def patch_apk(
                             smali_dir
                         )
                     )
+                    report_for_dex["onecamera_output_configuration_logging"] = (
+                        find_and_patch_onecamera_output_configuration_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
 
                 assemble_output = run(
                     [
@@ -2970,6 +3158,9 @@ def patch_apk(
     onecamera_session_parameter_logging_metadata = dex_reports[
         session_config_dex
     ]["onecamera_session_parameter_logging"]
+    onecamera_output_configuration_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_output_configuration_logging"]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -3000,6 +3191,10 @@ def patch_apk(
         "onecamera_session_parameter_logging": {
             "target_dex": session_config_dex,
             **onecamera_session_parameter_logging_metadata,
+        },
+        "onecamera_output_configuration_logging": {
+            "target_dex": session_config_dex,
+            **onecamera_output_configuration_logging_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,
