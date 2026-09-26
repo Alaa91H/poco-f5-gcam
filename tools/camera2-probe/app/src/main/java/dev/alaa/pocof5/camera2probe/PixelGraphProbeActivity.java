@@ -177,7 +177,7 @@ public final class PixelGraphProbeActivity extends Activity {
         return root;
     }
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint({"MissingPermission", "NewApi"})
     private JSONObject probeGraph(
             CameraManager manager,
             String cameraId,
