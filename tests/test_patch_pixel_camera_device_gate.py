@@ -510,7 +510,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["status"],
-            "remapped_logical_and_filtered_duplicate_aliases",
+            "filtered_xiaomi_logical_and_duplicate_aliases",
         )
         self.assertEqual(
             metadata["sensor_id_uniqueness"][
@@ -519,14 +519,27 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             ["3", "5", "6"],
         )
         self.assertEqual(
+            metadata["sensor_id_uniqueness"][
+                "unsupported_logical_camera_ids_excluded_from_gcam_vector"
+            ],
+            ["4"],
+        )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"][
+                "excluded_camera_ids_from_gcam_vector"
+            ],
+            ["3", "4", "5", "6"],
+        )
+        self.assertEqual(
             metadata["sensor_id_uniqueness"]["expected_kept_camera_ids"],
-            ["0", "2", "4", "1"],
+            ["0", "2", "1"],
         )
         self.assertTrue(
             metadata["sensor_id_uniqueness"]["camera2_enumeration_unchanged"],
         )
         self.assertIn(":poco_top_level_alias_done", patched)
         self.assertIn('const-string v25, "3"', patched)
+        self.assertIn('const-string v25, "4"', patched)
         self.assertIn('const-string v25, "5"', patched)
         self.assertIn('const-string v25, "6"', patched)
         self.assertTrue(
