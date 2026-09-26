@@ -935,6 +935,13 @@ Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
 Write-Host "Top-level Camera2 IDs: $($cameraSourceTopIds -join ', ')"
 Write-Host "Physical Camera2 IDs: $($cameraSourcePhysicalIds -join ', ')"
+if ($sessionParameterKeys.Count -gt 0) {
+    Write-Host "OneCamera session parameter keys:"
+    $sessionParameterKeys | ForEach-Object { Write-Host ("  " + $_) }
+}
+else {
+    Write-Host "OneCamera session parameter keys: none observed"
+}
 if ($preFilterMappings.Count -gt 0) {
     Write-Host "Pre-filter Camera2 -> GCam sensor mappings:"
     $preFilterMappings | ForEach-Object {
