@@ -129,7 +129,38 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 
     move-result-wide v0
 
+    cmp-long v2, v0, v20
+
+    if-nez v2, :cond_644
+
+    const/4 v5, 0x0
+
+    goto :goto_649
+
+    :cond_644
+    new-instance v5, Lcom/google/googlex/gcam/Gcam;
+
+    invoke-direct {v5, v0, v1}, Lcom/google/googlex/gcam/Gcam;-><init>(J)V
+
+    :goto_649
+    invoke-virtual {v5}, Lcom/google/googlex/gcam/Gcam;->g()Z
+
+    move-result v0
+
+    if-eqz v0, :cond_656
+
+    invoke-interface/range {v22 .. v22}, Lulx;->g()V
+
+    invoke-virtual {v5}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+
     return-object v5
+
+    :cond_656
+    new-instance v0, Ljava/lang/IllegalArgumentException;
+
+    invoke-direct {v0}, Ljava/lang/IllegalArgumentException;-><init>()V
+
+    throw v0
 .end method
 '''
 
@@ -320,6 +351,29 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["finish_tomte_grain"]["status"],
             "forced_default_false",
         )
+        self.assertIn(
+            "nop    # POCO F5: accept Xiaomi sensor-ID mapping",
+            patched,
+        )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"]["status"],
+            "accepted_existing_nonnull_gcam",
+        )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"]["native_check"],
+            "Gcam_AllSensorIdsUnique",
+        )
+
+    def test_gcam_init_patch_fails_closed_when_sensor_id_guard_shape_changes(self):
+        changed = GCAM_INIT_SAMPLE.replace(
+            "invoke-virtual {v5}, Lcom/google/googlex/gcam/Gcam;->g()Z",
+            "invoke-virtual {v5}, Lcom/google/googlex/gcam/Gcam;->f()Z",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "sensor-ID uniqueness check",
+        ):
+            patcher.patch_gcam_init_smali_text(changed)
 
     def test_gcam_init_patch_fails_closed_when_portrait_query_shape_changes(self):
         changed = GCAM_INIT_SAMPLE.replace(
