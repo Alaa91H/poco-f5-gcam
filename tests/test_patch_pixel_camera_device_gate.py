@@ -436,7 +436,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Gcam_AllSensorIdsUnique",
         )
         self.assertIn('const-string v24, "GCamTopCameraId"', patched)
-        self.assertIn('const-string v24, "GCamPhysicalCameraId"', patched)
+        self.assertIn('const-string v25, "GCamPhysicalCameraId"', patched)
         self.assertIn(
             "invoke-static/range {v24 .. v25}, Landroid/util/Log;->e",
             patched,
