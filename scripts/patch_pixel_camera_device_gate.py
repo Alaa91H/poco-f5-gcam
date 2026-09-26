@@ -2410,7 +2410,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
             f"found {actual!r}"
         )
 
-    indent = re.match(r"^(\\s*)", lines[set_cursor]).group(1)
+    indent = re.match(r"^(\s*)", lines[set_cursor]).group(1)
     injected = [
         "",
         f"{indent}# POCO F5: Xiaomi camera 0 does not advertise "
