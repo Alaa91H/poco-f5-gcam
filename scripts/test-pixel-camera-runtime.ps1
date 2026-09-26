@@ -281,6 +281,34 @@ $sensorIdUniquenessCrashObserved = (
     $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:\d+\)'
 )
 
+$cameraSourceTopLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)GCamTopCameraId'
+        } |
+        Select-Object -Last 100
+)
+$cameraSourceTopIds = New-Object System.Collections.Generic.List[string]
+foreach ($line in $cameraSourceTopLines) {
+    if ($line -match 'GCamTopCameraId\s*:\s*(?<camera>\S+)') {
+        $cameraSourceTopIds.Add($Matches["camera"])
+    }
+}
+
+$cameraSourcePhysicalLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)GCamPhysicalCameraId'
+        } |
+        Select-Object -Last 100
+)
+$cameraSourcePhysicalIds = New-Object System.Collections.Generic.List[string]
+foreach ($line in $cameraSourcePhysicalLines) {
+    if ($line -match 'GCamPhysicalCameraId\s*:\s*(?<camera>\S+)') {
+        $cameraSourcePhysicalIds.Add($Matches["camera"])
+    }
+}
+
 $sensorVectorLines = @(
     $logLines |
         Where-Object {
@@ -397,6 +425,10 @@ $report = [ordered]@{
         aionFatalCheckLines = $aionFatalCheckLines
         sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
         sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
+        cameraSourceTopLines = $cameraSourceTopLines
+        cameraSourceTopIds = @($cameraSourceTopIds)
+        cameraSourcePhysicalLines = $cameraSourcePhysicalLines
+        cameraSourcePhysicalIds = @($cameraSourcePhysicalIds)
         sensorVectorLines = $sensorVectorLines
         sensorVectorIds = @($sensorVectorIds)
         sensorVectorDuplicateIds = $sensorVectorDuplicateIds
@@ -458,6 +490,8 @@ Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserv
 Write-Host "AION missing library observed: $aionMissingLibraryObserved"
 Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
+Write-Host "Top-level Camera2 IDs: $($cameraSourceTopIds -join ', ')"
+Write-Host "Physical Camera2 IDs: $($cameraSourcePhysicalIds -join ', ')"
 Write-Host "Sensor vector IDs: $($sensorVectorIds -join ', ')"
 if ($sensorVectorDuplicateIds.Count -gt 0) {
     Write-Host "Duplicate sensor vector IDs:"
