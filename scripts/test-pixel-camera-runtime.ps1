@@ -99,7 +99,20 @@ $launch = Invoke-Adb -Arguments @(
     "1"
 ) -AllowFailure
 
-Start-Sleep -Seconds 2
+$launchPidSamples = New-Object System.Collections.Generic.List[string]
+$firstObservedPid = ""
+for ($attempt = 0; $attempt -lt 12; $attempt++) {
+    $samplePid = (Invoke-Adb -Arguments @("shell", "pidof", $PackageName) -AllowFailure).Text.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($samplePid)) {
+        $launchPidSamples.Add($samplePid)
+        if ([string]::IsNullOrWhiteSpace($firstObservedPid)) {
+            $firstObservedPid = $samplePid
+        }
+    }
+    Start-Sleep -Milliseconds 100
+}
+
+Start-Sleep -Milliseconds 800
 $earlyPid = (Invoke-Adb -Arguments @("shell", "pidof", $PackageName) -AllowFailure).Text.Trim()
 
 Start-Sleep -Seconds ([Math]::Max(1, $WaitSeconds - 2))
@@ -170,6 +183,27 @@ $rootCauseLines = @(
         } |
         Select-Object -Last 200
 )
+
+$fatalProcessPids = @(
+    $logLines |
+        ForEach-Object {
+            if ($_ -match ("Process:\s*" + [regex]::Escape($PackageName) + ",\s*PID:\s*(\d+)")) {
+                $Matches[1]
+            }
+        } |
+        Select-Object -Unique
+)
+$pidReplacementObserved = (
+    -not [string]::IsNullOrWhiteSpace($firstObservedPid) -and
+    -not [string]::IsNullOrWhiteSpace($finalPid) -and
+    $firstObservedPid -ne $finalPid
+)
+$fatalPidDiffersFromFinalPid = @(
+    $fatalProcessPids |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace($finalPid) -and $_ -ne $finalPid
+        }
+).Count -gt 0
 
 $tuningUncalibratedLines = @(
     $logLines |
@@ -269,9 +303,14 @@ $report = [ordered]@{
         commandExitCode = $launch.ExitCode
         commandOutput = $launch.Text
         launcherAccepted = $launcherAccepted
+        firstObservedPid = $firstObservedPid
+        launchPidSamples = @($launchPidSamples)
         earlyPid = $earlyPid
         finalPid = $finalPid
         processAliveAfterWait = $processAlive
+        pidReplacementObserved = $pidReplacementObserved
+        fatalProcessPids = $fatalProcessPids
+        fatalPidDiffersFromFinalPid = $fatalPidDiffersFromFinalPid
         topActivityMatchesPackage = $topActivityMatches
         resumedActivityLines = $resumedLines
     }
@@ -331,6 +370,9 @@ Write-Host ""
 Write-Host "Installed APK paths: $($installedApkPaths.Count)"
 Write-Host "Launcher accepted: $launcherAccepted"
 Write-Host "Process alive after $WaitSeconds seconds: $processAlive"
+Write-Host "First observed PID: $firstObservedPid"
+Write-Host "PID replacement observed: $pidReplacementObserved"
+Write-Host "Fatal PID differs from final PID: $fatalPidDiffersFromFinalPid"
 Write-Host "Fatal contexts: $($fatalEvidence.Count)"
 Write-Host "Root-cause lines: $($rootCauseLines.Count)"
 Write-Host "GCam tuning state: $tuningState"
