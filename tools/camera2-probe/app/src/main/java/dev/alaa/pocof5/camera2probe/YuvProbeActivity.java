@@ -310,9 +310,13 @@ public final class YuvProbeActivity extends Activity {
                         sessionMatrixRef.set(buildSessionSupportMatrix(camera, map, reader));
                     } catch (Exception e) {
                         JSONArray matrixError = new JSONArray();
-                        matrixError.put(new JSONObject()
-                                .put("name", "matrix_probe_error")
-                                .put("error", e.toString()));
+                        try {
+                            matrixError.put(new JSONObject()
+                                    .put("name", "matrix_probe_error")
+                                    .put("error", e.toString()));
+                        } catch (Exception ignored) {
+                            matrixError.put("matrix_probe_error: " + e);
+                        }
                         sessionMatrixRef.set(matrixError);
                     }
                     try {
