@@ -426,8 +426,25 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["status"],
-            "remapped_top_level_logical_entries",
+            "remapped_logical_and_filtered_duplicate_aliases",
         )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"][
+                "duplicate_alias_camera_ids_excluded_from_gcam_vector"
+            ],
+            ["3", "5", "6"],
+        )
+        self.assertEqual(
+            metadata["sensor_id_uniqueness"]["expected_kept_camera_ids"],
+            ["0", "2", "4", "1"],
+        )
+        self.assertTrue(
+            metadata["sensor_id_uniqueness"]["camera2_enumeration_unchanged"],
+        )
+        self.assertIn(":poco_top_level_alias_done", patched)
+        self.assertIn('const-string v25, "3"', patched)
+        self.assertIn('const-string v25, "5"', patched)
+        self.assertIn('const-string v25, "6"', patched)
         self.assertTrue(
             metadata["sensor_id_uniqueness"]["native_check_preserved"],
         )
