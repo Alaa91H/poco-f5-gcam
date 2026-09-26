@@ -2370,6 +2370,8 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "method": signature,
         "tag": "GCamSessionParamKey",
         "behavior_changed": False,
+        "scratch_register": "v15",
+        "scratch_liveness": "verified unused after key-name lookup",
         "source": "Lve.g CaptureRequest.Key map before session configuration",
     }
 
