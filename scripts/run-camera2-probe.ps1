@@ -6,8 +6,8 @@ param(
     [string]$Package = "dev.alaa.pocof5.camera2probe",
     [switch]$Build,
     [switch]$YuvRuntime,
-    [int]$TimeoutSeconds = 30,
-    [int]$YuvTimeoutSeconds = 60
+    [int]$TimeoutSeconds = 120,
+    [int]$YuvTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +16,8 @@ Set-StrictMode -Version Latest
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
 $ReportRelativePath = "files/camera2-report.json"
+$StatusRelativePath = "files/camera2-probe-status.json"
+$ErrorRelativePath = "files/camera2-probe-error.txt"
 $YuvReportRelativePath = "files/yuv-runtime-report.json"
 
 function Fail([string]$Message) {
@@ -112,6 +114,9 @@ else {
 $adbPrefix = @("-s", $Serial)
 
 Write-Host "Installing Camera2 probe as package $Package..."
+# A clean install prevents a stale probe package from masking an accidentally
+# supplied app-debug.apk that belongs to a different Android application.
+Invoke-Adb -Arguments @($adbPrefix + @("uninstall", $Package)) -AllowFailure | Out-Null
 $install = Invoke-Adb -Arguments @($adbPrefix + @("install", "-r", $ApkPath)) -AllowFailure
 if ($install.ExitCode -ne 0) {
     Fail ("APK installation failed." + [Environment]::NewLine + $install.Text)
@@ -120,9 +125,27 @@ if (-not [string]::IsNullOrWhiteSpace($install.Text)) {
     Write-Host $install.Text
 }
 
+$packageCheck = Invoke-Adb -Arguments @(
+    $adbPrefix + @("shell", "pm", "path", $Package)
+) -AllowFailure
+if ($packageCheck.ExitCode -ne 0 -or
+        [string]::IsNullOrWhiteSpace($packageCheck.Text) -or
+        $packageCheck.Text -notmatch "^package:") {
+    Fail (
+        "The supplied APK installed successfully, but it is not package '$Package'." +
+        [Environment]::NewLine +
+        "Use the camera2-probe-debug artifact, not another app-debug.apk."
+    )
+}
+
 Write-Host "Launching probe and generating report..."
 Invoke-Adb -Arguments @($adbPrefix + @("shell", "am", "force-stop", $Package)) -AllowFailure | Out-Null
-Invoke-Adb -Arguments @($adbPrefix + @("shell", "run-as", $Package, "rm", "-f", $ReportRelativePath)) -AllowFailure | Out-Null
+Invoke-Adb -Arguments @(
+    $adbPrefix + @(
+        "shell", "run-as", $Package, "rm", "-f",
+        $ReportRelativePath, $StatusRelativePath, $ErrorRelativePath
+    )
+) -AllowFailure | Out-Null
 $launch = Invoke-Adb -Arguments @(
     $adbPrefix + @(
         "shell", "am", "start", "-W",
@@ -148,7 +171,84 @@ do {
 } while ((Get-Date) -lt $deadline)
 
 if (-not $ready) {
-    Fail "Timed out waiting for the Camera2 report after $TimeoutSeconds seconds. Open the app on the phone and check its status."
+    $failureTimestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $failureDir = Join-Path $OutputRoot ("failed-" + $failureTimestamp)
+    New-Item -ItemType Directory -Path $failureDir -Force | Out-Null
+    $utf8NoBomFailure = New-Object System.Text.UTF8Encoding($false)
+
+    $statusExport = Invoke-Adb -Arguments @(
+        $adbPrefix + @("exec-out", "run-as", $Package, "cat", $StatusRelativePath)
+    ) -AllowFailure -StdoutOnly
+    if ($statusExport.ExitCode -eq 0 -and
+            -not [string]::IsNullOrWhiteSpace($statusExport.Text)) {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $failureDir "camera2-probe-status.json"),
+            $statusExport.Text + [Environment]::NewLine,
+            $utf8NoBomFailure
+        )
+    }
+
+    $errorExport = Invoke-Adb -Arguments @(
+        $adbPrefix + @("exec-out", "run-as", $Package, "cat", $ErrorRelativePath)
+    ) -AllowFailure -StdoutOnly
+    if ($errorExport.ExitCode -eq 0 -and
+            -not [string]::IsNullOrWhiteSpace($errorExport.Text)) {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $failureDir "camera2-probe-error.txt"),
+            $errorExport.Text + [Environment]::NewLine,
+            $utf8NoBomFailure
+        )
+    }
+
+    $packageDump = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "dumpsys", "package", $Package)
+    ) -AllowFailure
+    [System.IO.File]::WriteAllText(
+        (Join-Path $failureDir "package-dump.txt"),
+        $packageDump.Text + [Environment]::NewLine,
+        $utf8NoBomFailure
+    )
+
+    $activityDump = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "dumpsys", "activity", "activities")
+    ) -AllowFailure
+    $activityLines = @(
+        $activityDump.Text -split "\r?\n" |
+            Where-Object {
+                $_ -match [regex]::Escape($Package) -or
+                $_ -match "mResumedActivity|topResumedActivity"
+            }
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $failureDir "activity-dump.txt"),
+        ($activityLines -join [Environment]::NewLine) + [Environment]::NewLine,
+        $utf8NoBomFailure
+    )
+
+    $logcat = Invoke-Adb -Arguments @(
+        $adbPrefix + @("logcat", "-d", "-v", "threadtime", "-t", "1200")
+    ) -AllowFailure
+    $logLines = @(
+        $logcat.Text -split "\r?\n" |
+            Where-Object {
+                $_ -match [regex]::Escape($Package) -or
+                $_ -match "AndroidRuntime|CameraManager|CameraService|camera2probe"
+            }
+    )
+    [System.IO.File]::WriteAllText(
+        (Join-Path $failureDir "logcat.txt"),
+        ($logLines -join [Environment]::NewLine) + [Environment]::NewLine,
+        $utf8NoBomFailure
+    )
+
+    Write-Host ""
+    Write-Host "Camera2 probe diagnostics:"
+    Write-Host $failureDir
+    Fail (
+        "Timed out waiting for the Camera2 report after $TimeoutSeconds seconds." +
+        [Environment]::NewLine +
+        "Diagnostic files were saved under '$failureDir'."
+    )
 }
 
 $reportExport = Invoke-Adb -Arguments @(
