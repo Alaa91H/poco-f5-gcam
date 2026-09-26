@@ -372,7 +372,9 @@ public final class YuvProbeActivity extends Activity {
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
-                    errorRef.compareAndSet(null, "CameraDevice error " + error);
+                    errorRef.compareAndSet(
+                            null,
+                            "CameraDevice error " + error + " (" + cameraErrorName(error) + ")");
                     done.countDown();
                 }
             }, cameraHandler);
@@ -660,6 +662,23 @@ public final class YuvProbeActivity extends Activity {
             }
         }
         return copy[copy.length - 1];
+    }
+
+    private static String cameraErrorName(int error) {
+        switch (error) {
+            case CameraDevice.StateCallback.ERROR_CAMERA_IN_USE:
+                return "ERROR_CAMERA_IN_USE";
+            case CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE:
+                return "ERROR_MAX_CAMERAS_IN_USE";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DISABLED:
+                return "ERROR_CAMERA_DISABLED";
+            case CameraDevice.StateCallback.ERROR_CAMERA_DEVICE:
+                return "ERROR_CAMERA_DEVICE";
+            case CameraDevice.StateCallback.ERROR_CAMERA_SERVICE:
+                return "ERROR_CAMERA_SERVICE";
+            default:
+                return "UNKNOWN_CAMERA_ERROR";
+        }
     }
 
     private static String utcNow() {
