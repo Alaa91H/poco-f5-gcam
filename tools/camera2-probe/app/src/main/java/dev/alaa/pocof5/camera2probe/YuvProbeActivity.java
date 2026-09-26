@@ -602,7 +602,7 @@ public final class YuvProbeActivity extends Activity {
             return;
         }
 
-        if (android.os.Build.VERSION.SDK_INT < 28) {
+        if (android.os.Build.VERSION.SDK_INT < 29) {
             item.put("supported", JSONObject.NULL);
             matrix.put(item);
             return;
