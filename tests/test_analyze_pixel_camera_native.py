@@ -35,6 +35,13 @@ def minimal_elf_with_tuning_marker() -> bytes:
     blob[0x2000 : 0x2000 + len(marker)] = marker
     struct.pack_into("<I", blob, 0x1000, 0xB0000000)
     struct.pack_into("<I", blob, 0x1004, 0x91000000)
+
+    # Simulate a pointer table entry to the string plus code referencing
+    # that pointer slot through ADRP+ADD. Real Android ELF libraries often
+    # reach logging strings through relocated data rather than direct ADRP+ADD.
+    struct.pack_into("<Q", blob, 0x2200, 0x2000)
+    struct.pack_into("<I", blob, 0x1010, 0xB0000001)
+    struct.pack_into("<I", blob, 0x1014, 0x91080021)
     return bytes(blob)
 
 
@@ -78,9 +85,22 @@ class PixelCameraNativeAnalyzerTests(unittest.TestCase):
                 patcher.TUNING_DIAGNOSTIC_STRINGS[0]
             ]
             self.assertEqual(unknown["count"], 1)
+            occurrence = unknown["occurrences"][0]
             self.assertEqual(
-                unknown["occurrences"][0]["xref_offsets"],
+                occurrence["xref_offsets"],
                 ["0x1000", "0x1004"],
+            )
+            self.assertIn(
+                {
+                    "kind": "raw_u64",
+                    "file_offset": "0x2200",
+                    "vaddr": "0x2200",
+                },
+                occurrence["pointer_slots"],
+            )
+            self.assertEqual(
+                occurrence["resolved_xref_offsets"],
+                ["0x1000", "0x1004", "0x1010", "0x1014"],
             )
 
     def test_rejects_duplicate_native_library_matches(self):
