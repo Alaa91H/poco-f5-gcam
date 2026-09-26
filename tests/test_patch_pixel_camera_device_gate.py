@@ -129,6 +129,16 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 
     move-object/from16 v24, v5
 
+    iget-object v5, v1, Landroid/content/pm/PackageInfo;->packageName:Ljava/lang/String;
+
+    invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->q(Ljava/lang/String;)V
+
+    iget-object v5, v1, Landroid/content/pm/PackageInfo;->versionName:Ljava/lang/String;
+
+    invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->r(Ljava/lang/String;)V
+
+    invoke-virtual {v7}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;
+
     invoke-virtual {v14, v7}, Lcom/google/googlex/gcam/StaticMetadataVector;->c(Lcom/google/googlex/gcam/StaticMetadata;)V
 
     move-object/from16 v5, v24
