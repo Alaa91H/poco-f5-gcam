@@ -947,11 +947,11 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 
     def test_xiaomi_client_name_injection_fails_closed_if_v15_becomes_live(self):
         changed = RP_SAMPLE.replace(
-            ":cond_119\n"
-            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;",
-            ":cond_119\n"
+            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;\n\n"
+            "    invoke-interface {v5}, Ljava/util/Map;->entrySet()Ljava/util/Set;",
+            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;\n\n"
             "    const/4 v15, 0x1\n\n"
-            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;",
+            "    invoke-interface {v5}, Ljava/util/Map;->entrySet()Ljava/util/Set;",
         )
         with self.assertRaisesRegex(
             patcher.PatchError,
