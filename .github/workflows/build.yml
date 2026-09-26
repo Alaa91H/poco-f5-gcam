@@ -197,42 +197,6 @@ jobs:
           path: ${{ matrix.project }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Send Camera2 probe APK to Telegram
-        if: matrix.id == 'camera2-probe' && github.event_name != 'pull_request'
-        shell: bash
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          set -euo pipefail
-
-          APK_PATH="${{ matrix.project }}/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -f "$APK_PATH" ]; then
-            echo "::error::APK not found at $APK_PATH"
-            exit 1
-          fi
-
-          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
-            echo "::warning::Telegram delivery skipped because TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured."
-            exit 0
-          fi
-
-          CAPTION="$(printf '✅ Build succeeded\nRepository: %s\nBranch: %s\nCommit: %s' \
-            "$GITHUB_REPOSITORY" \
-            "$GITHUB_REF_NAME" \
-            "${GITHUB_SHA:0:7}")"
-
-          if curl --silent --show-error --fail-with-body --retry 3 \
-            --request POST \
-            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-            --form "chat_id=${TELEGRAM_CHAT_ID}" \
-            --form "document=@${APK_PATH};type=application/vnd.android.package-archive" \
-            --form "caption=${CAPTION}"; then
-            echo "APK sent to Telegram successfully."
-          else
-            echo "::warning::Telegram delivery failed; keeping the successful build and continuing CI."
-          fi
 
       - name: Verify Camera2 custom package build
         if: matrix.id == 'camera2-probe'
@@ -368,8 +332,8 @@ jobs:
 
       - name: Download latest compatible Pixel Camera
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -396,8 +360,8 @@ jobs:
 
       - name: Install APK signature verifier
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -410,8 +374,8 @@ jobs:
 
       - name: Audit downloaded Pixel Camera bundle
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -441,8 +405,8 @@ jobs:
 
       - name: Validate split dependency graph
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -487,8 +451,8 @@ jobs:
 
       - name: Upload original Google-signed Pixel Camera bundle
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         uses: actions/upload-artifact@v7
         with:
           name: poco-f5-pixel-camera-original-splits-${{ steps.selected.outputs.version }}
@@ -721,8 +685,8 @@ jobs:
       - name: Prepare official Telegram Bot API source
         id: telegram-source
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         run: |
           set -euo pipefail
@@ -747,8 +711,8 @@ jobs:
       - name: Restore Telegram Bot API binary cache
         id: telegram-cache
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/telegram-bot-api-bin
@@ -757,8 +721,8 @@ jobs:
       - name: Build official Telegram Local Bot API server
         if: >-
           (
-            github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+            github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -787,8 +751,8 @@ jobs:
       - name: Save Telegram Bot API binary cache
         if: >-
           (
-            github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+            github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -798,8 +762,8 @@ jobs:
 
       - name: Select Telegram Bot API binary
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.telegram-source.outputs.sha }}
@@ -815,10 +779,10 @@ jobs:
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
           echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      - name: Deliver original Google-signed Pixel Camera bundle through Local Bot API
+      - name: Deliver modified POCO F5 Pixel Camera APK through Local Bot API
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -850,7 +814,7 @@ jobs:
             exit 1
           fi
 
-          PACKAGE_PATH="$PIXEL_CAMERA_SOURCE"
+          PACKAGE_PATH="$STANDALONE_APK"
           VERSION="${{ steps.selected.outputs.version }}"
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
           SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
@@ -922,7 +886,7 @@ jobs:
             exit 1
           fi
 
-          CAPTION="$(printf '✅ POCO F5 Pixel Camera original split bundle\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: original Google certificate\nInstall: APKMirror Installer/SAI or scripts/install-pixel-camera-splits.ps1' "$VERSION" "$SIZE" "$SHA256")"
+          CAPTION="$(printf '✅ POCO F5 Pixel Camera modified APK\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s\nPackage: com.google.android.GoogleCamera\nInstall: single APK' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
 
           curl --silent --show-error --fail-with-body \
             --retry 3 --retry-all-errors --max-time 1800 \
@@ -963,7 +927,7 @@ jobs:
 
           {
             echo ""
-            echo "### Telegram original split-bundle delivery"
+            echo "### Telegram modified standalone APK delivery"
             echo ""
             printf -- '- File: `%s`\n' "$PACKAGE_NAME"
             printf -- '- Size: `%s bytes`\n' "$SIZE"
@@ -972,8 +936,8 @@ jobs:
 
       - name: Upload Pixel Camera audit report
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          github.event_name == 'workflow_dispatch' &&
+          inputs.build_experimental_standalone == true
         uses: actions/upload-artifact@v7
         with:
           name: pixel-camera-audit-${{ steps.selected.outputs.version }}
