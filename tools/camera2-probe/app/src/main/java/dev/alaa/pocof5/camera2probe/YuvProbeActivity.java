@@ -366,12 +366,14 @@ public final class YuvProbeActivity extends Activity {
 
                 @Override
                 public void onDisconnected(CameraDevice camera) {
+                    deviceRef.compareAndSet(null, camera);
                     errorRef.compareAndSet(null, "Camera disconnected");
                     done.countDown();
                 }
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
+                    deviceRef.compareAndSet(null, camera);
                     errorRef.compareAndSet(
                             null,
                             "CameraDevice error " + error + " (" + cameraErrorName(error) + ")");
