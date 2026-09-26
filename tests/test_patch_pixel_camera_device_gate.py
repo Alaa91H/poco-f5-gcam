@@ -693,12 +693,23 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
             patched,
         )
+        self.assertGreater(
+            patched.index('const-string v15, "GCamSessionParamKey"'),
+            patched.index("if-eqz v14, :cond_123"),
+        )
         self.assertLess(
             patched.index('const-string v15, "GCamSessionParamKey"'),
             patched.index(
-                "invoke-interface {v9, v14}, "
-                "Ljava/util/List;->contains(Ljava/lang/Object;)Z"
+                "invoke-static {v0, v13, v6}, "
+                "Lvz;->x(Landroid/hardware/camera2/CaptureRequest$Builder;"
+                "Ljava/lang/Object;Ljava/lang/Object;)V"
             ),
+        )
+        self.assertIn(
+            "invoke-virtual {v13}, "
+            "Landroid/hardware/camera2/CaptureRequest$Key;->getName()"
+            "Ljava/lang/String;",
+            patched,
         )
         self.assertEqual(metadata["status"], "diagnostic_logging")
         self.assertEqual(metadata["class"], "Lrp;")
@@ -708,6 +719,8 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["scratch_liveness"],
             "verified unused after key-name lookup",
         )
+        self.assertTrue(metadata["logs_only_applied_session_parameters"])
+        self.assertIn("Lpi.d()", metadata["source"])
         self.assertFalse(metadata["behavior_changed"])
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
