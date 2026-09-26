@@ -152,25 +152,41 @@ MTA_SAMPLE = r'''.class public final Lmta;
 '''
 
 
-UA_SAMPLE = r'''.class public final synthetic Lua;
+UG_SAMPLE = r'''.class public final Lug;
 .super Ljava/lang/Object;
 
-.method public final fe(Ljava/lang/Object;)Ljava/lang/Object;
-    .registers 10
+.method public final a(Ljava/lang/String;IJLsz;Lsb;Ladel;)Ljava/lang/Object;
+    .registers 28
 
-    invoke-static {v6}, Landroid/os/Trace;->beginSection(Ljava/lang/String;)V
+    move-object/from16 v0, p0
 
-    invoke-virtual {v3}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
+    move-object/from16 v1, p1
 
-    check-cast v5, Landroid/hardware/camera2/CameraDevice$StateCallback;
+    move-object/from16 v2, p7
 
-    check-cast v0, Ljava/lang/String;
+    instance-of v3, v2, Ltz;
 
-    invoke-virtual {v3, v0, p1, v5}, Landroid/hardware/camera2/CameraManager;->openCamera(Ljava/lang/String;Ljava/util/concurrent/Executor;Landroid/hardware/camera2/CameraDevice$StateCallback;)V
+    if-eqz v3, :cond_19
 
-    invoke-static {}, Landroid/os/Trace;->endSection()V
+    :cond_4e
+    invoke-static {v2}, Laaax;->ac(Ljava/lang/Object;)V
 
-    return-object v1
+    iget-object v2, v0, Lug;->i:Ladvz;
+
+    iput-object v1, v3, Ltz;->g:Ljava/lang/String;
+
+    move-object v10, v1
+
+    :goto_8f
+    new-instance v9, Lrr;
+
+    invoke-direct/range {v9 .. v19}, Lrr;-><init>(Ljava/lang/String;Lpi;IJLjom;Lsz;Lufk;Ldan;Lsb;)V
+
+    new-instance v1, Luf;
+
+    invoke-direct {v1, v0, v10, v9, v8}, Luf;-><init>(Lug;Ljava/lang/String;Lrr;Ladel;)V
+
+    return-object v4
 .end method
 '''
 
@@ -519,19 +535,21 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         ):
             patcher.patch_onecamera_missing_request_key_smali_text(changed)
 
-    def test_redirects_xiaomi_logical_rear_open_to_physical_rear(self):
+    def test_redirects_xiaomi_logical_rear_before_callback_creation(self):
         patched, metadata = patcher.patch_onecamera_open_camera_fallback_smali_text(
-            UA_SAMPLE
+            UG_SAMPLE
         )
 
-        self.assertIn('const-string v6, "4"', patched)
-        self.assertIn('const-string v0, "0"', patched)
+        self.assertIn('const-string v9, "4"', patched)
+        self.assertIn('const-string v1, "0"', patched)
         self.assertIn(":poco_physical_rear_camera_ready", patched)
-        self.assertIn(
-            "CameraManager;->openCamera(Ljava/lang/String;"
-            "Ljava/util/concurrent/Executor;"
-            "Landroid/hardware/camera2/CameraDevice$StateCallback;)V",
-            patched,
+        self.assertLess(
+            patched.index(":poco_physical_rear_camera_ready"),
+            patched.index("iput-object v1, v3, Ltz;->g:Ljava/lang/String;"),
+        )
+        self.assertLess(
+            patched.index(":poco_physical_rear_camera_ready"),
+            patched.index("Lrr;-><init>"),
         )
         self.assertEqual(
             metadata["status"],
@@ -539,18 +557,18 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(metadata["requested_camera_id"], "4")
         self.assertEqual(metadata["fallback_camera_id"], "0")
+        self.assertTrue(metadata["callback_expected_id_remapped"])
+        self.assertTrue(metadata["metadata_lookup_id_remapped"])
         self.assertTrue(metadata["other_camera_ids_unchanged"])
 
-    def test_rear_open_fallback_fails_closed_if_call_shape_changes(self):
-        changed = UA_SAMPLE.replace(
-            "invoke-virtual {v3, v0, p1, v5}, "
-            "Landroid/hardware/camera2/CameraManager;->openCamera",
-            "invoke-virtual {v3, v0, p1, v5}, "
-            "Landroid/hardware/camera2/CameraManager;->openCameraForUid",
+    def test_rear_open_fallback_fails_closed_if_camera_flow_changes(self):
+        changed = UG_SAMPLE.replace(
+            "move-object/from16 v1, p1",
+            "move-object/from16 v5, p1",
         )
         with self.assertRaisesRegex(
             patcher.PatchError,
-            "exactly one executor CameraManager.openCamera",
+            "initial camera ID copy",
         ):
             patcher.patch_onecamera_open_camera_fallback_smali_text(changed)
 
