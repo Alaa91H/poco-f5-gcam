@@ -82,6 +82,12 @@ if ($installedApkPaths.Count -eq 0) {
     throw "Android did not report any installed APK path for $PackageName."
 }
 
+# Wake the display before launching. Android 17 can classify a receiver-started
+# service as background work when the device is sleeping, which can obscure the
+# real camera startup result with BackgroundServiceStartNotAllowedException.
+Invoke-Adb -Arguments @("shell", "input", "keyevent", "KEYCODE_WAKEUP") -AllowFailure | Out-Null
+Start-Sleep -Milliseconds 500
+
 Invoke-Adb -Arguments @("shell", "am", "force-stop", $PackageName) -AllowFailure | Out-Null
 Invoke-Adb -Arguments @("logcat", "-c") -AllowFailure | Out-Null
 
@@ -127,7 +133,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -160,7 +166,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond)"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION)"
         } |
         Select-Object -Last 200
 )
@@ -204,6 +210,31 @@ elseif ($tuningDefaultsObserved) {
 else {
     "not_observed"
 }
+
+$keepAliveBackgroundCrashLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match "(?i)(KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException)"
+        } |
+        Select-Object -Last 50
+)
+$aionMissingLibraryLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)lib_aion_buffer\.so.*(not found|dlopen failed)'
+        } |
+        Select-Object -Last 50
+)
+$aionFatalCheckLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(aion_context\.cc.*Check failed: valid_|Check failed: valid_)'
+        } |
+        Select-Object -Last 50
+)
+$keepAliveBackgroundCrashObserved = $keepAliveBackgroundCrashLines.Count -gt 0
+$aionMissingLibraryObserved = $aionMissingLibraryLines.Count -gt 0
+$aionFatalCheckObserved = $aionFatalCheckLines.Count -gt 0
 
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
@@ -253,6 +284,14 @@ $report = [ordered]@{
         abortLines = $tuningAbortLines
         defaultsLines = $tuningDefaultsLines
     }
+    compatibilityAnalysis = [ordered]@{
+        keepAliveBackgroundCrashObserved = $keepAliveBackgroundCrashObserved
+        keepAliveBackgroundCrashLines = $keepAliveBackgroundCrashLines
+        aionMissingLibraryObserved = $aionMissingLibraryObserved
+        aionMissingLibraryLines = $aionMissingLibraryLines
+        aionFatalCheckObserved = $aionFatalCheckObserved
+        aionFatalCheckLines = $aionFatalCheckLines
+    }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
         fatalContexts = @($fatalEvidence)
@@ -297,6 +336,9 @@ Write-Host "Root-cause lines: $($rootCauseLines.Count)"
 Write-Host "GCam tuning state: $tuningState"
 Write-Host "Uncalibrated fallback observed: $tuningFallbackObserved"
 Write-Host "Tuning abort observed: $tuningAbortObserved"
+Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserved"
+Write-Host "AION missing library observed: $aionMissingLibraryObserved"
+Write-Host "AION fatal check observed: $aionFatalCheckObserved"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
