@@ -38,6 +38,8 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final String REPORT_NAME = "camera2-report.json";
+    private static final String STATUS_NAME = "camera2-probe-status.json";
+    private static final String ERROR_NAME = "camera2-probe-error.txt";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private TextView statusText;
@@ -63,9 +65,11 @@ public final class MainActivity extends Activity {
     private void generateReport() {
         generateButton.setEnabled(false);
         statusText.setText("Generating Camera2 report...");
+        writeStatus("scheduled", null);
 
         executor.execute(() -> {
             try {
+                writeStatus("building", null);
                 JSONObject report = Camera2Report.build(this);
                 File output = new File(getFilesDir(), REPORT_NAME);
 
@@ -76,6 +80,7 @@ public final class MainActivity extends Activity {
                     writer.write("\n");
                 }
 
+                writeStatus("complete", output.getAbsolutePath());
                 runOnUiThread(() -> {
                     statusText.setText(
                             "Report generated successfully.\n\n" +
@@ -84,13 +89,49 @@ public final class MainActivity extends Activity {
                     );
                     generateButton.setEnabled(true);
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                writeFailure(e);
+                writeStatus("failed", e.toString());
                 runOnUiThread(() -> {
                     statusText.setText("Report generation failed:\n" + e);
                     generateButton.setEnabled(true);
                 });
             }
         });
+    }
+
+    private void writeStatus(String state, String detail) {
+        try {
+            JSONObject status = new JSONObject();
+            status.put("state", state);
+            status.put("updatedAtUtc", Camera2Report.utcNow());
+            if (detail != null) {
+                status.put("detail", detail);
+            }
+            File output = new File(getFilesDir(), STATUS_NAME);
+            try (OutputStreamWriter writer = new OutputStreamWriter(
+                    new FileOutputStream(output, false),
+                    StandardCharsets.UTF_8)) {
+                writer.write(status.toString(2));
+                writer.write("\n");
+            }
+        } catch (Throwable ignored) {
+            // Best-effort diagnostics must never mask the actual probe failure.
+        }
+    }
+
+    private void writeFailure(Throwable error) {
+        try {
+            File output = new File(getFilesDir(), ERROR_NAME);
+            try (java.io.PrintWriter writer = new java.io.PrintWriter(
+                    new OutputStreamWriter(
+                            new FileOutputStream(output, false),
+                            StandardCharsets.UTF_8))) {
+                error.printStackTrace(writer);
+            }
+        } catch (Throwable ignored) {
+            // Best-effort diagnostics must never mask the actual probe failure.
+        }
     }
 
     @Override
