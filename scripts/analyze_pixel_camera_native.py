@@ -66,14 +66,18 @@ def _vaddr_to_file_offset(
     return None
 
 
-def _read_c_string_context(data: bytes, offset: int, radius: int = 384) -> str:
+def _c_string_context(
+    data: bytes,
+    offset: int,
+    radius: int = 384,
+) -> tuple[int, str]:
     lower = max(0, offset - radius)
     upper = min(len(data), offset + radius)
     start = data.rfind(b"\x00", lower, offset)
     start = lower if start < 0 else start + 1
     end = data.find(b"\x00", offset, upper)
     end = upper if end < 0 else end
-    return data[start:end].decode("utf-8", errors="replace")
+    return start, data[start:end].decode("utf-8", errors="replace")
 
 
 def _raw_pointer_slots(
@@ -258,6 +262,7 @@ def _enrich_tuning_analysis(
 
     segments = _elf64_load_segments(data)
     occurrence_targets: dict[int, dict[str, Any]] = {}
+    occurrence_extra_targets: dict[int, set[int]] = {}
     slot_targets: set[int] = set()
 
     for entry in tuning["strings"].values():
@@ -265,13 +270,29 @@ def _enrich_tuning_analysis(
             target_vaddr = int(occurrence["vaddr"], 16)
             occurrence_targets[target_vaddr] = occurrence
             file_offset = int(occurrence["file_offset"], 16)
-            occurrence["c_string_context"] = _read_c_string_context(
+            c_string_start, c_string_context = _c_string_context(
                 data,
                 file_offset,
             )
+            occurrence["c_string_context"] = c_string_context
+            occurrence["c_string_start_file_offset"] = f"0x{c_string_start:x}"
+            c_string_start_vaddr = _file_offset_to_vaddr(
+                c_string_start,
+                segments,
+            )
+            extra_targets: set[int] = set()
+            if c_string_start_vaddr is not None:
+                occurrence["c_string_start_vaddr"] = (
+                    f"0x{c_string_start_vaddr:x}"
+                )
+                extra_targets.add(c_string_start_vaddr)
+            occurrence_extra_targets[target_vaddr] = extra_targets
 
-            slots = _raw_pointer_slots(data, target_vaddr, segments)
-            slots.extend(_rela_slots(data, target_vaddr, segments))
+            slot_source_targets = {target_vaddr} | extra_targets
+            slots: list[dict[str, Any]] = []
+            for slot_source in slot_source_targets:
+                slots.extend(_raw_pointer_slots(data, slot_source, segments))
+                slots.extend(_rela_slots(data, slot_source, segments))
 
             unique: dict[int, dict[str, Any]] = {}
             for slot in slots:
@@ -280,12 +301,30 @@ def _enrich_tuning_analysis(
                 slot_targets.add(slot_vaddr)
             occurrence["pointer_slots"] = list(unique.values())
 
-    all_targets = set(occurrence_targets) | slot_targets
+    direct_targets = set(occurrence_targets)
+    for targets in occurrence_extra_targets.values():
+        direct_targets.update(targets)
+    all_targets = direct_targets | slot_targets
     refs = _aarch64_refs_to_targets(data, all_targets, segments)
 
     for target_vaddr, occurrence in occurrence_targets.items():
         resolved = set(occurrence.get("xref_offsets") or [])
-        resolved.update(f"0x{off:x}" for off in refs.get(target_vaddr, []))
+        direct_source_targets = {target_vaddr} | occurrence_extra_targets.get(
+            target_vaddr,
+            set(),
+        )
+        direct_target_refs: list[dict[str, Any]] = []
+        for direct_target in sorted(direct_source_targets):
+            offsets = refs.get(direct_target, [])
+            if offsets:
+                direct_target_refs.append(
+                    {
+                        "target_vaddr": f"0x{direct_target:x}",
+                        "xref_offsets": [f"0x{off:x}" for off in offsets],
+                    }
+                )
+            resolved.update(f"0x{off:x}" for off in offsets)
+        occurrence["resolved_direct_target_xrefs"] = direct_target_refs
 
         slot_refs: list[dict[str, Any]] = []
         for slot in occurrence.get("pointer_slots") or []:
