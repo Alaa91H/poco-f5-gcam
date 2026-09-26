@@ -25,6 +25,7 @@ try:
         PatchError,
         _elf64_load_segments,
         _instruction_window,
+        _verify_uncalibrated_tuning_branch,
         analyze_libgcam_tuning,
     )
 except ModuleNotFoundError:
@@ -33,6 +34,7 @@ except ModuleNotFoundError:
         PatchError,
         _elf64_load_segments,
         _instruction_window,
+        _verify_uncalibrated_tuning_branch,
         analyze_libgcam_tuning,
     )
 
@@ -445,6 +447,9 @@ def analyze_package(package: Path) -> dict[str, Any]:
             "sha256": sha256_bytes(library),
         },
         "tuning": tuning,
+        "uncalibrated_fallback_patch_verification": (
+            _verify_uncalibrated_tuning_branch(library)
+        ),
         "modifications_performed": False,
     }
 
