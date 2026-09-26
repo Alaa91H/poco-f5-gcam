@@ -7,7 +7,10 @@ classes*.dex file, redirects that rejection block to the existing common
 finalization path, and then hard-disables Tensor-only GXP/TPU/DarwiNN feature
 queries in the klm class. Real-device runtime evidence is then used to keep
 the native GCam InitParams provider from enabling almond TPU and Tomte grain
-during startup. PairIP and unrelated feature gates are untouched.
+during startup. Because the real Snapdragon runtime still enters the native
+DarwiNN/GXP delegate path, the exact same-version libgcastartup instructions
+that select that delegate are changed to the library's existing CPU/TFLite
+fallback. Model verification, PairIP, and unrelated feature gates are untouched.
 """
 
 from __future__ import annotations
@@ -33,6 +36,30 @@ GCAM_INIT_SYMBOLS = (
     ALMOND_TPU_SYMBOL.encode("utf-8"),
     TOMTE_GRAIN_SYMBOL.encode("utf-8"),
 )
+GCASTARTUP_LIBRARY = "lib/arm64-v8a/libgcastartup.so"
+# Exact AArch64 instructions for Pixel Camera 11.0.073.972752740.32.
+# These three patches only select the existing CPU/TFLite fallback and bypass
+# the DarwiNN/GXP branch. Model verification and unrelated native code are left intact.
+GXP_CPU_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
+    (
+        "force_cpu_tflite_interpreter",
+        0x352B5D0,
+        bytes.fromhex("41060054"),
+        bytes.fromhex("1f2003d5"),
+    ),
+    (
+        "force_non_tpu_delegate_type",
+        0x31DB540,
+        bytes.fromhex("0a05881a"),
+        bytes.fromhex("ea03082a"),
+    ),
+    (
+        "bypass_darwinn_assertion_branch",
+        0x352B6A0,
+        bytes.fromhex("41180054"),
+        bytes.fromhex("1f2003d5"),
+    ),
+)
 DEX_NAME_RE = re.compile(r"^classes(?:\d+)?\.dex$")
 LABEL_RE = re.compile(r"^\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$")
 BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
@@ -40,6 +67,78 @@ BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
 
 class PatchError(RuntimeError):
     pass
+
+
+def patch_native_bytes(
+    data: bytes,
+    *,
+    patches: tuple[tuple[str, int, bytes, bytes], ...] = GXP_CPU_PATCHES,
+) -> tuple[bytes, list[dict[str, Any]]]:
+    """Apply exact-offset native patches with strict byte verification."""
+
+    mutable = bytearray(data)
+    report: list[dict[str, Any]] = []
+
+    for name, offset, expected, replacement in patches:
+        end = offset + len(expected)
+        if len(expected) != len(replacement):
+            raise PatchError(f"{name}: expected/replacement length mismatch")
+        if end > len(mutable):
+            raise PatchError(
+                f"{name}: offset 0x{offset:x} exceeds native library size "
+                f"{len(mutable)}"
+            )
+
+        actual = bytes(mutable[offset:end])
+        if actual == replacement:
+            status = "already_patched"
+        elif actual == expected:
+            mutable[offset:end] = replacement
+            status = "patched"
+        else:
+            raise PatchError(
+                f"{name}: native bytes at 0x{offset:x} changed; "
+                f"expected {expected.hex()}, found {actual.hex()}"
+            )
+
+        report.append(
+            {
+                "name": name,
+                "offset": f"0x{offset:x}",
+                "expected_hex": expected.hex(),
+                "replacement_hex": replacement.hex(),
+                "status": status,
+            }
+        )
+
+    return bytes(mutable), report
+
+
+def patch_gcastartup_cpu_fallback(
+    archive: zipfile.ZipFile,
+    root: Path,
+) -> tuple[str, Path, dict[str, Any]]:
+    """Patch only the verified GXP/DarwiNN delegate-selection instructions."""
+
+    names = [name for name in archive.namelist() if name == GCASTARTUP_LIBRARY]
+    if len(names) != 1:
+        raise PatchError(
+            f"expected exactly one {GCASTARTUP_LIBRARY}; found {len(names)}"
+        )
+
+    original = archive.read(GCASTARTUP_LIBRARY)
+    patched, instruction_report = patch_native_bytes(original)
+    output = root / "libgcastartup-cpu-fallback.so"
+    output.write_bytes(patched)
+
+    return GCASTARTUP_LIBRARY, output, {
+        "status": "patched",
+        "library": GCASTARTUP_LIBRARY,
+        "original_size": len(original),
+        "patched_size": len(patched),
+        "instructions": instruction_report,
+        "model_verification_bypass_performed": False,
+    }
 
 
 def run(command: list[str]) -> str:
@@ -697,6 +796,12 @@ def patch_apk(
                     ),
                 }
 
+            native_name, native_path, native_gxp_report = patch_gcastartup_cpu_fallback(
+                archive,
+                root,
+            )
+            replacements[native_name] = native_path
+
         replace_zip_members(source, output, replacements)
 
     with zipfile.ZipFile(output, "r") as archive:
@@ -722,6 +827,7 @@ def patch_apk(
             "target_dex": gcam_init_dex,
             **gcam_metadata,
         },
+        "native_gxp_cpu_fallback": native_gxp_report,
         "dex_command_tails": command_tails,
     }
 
