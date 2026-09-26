@@ -1,0 +1,119 @@
+name: Pixel Camera sensor ID metadata diagnostics
+
+on:
+  push:
+    paths:
+      - ".github/workflows/sensor-id-metadata-diagnostics.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download selected Pixel Camera bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json > "$RUNNER_TEMP/pixel-camera-download.json"
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          echo "PIXEL_CAMERA_SOURCE=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
+      - name: Download pinned baksmali
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          p=json.load(open("device/marble/standalone-apk-policy.json"))["toolchain"]["smali"]
+          print(p["baksmali_url"])
+          print(p["baksmali_sha256"])
+          PY
+          )
+          curl --fail --location --silent --show-error --retry 3 "${TOOL[0]}" -o "$RUNNER_TEMP/baksmali.jar"
+          echo "${TOOL[1]}  $RUNNER_TEMP/baksmali.jar" | sha256sum --check --strict
+
+      - name: Locate StaticMetadata sensor ID callsites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sensor-dex"
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/sensor-dex" <<'PY'
+          import io, json, re, sys, zipfile
+          from pathlib import Path
+
+          package=Path(sys.argv[1]); out=Path(sys.argv[2])
+          needles=[
+              b"StaticMetadata_sensor_id_set",
+              b"StaticMetadata_sensor_id_get",
+              b"StaticMetadataVector",
+          ]
+          dex_re=re.compile(r"^classes(?:\d+)?\.dex$")
+          matches=[]
+          def scan_zip(z, container):
+              for info in z.infolist():
+                  if not dex_re.fullmatch(info.filename):
+                      continue
+                  data=z.read(info)
+                  found=[n.decode() for n in needles if n in data]
+                  if "StaticMetadata_sensor_id_set" not in found:
+                      continue
+                  matches.append((container,info.filename,data,found))
+          with zipfile.ZipFile(package) as outer:
+              scan_zip(outer, package.name)
+              for info in outer.infolist():
+                  if not info.filename.lower().endswith(".apk"):
+                      continue
+                  raw=outer.read(info)
+                  if not zipfile.is_zipfile(io.BytesIO(raw)):
+                      continue
+                  with zipfile.ZipFile(io.BytesIO(raw)) as nested:
+                      scan_zip(nested, info.filename)
+          manifest=[]
+          for i,(container,dex,data,found) in enumerate(matches):
+              path=out/f"sensor-{i}.dex"
+              path.write_bytes(data)
+              manifest.append({"index":i,"container":container,"dex":dex,"size":len(data),"symbols":found})
+          (out/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+          print((out/"manifest.json").read_text())
+          if not matches:
+              raise SystemExit("no dex contains StaticMetadata_sensor_id_set")
+          PY
+
+          REPORT="$RUNNER_TEMP/sensor-id-metadata.txt"
+          : > "$REPORT"
+          for DEX in "$RUNNER_TEMP"/sensor-dex/sensor-*.dex; do
+            NAME="$(basename "$DEX" .dex)"
+            OUT="$RUNNER_TEMP/$NAME-smali"
+            java -jar "$RUNNER_TEMP/baksmali.jar" d "$DEX" -o "$OUT"
+            {
+              echo "=== $NAME: StaticMetadata_sensor_id_set callsites ==="
+              grep -R -n -B 70 -A 100 -F "StaticMetadata_sensor_id_set" "$OUT" || true
+              echo
+              echo "=== $NAME: StaticMetadata sensor-ID related calls ==="
+              grep -R -n -B 35 -A 60 -E "StaticMetadata_.*sensor|sensor_id" "$OUT" || true
+              echo
+            } >> "$REPORT"
+          done
+          sed -n '1,2200p' "$REPORT"
+
+      - name: Upload sensor ID diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-sensor-id-metadata-diagnostics
+          path: |
+            ${{ runner.temp }}/sensor-dex/manifest.json
+            ${{ runner.temp }}/sensor-id-metadata.txt
+          if-no-files-found: error
+          retention-days: 7
