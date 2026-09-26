@@ -16,6 +16,7 @@ fallback. Model verification, PairIP, and unrelated feature gates are untouched.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -38,6 +39,9 @@ GCAM_INIT_SYMBOLS = (
     TOMTE_GRAIN_SYMBOL.encode("utf-8"),
 )
 GCASTARTUP_LIBRARY = "lib/arm64-v8a/libgcastartup.so"
+GCASTARTUP_11_0_073_SHA256 = (
+    "34487551ea95b83b76ff41a742c83a6fb27f19ae07d3210139215313e3cacdbe"
+)
 TUNING_DIAGNOSTIC_STRINGS = (
     "Unknown device code",
     "Failed to get tuning for device code",
@@ -46,8 +50,8 @@ TUNING_DIAGNOSTIC_STRINGS = (
     "Using tuning defaults.",
 )
 # Exact AArch64 instructions for Pixel Camera 11.0.073.972752740.32.
-# These three patches only select the existing CPU/TFLite fallback and bypass
-# the DarwiNN/GXP branch. Model verification and unrelated native code are left intact.
+# These patches select existing fallback behavior only. They do not spoof a
+# Pixel model, bypass model verification, or synthesize camera tuning data.
 GXP_CPU_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
     (
         "force_cpu_tflite_interpreter",
@@ -68,6 +72,27 @@ GXP_CPU_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
         bytes.fromhex("1f2003d5"),
     ),
 )
+
+# libgcam stores an allow-uncalibrated byte at [x22 + 0x2c8]. For an unknown
+# device code, Pixel Camera 11.0.073 loads that byte into w9 and executes:
+#
+#   0x692453c  ldrb w9, [x22, #0x2c8]
+#   0x6924548  cbz  w9, 0x6924c20
+#
+# The branch target is the existing "Unknown device code ... Aborting" block.
+# Falling through enters the existing "Treating as uncalibrated" path. NOPing
+# only this conditional therefore reuses Google's own uncalibrated fallback
+# without inventing tuning data or impersonating another device.
+TUNING_FALLBACK_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
+    (
+        "allow_unknown_device_uncalibrated_fallback",
+        0x6924548,
+        bytes.fromhex("c9360034"),
+        bytes.fromhex("1f2003d5"),
+    ),
+)
+
+GCASTARTUP_NATIVE_PATCHES = GXP_CPU_PATCHES + TUNING_FALLBACK_PATCHES
 DEX_NAME_RE = re.compile(r"^classes(?:\d+)?\.dex$")
 LABEL_RE = re.compile(r"^\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$")
 BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
@@ -330,7 +355,7 @@ def analyze_libgcam_tuning(data: bytes) -> dict[str, Any]:
 def patch_native_bytes(
     data: bytes,
     *,
-    patches: tuple[tuple[str, int, bytes, bytes], ...] = GXP_CPU_PATCHES,
+    patches: tuple[tuple[str, int, bytes, bytes], ...] = GCASTARTUP_NATIVE_PATCHES,
 ) -> tuple[bytes, list[dict[str, Any]]]:
     """Apply exact-offset native patches with strict byte verification."""
 
@@ -372,11 +397,59 @@ def patch_native_bytes(
     return bytes(mutable), report
 
 
+def _verify_uncalibrated_tuning_branch(data: bytes) -> dict[str, Any]:
+    """Verify the exact unknown-device branch before enabling fallback."""
+
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != GCASTARTUP_11_0_073_SHA256:
+        raise PatchError(
+            "libgcastartup SHA-256 changed; refusing version-specific tuning "
+            f"fallback patch: expected {GCASTARTUP_11_0_073_SHA256}, found {digest}"
+        )
+
+    offset = TUNING_FALLBACK_PATCHES[0][1]
+    expected = TUNING_FALLBACK_PATCHES[0][2]
+    actual = data[offset : offset + len(expected)]
+    if actual != expected:
+        raise PatchError(
+            "unknown-device uncalibrated branch bytes changed at "
+            f"0x{offset:x}: expected {expected.hex()}, found {actual.hex()}"
+        )
+
+    word = struct.unpack_from("<I", data, offset)[0]
+    decoded = _decode_aarch64_branch(word, offset)
+    if decoded != "cbz 0x6924c20":
+        raise PatchError(
+            "unexpected unknown-device tuning branch semantics at "
+            f"0x{offset:x}: {decoded!r}"
+        )
+
+    load_offset = 0x692453C
+    expected_load = bytes.fromhex("c9224b39")
+    actual_load = data[load_offset : load_offset + 4]
+    if actual_load != expected_load:
+        raise PatchError(
+            "allow-uncalibrated flag load changed at "
+            f"0x{load_offset:x}: expected {expected_load.hex()}, "
+            f"found {actual_load.hex()}"
+        )
+
+    return {
+        "library_sha256": digest,
+        "flag_load_offset": f"0x{load_offset:x}",
+        "flag_load_hex": actual_load.hex(),
+        "branch_offset": f"0x{offset:x}",
+        "branch_hex": actual.hex(),
+        "branch": decoded,
+        "fallback_target": "existing uncalibrated tuning path",
+    }
+
+
 def patch_gcastartup_cpu_fallback(
     archive: zipfile.ZipFile,
     root: Path,
 ) -> tuple[str, Path, dict[str, Any]]:
-    """Patch only the verified GXP/DarwiNN delegate-selection instructions."""
+    """Patch verified accelerator and unknown-device fallback branches."""
 
     names = [name for name in archive.namelist() if name == GCASTARTUP_LIBRARY]
     if len(names) != 1:
@@ -386,6 +459,7 @@ def patch_gcastartup_cpu_fallback(
 
     original = archive.read(GCASTARTUP_LIBRARY)
     tuning_diagnostics = analyze_libgcam_tuning(original)
+    tuning_fallback_verification = _verify_uncalibrated_tuning_branch(original)
     patched, instruction_report = patch_native_bytes(original)
     output = root / "libgcastartup-cpu-fallback.so"
     output.write_bytes(patched)
@@ -397,9 +471,11 @@ def patch_gcastartup_cpu_fallback(
         "patched_size": len(patched),
         "instructions": instruction_report,
         "tuning_diagnostics": tuning_diagnostics,
+        "tuning_fallback_verification": tuning_fallback_verification,
         "model_verification_bypass_performed": False,
         "tuning_bypass_performed": False,
         "tuning_profile_spoof_performed": False,
+        "uncalibrated_tuning_fallback_enabled": True,
     }
 
 
