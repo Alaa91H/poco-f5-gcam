@@ -2461,6 +2461,199 @@ def patch_onecamera_session_parameter_logging_smali_text(
     }
 
 
+
+def patch_onecamera_final_output_configuration_logging_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Log the final Android OutputConfiguration objects before session creation.
+
+    This diagnostic sits in Lrp.e(Lve;) after each Lry wrapper is converted to
+    android.hardware.camera2.params.OutputConfiguration and before it is added
+    to the list passed to SessionConfiguration. It therefore observes the exact
+    output objects used by the failing session even if a different builder path
+    bypasses Lvz.u(...).
+    """
+
+    lines = text.splitlines()
+    descriptor = ONECAMERA_SESSION_CONFIG_DESCRIPTOR
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\\.class\\s+.*" + re.escape(descriptor) + r"\\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera session class Lrp;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = ".method public final e(Lve;)Z"
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == signature
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Lrp.e(Lve;) method for final output logging; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lrp.e(Lve;) is unterminated")
+
+    register_lines = [
+        i for i in range(method_start + 1, method_end)
+        if re.fullmatch(r"\\s*\\.registers\\s+21\\s*", lines[i])
+    ]
+    if len(register_lines) != 1:
+        raise PatchError(
+            "Lrp.e(Lve;) register layout changed; expected exactly .registers 21"
+        )
+
+    convert_call = (
+        "invoke-interface {v9, v13}, "
+        "Lzq;->g(Ljava/lang/Class;)Ljava/lang/Object;"
+    )
+    convert_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == convert_call
+    ]
+    if len(convert_indexes) != 1:
+        raise PatchError(
+            "expected exactly one final OutputConfiguration conversion in "
+            f"Lrp.e(Lve;); found {len(convert_indexes)}"
+        )
+    convert_index = convert_indexes[0]
+
+    cursor = convert_index + 1
+    while cursor < method_end and not lines[cursor].strip():
+        cursor += 1
+    if cursor >= method_end or lines[cursor].strip() != "move-result-object v9":
+        actual = lines[cursor].strip() if cursor < method_end else "<end>"
+        raise PatchError(
+            "final OutputConfiguration conversion no longer lands in v9; "
+            f"found {actual!r}"
+        )
+    result_index = cursor
+
+    add_cursor = result_index + 1
+    while add_cursor < method_end and not lines[add_cursor].strip():
+        add_cursor += 1
+    expected_add = (
+        "invoke-interface {v5, v9}, "
+        "Ljava/util/Collection;->add(Ljava/lang/Object;)Z"
+    )
+    if add_cursor >= method_end or lines[add_cursor].strip() != expected_add:
+        actual = lines[add_cursor].strip() if add_cursor < method_end else "<end>"
+        raise PatchError(
+            "final OutputConfiguration list-add flow changed; "
+            f"found {actual!r}"
+        )
+
+    next_cursor = add_cursor + 1
+    while next_cursor < method_end and not lines[next_cursor].strip():
+        next_cursor += 1
+    if next_cursor >= method_end or lines[next_cursor].strip() != "const/16 v13, 0xa":
+        actual = lines[next_cursor].strip() if next_cursor < method_end else "<end>"
+        raise PatchError(
+            "Lrp.e(Lve;) v13 scratch reset changed after output add; "
+            f"found {actual!r}"
+        )
+
+    # v18 is not live in this conversion loop. The first later use in the
+    # original method redefines it before reading it.
+    later_v18 = [
+        line.strip()
+        for line in lines[add_cursor + 1 : method_end]
+        if re.search(r"\\bv18\\b", line)
+    ]
+    if not later_v18 or later_v18[0] != "move-object/from16 v18, v13":
+        actual = later_v18[0] if later_v18 else "<none>"
+        raise PatchError(
+            "Lrp.e(Lve;) v18 scratch liveness changed; "
+            f"first later use is {actual!r}"
+        )
+
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    if "GCamOCFinal" in method_text:
+        raise PatchError("final OutputConfiguration diagnostic tag already exists")
+
+    indent = re.match(r"^(\\s*)", lines[add_cursor]).group(1)
+    injected = [
+        "",
+        f'{indent}const-string v18, "GCamOCFinal"',
+        "",
+        f"{indent}invoke-static {{v9}}, "
+        "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+        "",
+        f"{indent}move-result-object v13",
+        "",
+        f"{indent}invoke-static {{v18, v13}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{indent}move-result v13",
+    ]
+    lines = lines[:add_cursor] + injected + lines[add_cursor:]
+
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "diagnostic_logging",
+        "class": descriptor,
+        "method": signature,
+        "tag": "GCamOCFinal",
+        "behavior_changed": False,
+        "scratch_registers": ["v13", "v18"],
+        "scratch_liveness": (
+            "v13 is reset immediately after the list add; v18 is redefined "
+            "before its first later read"
+        ),
+        "source": (
+            "final android.hardware.camera2.params.OutputConfiguration objects "
+            "immediately before SessionConfiguration construction"
+        ),
+    }
+
+
+def find_and_patch_onecamera_final_output_configuration_logging_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\\.class\\s+.*"
+        + re.escape(ONECAMERA_SESSION_CONFIG_DESCRIPTOR)
+        + r"\\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera session class Lrp; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = (
+        patch_onecamera_final_output_configuration_logging_smali_text(
+            target.read_text(encoding="utf-8")
+        )
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
 def patch_onecamera_output_configuration_logging_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
@@ -3095,6 +3288,11 @@ def patch_apk(
                             smali_dir
                         )
                     )
+                    report_for_dex["onecamera_final_output_configuration_logging"] = (
+                        find_and_patch_onecamera_final_output_configuration_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
                     report_for_dex["onecamera_output_configuration_logging"] = (
                         find_and_patch_onecamera_output_configuration_logging_smali_tree(
                             smali_dir
@@ -3167,6 +3365,9 @@ def patch_apk(
     onecamera_session_parameter_logging_metadata = dex_reports[
         session_config_dex
     ]["onecamera_session_parameter_logging"]
+    onecamera_final_output_configuration_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_final_output_configuration_logging"]
     onecamera_output_configuration_logging_metadata = dex_reports[
         session_config_dex
     ]["onecamera_output_configuration_logging"]
@@ -3200,6 +3401,10 @@ def patch_apk(
         "onecamera_session_parameter_logging": {
             "target_dex": session_config_dex,
             **onecamera_session_parameter_logging_metadata,
+        },
+        "onecamera_final_output_configuration_logging": {
+            "target_dex": session_config_dex,
+            **onecamera_final_output_configuration_logging_metadata,
         },
         "onecamera_output_configuration_logging": {
             "target_dex": session_config_dex,
