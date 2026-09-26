@@ -1755,21 +1755,6 @@ def patch_onecamera_optional_key_smali_text(
     if method_end >= len(lines):
         raise PatchError("ofe.a() is unterminated")
 
-    first_key_line = (
-        "sget-object v1, Ltdn;->a:"
-        "Landroid/hardware/camera2/CaptureRequest$Key;"
-    )
-    first_key_indexes = [
-        i for i in range(method_start, method_end)
-        if lines[i].strip() == first_key_line
-    ]
-    if len(first_key_indexes) != 1:
-        raise PatchError(
-            "expected exactly one Ltdn.a request key in Lodr.a(Object); "
-            f"found {len(first_key_indexes)}"
-        )
-    first_key_index = first_key_indexes[0]
-
     key_line = (
         "sget-object v0, Ltdn;->b:"
         "Landroid/hardware/camera2/CaptureRequest$Key;"
@@ -2091,6 +2076,21 @@ def patch_onecamera_odr_missing_request_key_smali_text(
                 "Lodr Ltdn.a/Ltdn.b request-entry shape changed; expected one "
                 f"{token!r}"
             )
+
+    first_key_line = (
+        "sget-object v1, Ltdn;->a:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    first_key_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == first_key_line
+    ]
+    if len(first_key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdn.a request key in Lodr.a(Object); "
+            f"found {len(first_key_indexes)}"
+        )
+    first_key_index = first_key_indexes[0]
 
     key_line = (
         "sget-object v0, Ltdn;->b:"
