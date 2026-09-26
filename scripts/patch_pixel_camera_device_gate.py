@@ -2328,6 +2328,15 @@ def patch_onecamera_session_parameter_logging_smali_text(
             f"found {actual!r}"
         )
 
+    if any(
+        re.search(r"\bv15\b", line)
+        for line in lines[cursor + 1 : method_end]
+    ):
+        raise PatchError(
+            "Lrp.e(Lve;) now reuses diagnostic scratch register v15 after "
+            "the session-parameter key lookup"
+        )
+
     next_cursor = cursor + 1
     while next_cursor < method_end and not lines[next_cursor].strip():
         next_cursor += 1
@@ -2340,15 +2349,6 @@ def patch_onecamera_session_parameter_logging_smali_text(
         raise PatchError(
             "session-parameter key-name flow changed before allowlist check; "
             f"found {actual!r}"
-        )
-
-    if any(
-        re.search(r"\bv15\b", line)
-        for line in lines[cursor + 1 : method_end]
-    ):
-        raise PatchError(
-            "Lrp.e(Lve;) now reuses diagnostic scratch register v15 after "
-            "the session-parameter key lookup"
         )
 
     indent = re.match(r"^(\s*)", lines[cursor]).group(1)
