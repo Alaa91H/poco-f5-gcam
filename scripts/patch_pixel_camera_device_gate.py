@@ -231,17 +231,19 @@ def _inject_nontensor_guard(
         )
 
     # q/x are instance methods with one object parameter: p0 + p1 consume two
-    # parameter registers. The injected guard uses v0 and v1, so either two
-    # explicit locals or at least four total registers are required.
+    # parameter registers. The injected guard needs v0 and v1. baksmali may
+    # emit a minimal ".registers 2" method with no local registers at all.
+    # Expanding the register declaration is safe here: p0/p1 are symbolic
+    # parameter aliases and continue to refer to the high parameter registers.
+    original_register_count = register_count
     if register_mode == "locals" and register_count < 2:
-        raise PatchError(
-            f"{signature} has only {register_count} locals; refusing register-unsafe patch"
-        )
-    if register_mode == "registers" and register_count < 4:
-        raise PatchError(
-            f"{signature} has only {register_count} total registers; "
-            "v0/v1 would overlap p0/p1"
-        )
+        register_count = 2
+        indent = re.match(r"^(\s*)", lines[register_index]).group(1)
+        lines[register_index] = f"{indent}.locals {register_count}"
+    elif register_mode == "registers" and register_count < 4:
+        register_count = 4
+        indent = re.match(r"^(\s*)", lines[register_index]).group(1)
+        lines[register_index] = f"{indent}.registers {register_count}"
 
     false_label = f"poco_nontensor_false_{suffix}"
     original_label = f"poco_nontensor_orig_{suffix}"
@@ -306,6 +308,10 @@ def _inject_nontensor_guard(
         "false_label": false_label,
         "original_label": original_label,
         "register_declaration": f".{register_mode} {register_count}",
+        "original_register_declaration": (
+            f".{register_mode} {original_register_count}"
+        ),
+        "registers_expanded": register_count != original_register_count,
     }
 
 
