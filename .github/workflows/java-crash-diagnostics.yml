@@ -269,70 +269,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/key-dex" "$RUNNER_TEMP/key-smali"
-          mkdir -p "$RUNNER_TEMP/key-dex" "$RUNNER_TEMP/key-smali"
-
-          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/key-dex" "$RUNNER_TEMP/key-dex-map.tsv" <<'PY'
-          import io, struct, sys, zipfile
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP" <<'PY'
+          import io, sys, zipfile
           from pathlib import Path
 
-          bundle=Path(sys.argv[1])
-          out=Path(sys.argv[2])
-          map_path=Path(sys.argv[3])
-          targets={"Ltdn;","Louj;","Louk;","Lofp;"}
-          found={}
+          package=Path(sys.argv[1])
+          outdir=Path(sys.argv[2])
+          targets=("ltdn","louj","louk","ofp")
+          needles={name:("L"+name+";").encode() for name in targets}
+          found={name:[] for name in targets}
 
-          def u32(data, off):
-              return struct.unpack_from("<I", data, off)[0]
-
-          def read_uleb(data, off):
-              shift=0
-              value=0
-              while True:
-                  b=data[off]
-                  off+=1
-                  value |= (b & 0x7f) << shift
-                  if not (b & 0x80):
-                      return value, off
-                  shift += 7
-
-          def dex_class_descriptors(data):
-              if not data.startswith(b"dex\n"):
-                  return set()
-              string_ids_size=u32(data,0x38)
-              string_ids_off=u32(data,0x3c)
-              type_ids_size=u32(data,0x40)
-              type_ids_off=u32(data,0x44)
-              class_defs_size=u32(data,0x60)
-              class_defs_off=u32(data,0x64)
-
-              string_offsets=[
-                  u32(data,string_ids_off+i*4)
-                  for i in range(string_ids_size)
-              ]
-              strings={}
-              def get_string(idx):
-                  if idx in strings:
-                      return strings[idx]
-                  off=string_offsets[idx]
-                  _,off=read_uleb(data,off)
-                  end=data.index(0,off)
-                  s=data[off:end].decode("utf-8","replace")
-                  strings[idx]=s
-                  return s
-
-              type_desc=[
-                  get_string(u32(data,type_ids_off+i*4))
-                  for i in range(type_ids_size)
-              ]
-              result=set()
-              for i in range(class_defs_size):
-                  class_idx=u32(data,class_defs_off+i*32)
-                  if class_idx < len(type_desc):
-                      result.add(type_desc[class_idx])
-              return result
-
-          with zipfile.ZipFile(bundle) as outer:
+          with zipfile.ZipFile(package) as outer:
               for info in outer.infolist():
                   if not info.filename.lower().endswith(".apk"):
                       continue
@@ -344,55 +291,35 @@ jobs:
                           if not (dex_name.startswith("classes") and dex_name.endswith(".dex")):
                               continue
                           data=apk.read(dex_name)
-                          defs=dex_class_descriptors(data)
-                          for target in sorted(targets & defs):
-                              if target in found:
-                                  raise SystemExit(f"duplicate class definition for {target}: {found[target]} and {(info.filename,dex_name)}")
-                              safe_apk=info.filename.replace("/","_").replace(".apk","")
-                              target_path=out/f"{safe_apk}-{dex_name}"
-                              target_path.write_bytes(data)
-                              found[target]=(info.filename,dex_name,target_path.name)
-                              print(f"{target} -> {info.filename}/{dex_name}")
+                          for name,needle in needles.items():
+                              if needle in data:
+                                  found[name].append((info.filename,dex_name,data))
 
-          missing=sorted(targets-set(found))
-          if missing:
-              raise SystemExit(f"missing class definitions across all splits: {missing}")
-
-          with map_path.open("w",encoding="utf-8") as fp:
-              for target,(apk,dex,filename) in sorted(found.items()):
-                  fp.write(f"{target}\t{apk}\t{dex}\t{filename}\n")
+          for name,candidates in found.items():
+              if len(candidates) != 1:
+                  raise SystemExit(f"expected one dex containing L{name};, found {[(a,b) for a,b,_ in candidates]}")
+              apk_name,dex_name,data=candidates[0]
+              dex_path=outdir/f"{name}.dex"
+              dex_path.write_bytes(data)
+              print(f"{name}: source_apk={apk_name} dex={dex_name} size={len(data)}")
           PY
 
-          while IFS=$'\t' read -r target apk dex filename; do
-            class_name="${target#L}"
-            class_name="${class_name%;}"
-            outdir="$RUNNER_TEMP/key-smali/$class_name"
-            mkdir -p "$outdir"
-            java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/key-dex/$filename" -o "$outdir"
-          done < "$RUNNER_TEMP/key-dex-map.tsv"
+          : > "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
+          for name in ltdn louj louk ofp; do
+            rm -rf "$RUNNER_TEMP/$name-smali"
+            mkdir -p "$RUNNER_TEMP/$name-smali"
+            java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/$name.dex" -o "$RUNNER_TEMP/$name-smali"
+            CLASS="$(find "$RUNNER_TEMP/$name-smali" -type f -name "$name.smali" -print -quit)"
+            test -n "$CLASS"
+            {
+              echo "================================================================================"
+              echo "$name.smali"
+              cat "$CLASS"
+              echo
+            } >> "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
+          done
 
-          python - "$RUNNER_TEMP/key-smali" "$RUNNER_TEMP/key-dex-map.tsv" "$RUNNER_TEMP/ofe-key-provider-analysis.txt" <<'PY'
-          import sys
-          from pathlib import Path
-
-          root=Path(sys.argv[1])
-          map_path=Path(sys.argv[2])
-          out=Path(sys.argv[3])
-          chunks=[]
-          for line in map_path.read_text(encoding="utf-8").splitlines():
-              target,apk,dex,filename=line.split("\t")
-              name=target[1:-1]
-              matches=list((root/name).rglob(name + ".smali"))
-              if len(matches) != 1:
-                  raise SystemExit(f"expected one {name}.smali after targeted disassembly, found {matches}")
-              p=matches[0]
-              chunks.append("="*80)
-              chunks.append(f"{name}.smali source={apk}/{dex}")
-              chunks.append(p.read_text(encoding="utf-8", errors="replace"))
-          out.write_text("\n".join(chunks)+"\n", encoding="utf-8")
-          PY
-
-          sed -n '1,4200p' "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
+          sed -n '1,3600p' "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
 
       - name: Upload OneCamera key-provider diagnostics
         uses: actions/upload-artifact@v7
