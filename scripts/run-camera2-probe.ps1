@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.6"
+$ExpectedProbeVersion = "0.3.7"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
@@ -356,64 +356,140 @@ if ($YuvRuntime) {
         )
     }
 
-    Invoke-Adb -Arguments @(
-        $adbPrefix + @("shell", "run-as", $Package, "rm", "-f", $YuvReportRelativePath)
-    ) -AllowFailure | Out-Null
-    $yuvLaunch = Invoke-Adb -Arguments @(
-        $adbPrefix + @(
-            "shell", "am", "start", "-W",
-            "-n", "$Package/$YuvActivity",
-            "--ez", "autoGenerate", "true"
-        )
-    ) -AllowFailure
-    if ($yuvLaunch.ExitCode -ne 0) {
-        Fail (
-            "Failed to launch the YUV runtime probe." +
-            [Environment]::NewLine + $yuvLaunch.Text
-        )
+    $cameraIds = @($parsed.cameraIdList | ForEach-Object { [string]$_ })
+    if ($cameraIds.Count -eq 0) {
+        Fail "Camera2 report did not expose any camera IDs for isolated YUV probing."
     }
 
-    $yuvDeadline = (Get-Date).AddSeconds($YuvTimeoutSeconds)
-    $yuvReady = $false
-    do {
-        Start-Sleep -Milliseconds 500
-        $yuvReadyCheck = Invoke-Adb -Arguments @(
-            $adbPrefix + @("shell", "run-as", $Package, "test", "-f", $YuvReportRelativePath)
+    $perCameraTimeoutSeconds = [Math]::Max(
+        20,
+        [Math]::Min(30, [Math]::Ceiling($YuvTimeoutSeconds / [Math]::Max(1, $cameraIds.Count)))
+    )
+    $cameraResults = New-Object System.Collections.Generic.List[object]
+
+    foreach ($cameraId in $cameraIds) {
+        Write-Host ("YUV camera " + $cameraId + ": isolated runtime probe...")
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "am", "force-stop", $Package)
+        ) -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 750
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "run-as", $Package, "rm", "-f", $YuvReportRelativePath)
+        ) -AllowFailure | Out-Null
+
+        $yuvLaunch = Invoke-Adb -Arguments @(
+            $adbPrefix + @(
+                "shell", "am", "start", "-W",
+                "-n", "$Package/$YuvActivity",
+                "--ez", "autoGenerate", "true",
+                "--es", "cameraId", $cameraId
+            )
         ) -AllowFailure
-        if ($yuvReadyCheck.ExitCode -eq 0) {
-            $yuvReady = $true
-            break
+        if ($yuvLaunch.ExitCode -ne 0) {
+            $cameraResults.Add([pscustomobject][ordered]@{
+                id = $cameraId
+                success = $false
+                runnerLaunchFailed = $true
+                error = ("Failed to launch isolated YUV probe: " + $yuvLaunch.Text)
+            })
+            continue
         }
-    } while ((Get-Date) -lt $yuvDeadline)
 
-    if (-not $yuvReady) {
-        Fail "Timed out waiting for the YUV runtime report after $YuvTimeoutSeconds seconds."
+        $cameraDeadline = (Get-Date).AddSeconds($perCameraTimeoutSeconds)
+        $cameraReady = $false
+        do {
+            Start-Sleep -Milliseconds 500
+            $readyCheck = Invoke-Adb -Arguments @(
+                $adbPrefix + @("shell", "run-as", $Package, "test", "-f", $YuvReportRelativePath)
+            ) -AllowFailure
+            if ($readyCheck.ExitCode -eq 0) {
+                $cameraReady = $true
+                break
+            }
+        } while ((Get-Date) -lt $cameraDeadline)
+
+        if (-not $cameraReady) {
+            $timeoutDump = Invoke-Adb -Arguments @(
+                $adbPrefix + @("shell", "dumpsys", "media.camera")
+            ) -AllowFailure
+            [System.IO.File]::WriteAllText(
+                (Join-Path $outDir ("camera-service-timeout-camera-" + $cameraId + ".txt")),
+                $timeoutDump.Text + [Environment]::NewLine,
+                $utf8NoBom
+            )
+            $cameraResults.Add([pscustomobject][ordered]@{
+                id = $cameraId
+                success = $false
+                runnerTimedOut = $true
+                timeoutSeconds = $perCameraTimeoutSeconds
+                error = "Isolated YUV probe timed out before producing a report."
+            })
+            Invoke-Adb -Arguments @(
+                $adbPrefix + @("shell", "am", "force-stop", $Package)
+            ) -AllowFailure | Out-Null
+            Start-Sleep -Milliseconds 1500
+            continue
+        }
+
+        $cameraExport = Invoke-Adb -Arguments @(
+            $adbPrefix + @("exec-out", "run-as", $Package, "cat", $YuvReportRelativePath)
+        ) -AllowFailure -StdoutOnly
+        if ($cameraExport.ExitCode -ne 0) {
+            $cameraResults.Add([pscustomobject][ordered]@{
+                id = $cameraId
+                success = $false
+                runnerExportFailed = $true
+                error = ("Failed to export isolated YUV report: " + $cameraExport.Text)
+            })
+        }
+        else {
+            try {
+                $cameraParsed = $cameraExport.Text | ConvertFrom-Json
+                $singleCamera = @($cameraParsed.cameras)[0]
+                if ($null -eq $singleCamera) {
+                    throw "Isolated report did not contain a camera result."
+                }
+                $cameraResults.Add($singleCamera)
+                [System.IO.File]::WriteAllText(
+                    (Join-Path $outDir ("yuv-runtime-camera-" + $cameraId + ".json")),
+                    $cameraExport.Text + [Environment]::NewLine,
+                    $utf8NoBom
+                )
+            }
+            catch {
+                $cameraResults.Add([pscustomobject][ordered]@{
+                    id = $cameraId
+                    success = $false
+                    runnerParseFailed = $true
+                    error = ("Invalid isolated YUV report: " + $_.Exception.Message)
+                })
+            }
+        }
+
+        Invoke-Adb -Arguments @(
+            $adbPrefix + @("shell", "am", "force-stop", $Package)
+        ) -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 750
     }
 
+    $yuvCombined = [ordered]@{
+        schemaVersion = 3
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        packageName = $Package
+        mode = "isolated-per-camera"
+        perCameraTimeoutSeconds = $perCameraTimeoutSeconds
+        cameras = $cameraResults.ToArray()
+    }
+    $yuvText = $yuvCombined | ConvertTo-Json -Depth 32
     $yuvOutFile = Join-Path $outDir "yuv-runtime-report.json"
-    $yuvExport = Invoke-Adb -Arguments @(
-        $adbPrefix + @("exec-out", "run-as", $Package, "cat", $YuvReportRelativePath)
-    ) -AllowFailure -StdoutOnly
-    if ($yuvExport.ExitCode -ne 0) {
-        Fail (
-            "Failed to export the YUV runtime report via run-as." +
-            [Environment]::NewLine + $yuvExport.Text
-        )
-    }
-    $yuvText = $yuvExport.Text
-
-    try {
-        $yuvParsed = $yuvText | ConvertFrom-Json
-    }
-    catch {
-        Fail "The exported YUV runtime report is not valid JSON: $($_.Exception.Message)"
-    }
-
     [System.IO.File]::WriteAllText(
         $yuvOutFile,
         $yuvText + [Environment]::NewLine,
         $utf8NoBom
     )
+    $yuvParsed = $yuvText | ConvertFrom-Json
 
     $cameraServiceAfterYuv = Invoke-Adb -Arguments @(
         $adbPrefix + @("shell", "dumpsys", "media.camera")
@@ -426,21 +502,12 @@ if ($YuvRuntime) {
 
     $successCount = @($yuvParsed.cameras | Where-Object { $_.success -eq $true }).Count
     $cameraCount = @($yuvParsed.cameras).Count
-    $maxCamerasInUseCount = @(
-        $yuvParsed.cameras |
-            Where-Object {
-                $_.error -and [string]$_.error -match 'CameraDevice error 2\b'
-            }
-    ).Count
-    if ($cameraCount -gt 0 -and $maxCamerasInUseCount -eq $cameraCount) {
-        Fail (
-            "YUV runtime probe was invalid because every camera open failed with " +
-            "ERROR_MAX_CAMERAS_IN_USE. Camera-service diagnostics were saved in the capture " +
-            "directory. Close any camera client and retry. The runner already force-stops " +
-            "Pixel Camera before this test."
-        )
-    }
-    Write-Host "YUV runtime probe: $successCount/$cameraCount exposed camera IDs delivered sustained YUV frames."
+    $timeoutCount = @($yuvParsed.cameras | Where-Object { $_.runnerTimedOut -eq $true }).Count
+    Write-Host (
+        "YUV runtime probe: " + $successCount + "/" + $cameraCount +
+        " camera IDs delivered sustained YUV frames; " + $timeoutCount +
+        " isolated camera probes timed out."
+    )
 }
 $deviceCode = [string]$parsed.device.device
 $model = [string]$parsed.device.model
