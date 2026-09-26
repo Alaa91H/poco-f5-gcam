@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.5"
+$ExpectedProbeVersion = "0.3.6"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
@@ -328,6 +328,15 @@ if ($YuvRuntime) {
     ) -AllowFailure | Out-Null
     Start-Sleep -Milliseconds 1500
 
+    $cameraServiceBeforeYuv = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "dumpsys", "media.camera")
+    ) -AllowFailure
+    [System.IO.File]::WriteAllText(
+        (Join-Path $outDir "camera-service-before-yuv.txt"),
+        $cameraServiceBeforeYuv.Text + [Environment]::NewLine,
+        $utf8NoBom
+    )
+
     $grant = Invoke-Adb -Arguments @(
         $adbPrefix + @("shell", "pm", "grant", $Package, "android.permission.CAMERA")
     ) -AllowFailure
@@ -397,6 +406,15 @@ if ($YuvRuntime) {
         $utf8NoBom
     )
 
+    $cameraServiceAfterYuv = Invoke-Adb -Arguments @(
+        $adbPrefix + @("shell", "dumpsys", "media.camera")
+    ) -AllowFailure
+    [System.IO.File]::WriteAllText(
+        (Join-Path $outDir "camera-service-after-yuv.txt"),
+        $cameraServiceAfterYuv.Text + [Environment]::NewLine,
+        $utf8NoBom
+    )
+
     $successCount = @($yuvParsed.cameras | Where-Object { $_.success -eq $true }).Count
     $cameraCount = @($yuvParsed.cameras).Count
     $maxCamerasInUseCount = @(
@@ -408,8 +426,9 @@ if ($YuvRuntime) {
     if ($cameraCount -gt 0 -and $maxCamerasInUseCount -eq $cameraCount) {
         Fail (
             "YUV runtime probe was invalid because every camera open failed with " +
-            "ERROR_MAX_CAMERAS_IN_USE. Close any camera client and retry. " +
-            "The runner already force-stops Pixel Camera before this test."
+            "ERROR_MAX_CAMERAS_IN_USE. Camera-service diagnostics were saved in the capture " +
+            "directory. Close any camera client and retry. The runner already force-stops " +
+            "Pixel Camera before this test."
         )
     }
     Write-Host "YUV runtime probe: $successCount/$cameraCount exposed camera IDs delivered sustained YUV frames."
