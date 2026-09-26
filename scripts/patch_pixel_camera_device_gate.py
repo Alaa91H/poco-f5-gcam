@@ -2477,7 +2477,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         )
     first_key_name_call = name_call_after_logging[0]
     if any(
-        re.search(r"\\bv15\\b", line)
+        re.search(r"\bv15\b", line)
         for line in lines[map_cursor:first_key_name_call]
     ):
         raise PatchError(
