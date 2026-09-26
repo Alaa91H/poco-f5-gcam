@@ -913,7 +913,9 @@ def _inject_sensor_vector_runtime_diagnostics(
     """
 
     create_indexes = [
-        i for i, line in enumerate(lines) if GCAM_CREATE_SYMBOL in line
+        i
+        for i, line in enumerate(lines)
+        if GCAM_CREATE_SYMBOL in line and "invoke-static" in line
     ]
     if len(create_indexes) != 1:
         raise PatchError(
@@ -954,7 +956,7 @@ def _inject_sensor_vector_runtime_diagnostics(
 
     insert_index = code_indexes[0]
     diagnostic_block = [
-        "    # POCO F5 diagnostic: log StaticMetadata sensor IDs before Gcam_Create.",
+        "    # POCO F5 diagnostic: log StaticMetadata sensor IDs before native create.",
         "    const/4 v0, 0x0",
         "",
         "    :poco_sensor_diag_loop",
@@ -1078,7 +1080,9 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     # Preserve Pixel Camera's native uniqueness check. The compatibility fix
     # changes only the misidentified logical entries before Gcam_Create.
     create_indexes = [
-        i for i, line in enumerate(lines) if GCAM_CREATE_SYMBOL in line
+        i
+        for i, line in enumerate(lines)
+        if GCAM_CREATE_SYMBOL in line and "invoke-static" in line
     ]
     if len(create_indexes) != 1:
         raise PatchError(
