@@ -265,6 +265,40 @@ jobs:
 
           sed -n '1,3200p' "$RUNNER_TEMP/ofe-onecamera-analysis.txt"
 
+      - name: Dump OneCamera key providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/ofe-smali" "$RUNNER_TEMP/ofe-key-provider-analysis.txt" <<'PY'
+          import sys
+          from pathlib import Path
+
+          root=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          names=("ltdn","louj","louk","ofp")
+          chunks=[]
+          for name in names:
+              matches=list(root.rglob(name + ".smali"))
+              if len(matches) != 1:
+                  raise SystemExit(f"expected one {name}.smali, found {matches}")
+              p=matches[0]
+              text=p.read_text(encoding="utf-8", errors="replace")
+              chunks.append("="*80)
+              chunks.append(f"{name}.smali path={p.relative_to(root)}")
+              chunks.append(text)
+          out.write_text("\n".join(chunks)+"\n", encoding="utf-8")
+          PY
+
+          sed -n '1,3200p' "$RUNNER_TEMP/ofe-key-provider-analysis.txt"
+
+      - name: Upload OneCamera key-provider diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-ofe-key-provider-diagnostics
+          path: ${{ runner.temp }}/ofe-key-provider-analysis.txt
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Upload OneCamera provider diagnostics
         uses: actions/upload-artifact@v7
         with:
