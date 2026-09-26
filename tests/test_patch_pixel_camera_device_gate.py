@@ -73,6 +73,21 @@ FLAG_QUERY_SAMPLE = r'''.class public final Lklm;
 FLAG_QUERY_REGISTERS_SAMPLE = FLAG_QUERY_SAMPLE.replace(".locals 3", ".registers 4")
 
 
+KEEPALIVE_SAMPLE = r'''.class public final Lcom/google/android/apps/camera/keepalive/KeepAliveBroadcastReceiver;
+.super Landroid/content/BroadcastReceiver;
+
+.method public final onReceive(Landroid/content/Context;Landroid/content/Intent;)V
+    .locals 2
+
+    new-instance v0, Landroid/content/Intent;
+    const-class v1, Lcom/google/android/apps/camera/prewarm/NoOpPrewarmService;
+    invoke-direct {v0, p1, v1}, Landroid/content/Intent;-><init>(Landroid/content/Context;Ljava/lang/Class;)V
+    invoke-virtual {p1, v0}, Landroid/content/Context;->startService(Landroid/content/Intent;)Landroid/content/ComponentName;
+    return-void
+.end method
+'''
+
+
 GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 .super Ljava/lang/Object;
 
@@ -224,6 +239,47 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(patcher.PatchError, "exactly one"):
             patcher.patch_nontensor_flag_queries(changed)
+
+    def test_disables_android17_keepalive_background_service(self):
+        patched, metadata = patcher.patch_keepalive_receiver_smali_text(
+            KEEPALIVE_SAMPLE
+        )
+
+        self.assertIn(
+            "# POCO F5 / Android 17: skip Pixel keepalive background service.",
+            patched,
+        )
+        self.assertIn("return-void", patched)
+        self.assertNotIn("->startService(", patched)
+        self.assertEqual(
+            metadata["status"],
+            "disabled_pixel_keepalive_receiver",
+        )
+
+    def test_keepalive_patch_fails_closed_without_start_service(self):
+        changed = KEEPALIVE_SAMPLE.replace(
+            "->startService(Landroid/content/Intent;)Landroid/content/ComponentName;",
+            "->stopService(Landroid/content/Intent;)Z",
+        )
+        with self.assertRaisesRegex(patcher.PatchError, "startService"):
+            patcher.patch_keepalive_receiver_smali_text(changed)
+
+    def test_keepalive_tree_requires_exact_receiver_class(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / "KeepAliveBroadcastReceiver.smali"
+            path.write_text(KEEPALIVE_SAMPLE, encoding="utf-8")
+
+            metadata = patcher.find_and_patch_keepalive_receiver_smali_tree(root)
+
+            self.assertEqual(
+                metadata["smali_path"],
+                "KeepAliveBroadcastReceiver.smali",
+            )
+            self.assertNotIn(
+                "->startService(",
+                path.read_text(encoding="utf-8"),
+            )
 
     def test_disables_native_tensor_startup_initparams(self):
         patched, metadata = patcher.patch_gcam_init_smali_text(GCAM_INIT_SAMPLE)
@@ -403,6 +459,20 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(patcher.PatchError, "exceeds native library size"):
             patcher.patch_native_bytes(b"short", patches=patches)
+
+    def test_finds_keepalive_receiver_dex(self):
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("classes.dex", b"ordinary")
+                archive.writestr(
+                    "classes4.dex",
+                    b"dex\n035\x00" + patcher.KEEPALIVE_RECEIVER_BYTES,
+                )
+            self.assertEqual(
+                patcher.find_keepalive_receiver_dex(apk),
+                "classes4.dex",
+            )
 
     def test_finds_gcam_init_dex_by_exact_symbol_set(self):
         with tempfile.TemporaryDirectory() as temp:
