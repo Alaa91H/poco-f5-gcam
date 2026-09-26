@@ -128,6 +128,22 @@ $resumedLines = @(
         Select-Object -First 20
 )
 
+# CameraService keeps a useful recent-event history even after a failed session
+# disconnects. Preserve only the package/camera/stream sections so the report can
+# identify the exact stream combination that Android handed to the vendor HAL
+# without embedding an unbounded dumpsys payload.
+$cameraServiceDump = (Invoke-Adb -Arguments @(
+    "shell", "dumpsys", "media.camera"
+) -AllowFailure).Text
+$cameraServiceDumpLines = @(
+    $cameraServiceDump -split "\r?\n" |
+        Where-Object {
+            $_ -match [regex]::Escape($PackageName) -or
+            $_ -match "(?i)(Camera ID|Stream|OutputConfiguration|SessionConfiguration|configured|configure|width|height|format|dataspace|usage|consumer|producer|device error|disconnect|connect)"
+        } |
+        Select-Object -Last 600
+)
+
 $logcat = (Invoke-Adb -Arguments @("logcat", "-d", "-v", "threadtime", "-t", "8000") -AllowFailure).Text
 $logLines = @($logcat -split "\r?\n")
 
@@ -578,6 +594,29 @@ $cameraStreamConfigurationFailureLines = @(
 )
 $cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureLines.Count -gt 0
 
+# Preserve raw log windows around vendor-HAL/session negotiation failures.
+# Filtering individual lines hides the stream dimensions and role-selection
+# messages that usually occur immediately before configure_streams fails.
+$cameraPipelineFailureContexts = New-Object System.Collections.Generic.List[string]
+$cameraPipelineContextKeys = @{}
+for ($i = 0; $i -lt $logLines.Count; $i++) {
+    $line = $logLines[$i]
+    if ($line -notmatch '(?i)(BuildCameraIdSet\(\).*Cannot map logical camera type|sat_roleMap: get logicalCameraInfo is NULL|Unsupported set of inputs/outputs provided|Failed to create capture session; configuration failed|configure_streams\(\).*End CONFIG failed|Unable to configure stream .*Function not implemented)') {
+        continue
+    }
+
+    $start = [Math]::Max(0, $i - 35)
+    $end = [Math]::Min($logLines.Count - 1, $i + 45)
+    $key = "$start:$end"
+    if ($cameraPipelineContextKeys.ContainsKey($key)) {
+        continue
+    }
+    $cameraPipelineContextKeys[$key] = $true
+    $cameraPipelineFailureContexts.Add(
+        ($logLines[$start..$end] -join [Environment]::NewLine)
+    )
+}
+
 $oneCameraVendorRequestKeyNpeLines = @(
     $logLines |
         Where-Object {
@@ -607,6 +646,14 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
         $oneCameraRequestKeyNpeContexts.Add($context)
     }
 }
+
+# The exception is often caught by OneCamera and never reaches a
+# "Failed to start OneCamera" wrapper. Treat a preserved Lupd constructor stack
+# as positive evidence too; this fixes false negatives in device reports.
+$oneCameraVendorRequestKeyNpeObserved = (
+    $oneCameraVendorRequestKeyNpeObserved -or
+    $oneCameraRequestKeyNpeContexts.Count -gt 0
+)
 
 # Capture evidence that a capture session recovered after an earlier failed
 # configureStreams attempt. A single rejected stream combination should remain
@@ -711,6 +758,7 @@ $report = [ordered]@{
         sensorSourceMappings = $sensorSourceMappings.ToArray()
         cameraServiceConnectLines = $cameraServiceConnectLines
         cameraServiceConnectedIds = $cameraServiceConnectedIds
+        cameraServiceDumpLines = $cameraServiceDumpLines
         xiaomiMultiCameraGraphFailureObserved = $xiaomiMultiCameraGraphFailureObserved
         xiaomiMultiCameraGraphFailureLines = $xiaomiMultiCameraGraphFailureLines
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
@@ -721,6 +769,7 @@ $report = [ordered]@{
         googleAllowlistLines = $googleAllowlistLines
         cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureObserved
         cameraStreamConfigurationFailureLines = $cameraStreamConfigurationFailureLines
+        cameraPipelineFailureContexts = $cameraPipelineFailureContexts.ToArray()
         cameraSessionSuccessObserved = $cameraSessionSuccessObserved
         cameraSessionSuccessLines = $cameraSessionSuccessLines
         cameraSessionLifecycleLines = $cameraSessionLifecycleLines
@@ -832,6 +881,8 @@ Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsO
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
 Write-Host "Camera stream configuration failure observed: $cameraStreamConfigurationFailureObserved"
+Write-Host "Camera pipeline failure contexts: $($cameraPipelineFailureContexts.Count)"
+Write-Host "CameraService dumpsys lines: $($cameraServiceDumpLines.Count)"
 Write-Host "Camera session success observed: $cameraSessionSuccessObserved"
 Write-Host "OneCamera vendor request-key NPE observed: $oneCameraVendorRequestKeyNpeObserved"
 Write-Host "OneCamera request-key NPE contexts: $($oneCameraRequestKeyNpeContexts.Count)"
@@ -860,6 +911,11 @@ if (-not $runtimePassed) {
         Write-Host ""
         Write-Host "OneCamera request-key NPE context:"
         Write-Host $oneCameraRequestKeyNpeContexts[0]
+    }
+    if ($cameraPipelineFailureContexts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Camera pipeline failure context:"
+        Write-Host $cameraPipelineFailureContexts[0]
     }
 }
 
