@@ -2303,12 +2303,6 @@ def patch_onecamera_session_parameter_logging_smali_text(
     if method_end >= len(lines):
         raise PatchError("Lrp.e(Lve;) is unterminated")
 
-    method_lines = lines[method_start : method_end + 1]
-    if any(re.search(r"\bv1[67]\b", line) for line in method_lines):
-        raise PatchError(
-            "Lrp.e(Lve;) now uses diagnostic scratch registers v16/v17"
-        )
-
     name_call = (
         "invoke-virtual {v14}, "
         "Landroid/hardware/camera2/CaptureRequest$Key;->getName()Ljava/lang/String;"
@@ -2348,15 +2342,24 @@ def patch_onecamera_session_parameter_logging_smali_text(
             f"found {actual!r}"
         )
 
+    if any(
+        re.search(r"\bv15\b", line)
+        for line in lines[cursor + 1 : method_end]
+    ):
+        raise PatchError(
+            "Lrp.e(Lve;) now reuses diagnostic scratch register v15 after "
+            "the session-parameter key lookup"
+        )
+
     indent = re.match(r"^(\s*)", lines[cursor]).group(1)
     injected = [
         "",
-        f'{indent}const-string v16, "GCamSessionParamKey"',
+        f'{indent}const-string v15, "GCamSessionParamKey"',
         "",
-        f"{indent}invoke-static {{v16, v14}}, "
+        f"{indent}invoke-static {{v15, v14}}, "
         "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
-        f"{indent}move-result v17",
+        f"{indent}move-result v15",
     ]
     lines = lines[: cursor + 1] + injected + lines[cursor + 1 :]
 
