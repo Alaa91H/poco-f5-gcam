@@ -2337,31 +2337,96 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "the session-parameter key lookup"
         )
 
-    next_cursor = cursor + 1
-    while next_cursor < method_end and not lines[next_cursor].strip():
-        next_cursor += 1
-    expected_next = (
+    contains_cursor = cursor + 1
+    while contains_cursor < method_end and not lines[contains_cursor].strip():
+        contains_cursor += 1
+    expected_contains = (
         "invoke-interface {v9, v14}, "
         "Ljava/util/List;->contains(Ljava/lang/Object;)Z"
     )
-    if next_cursor >= method_end or lines[next_cursor].strip() != expected_next:
-        actual = lines[next_cursor].strip() if next_cursor < method_end else "<end>"
+    if (
+        contains_cursor >= method_end
+        or lines[contains_cursor].strip() != expected_contains
+    ):
+        actual = (
+            lines[contains_cursor].strip()
+            if contains_cursor < method_end
+            else "<end>"
+        )
         raise PatchError(
             "session-parameter key-name flow changed before allowlist check; "
             f"found {actual!r}"
         )
 
-    indent = re.match(r"^(\s*)", lines[cursor]).group(1)
+    result_cursor = contains_cursor + 1
+    while result_cursor < method_end and not lines[result_cursor].strip():
+        result_cursor += 1
+    if (
+        result_cursor >= method_end
+        or lines[result_cursor].strip() != "move-result v14"
+    ):
+        actual = (
+            lines[result_cursor].strip()
+            if result_cursor < method_end
+            else "<end>"
+        )
+        raise PatchError(
+            "session-parameter allowlist result no longer lands in v14; "
+            f"found {actual!r}"
+        )
+
+    branch_cursor = result_cursor + 1
+    while branch_cursor < method_end and not lines[branch_cursor].strip():
+        branch_cursor += 1
+    if (
+        branch_cursor >= method_end
+        or not re.fullmatch(
+            r"if-eqz v14, :[A-Za-z0-9_]+",
+            lines[branch_cursor].strip(),
+        )
+    ):
+        actual = (
+            lines[branch_cursor].strip()
+            if branch_cursor < method_end
+            else "<end>"
+        )
+        raise PatchError(
+            "session-parameter allowlist branch changed; "
+            f"found {actual!r}"
+        )
+
+    set_cursor = branch_cursor + 1
+    while set_cursor < method_end and not lines[set_cursor].strip():
+        set_cursor += 1
+    expected_set = (
+        "invoke-static {v0, v13, v6}, "
+        "Lvz;->x(Landroid/hardware/camera2/CaptureRequest$Builder;"
+        "Ljava/lang/Object;Ljava/lang/Object;)V"
+    )
+    if set_cursor >= method_end or lines[set_cursor].strip() != expected_set:
+        actual = lines[set_cursor].strip() if set_cursor < method_end else "<end>"
+        raise PatchError(
+            "accepted session-parameter application flow changed; "
+            f"found {actual!r}"
+        )
+
+    indent = re.match(r"^(\s*)", lines[set_cursor]).group(1)
     injected = [
         "",
         f'{indent}const-string v15, "GCamSessionParamKey"',
+        "",
+        f"{indent}invoke-virtual {{v13}}, "
+        "Landroid/hardware/camera2/CaptureRequest$Key;->getName()"
+        "Ljava/lang/String;",
+        "",
+        f"{indent}move-result-object v14",
         "",
         f"{indent}invoke-static {{v15, v14}}, "
         "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
         f"{indent}move-result v15",
     ]
-    lines = lines[: cursor + 1] + injected + lines[cursor + 1 :]
+    lines = lines[:set_cursor] + injected + lines[set_cursor:]
 
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
@@ -2376,7 +2441,11 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "marble Camera2 probe configured PRIVATE 800x600 + RAW10 "
             "4624x3472 + YUV_420_888 800x600 successfully"
         ),
-        "source": "Lve.g CaptureRequest.Key map before session configuration",
+        "source": (
+            "Lve.g CaptureRequest.Key entries accepted by the "
+            "Lpi.d() session-key allowlist"
+        ),
+        "logs_only_applied_session_parameters": True,
     }
 
 
