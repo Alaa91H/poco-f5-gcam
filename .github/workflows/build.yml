@@ -663,7 +663,9 @@ jobs:
             printf '%s\n' '- Unsupported-device gate: `patched (fail-closed)`'
             printf '%s\n' '- Non-Tensor feature guards: `GXP/TPU/DarwiNN disabled`'
             printf '%s\n' '- Native GCam startup: `almond TPU + Tomte grain disabled`'
-            printf '%s\n' '- Patch target: `constructor + klm queries + GCam InitParams provider`'
+            printf '%s\n' '- Native GXP delegate: `forced to existing CPU/TFLite fallback`'
+            printf '%s\n' '- Native model verification bypass: `false`'
+            printf '%s\n' '- Patch target: `constructor + klm queries + GCam InitParams + libgcastartup`'
             printf '%s\n' '- On-device runtime validation: `NOT RUN`'
             printf '%s\n' '- Distribution status: `BLOCKED` until real-device runtime validation passes'
           } >> "$GITHUB_STEP_SUMMARY"
