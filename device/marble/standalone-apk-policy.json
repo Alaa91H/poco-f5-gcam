@@ -35,7 +35,8 @@
     "remove_pairip": false,
     "zipalign": true,
     "resign": true,
-    "patch_unsupported_device_gate": true
+    "patch_unsupported_device_gate": true,
+    "patch_tensor_gxp_tpu_feature_queries": true
   },
   "signing": {
     "preferred_mode": "repository-keystore",
@@ -52,8 +53,9 @@
     "The original Google signature cannot survive bundle merging or any later modification.",
     "Original Google-signed split APKs remain the preservation baseline, but Pixel Camera 11.0.073 rejects POCO F5 at runtime before the camera UI.",
     "A merged standalone APK is experimental until the real-device runtime smoke test passes on POCO F5 / API 37.",
-    "The compatibility build patches only the exact unsupported-device constructor throw and redirects it to Pixel Camera's existing common finalization path; the patch fails closed if the bytecode shape changes.",
+    "The compatibility build patches the exact unsupported-device constructor throw and, based on POCO F5 runtime evidence, forces Tensor-only GXP/TPU/DarwiNN feature queries off while preserving all unrelated feature flags; both patches fail closed if the expected bytecode shape changes.",
     "A stable repository signing key is required for APK-to-APK upgrades between project-signed experimental builds.",
+    "POCO F5 runtime validation reached CameraService successfully but then showed libgxp.so/DarwiNN initialization failures followed by a null Gcam object; the non-Tensor guard prevents selecting those Pixel Tensor accelerator paths.",
     "PairIP is not removed or bypassed by this pipeline."
   ],
   "runtime_validation": {
