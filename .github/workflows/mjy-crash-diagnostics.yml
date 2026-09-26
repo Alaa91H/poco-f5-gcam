@@ -1,0 +1,75 @@
+name: Pixel Camera mjy crash diagnostics
+
+on:
+  push:
+    paths:
+      - ".github/workflows/mjy-crash-diagnostics.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download exact tested standalone artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/artifact"
+          gh run download 36234835867 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "compatibility-patched-unvalidated-poco-f5-pixel-camera-11.0.073.972752740.32" \
+            --dir "$RUNNER_TEMP/artifact"
+          APK="$(find "$RUNNER_TEMP/artifact" -type f -name '*.apk' -print -quit)"
+          test -s "$APK"
+          echo "TESTED_APK=$APK" >> "$GITHUB_ENV"
+          unzip -j "$APK" classes.dex -d "$RUNNER_TEMP/dex"
+          test -s "$RUNNER_TEMP/dex/classes.dex"
+
+      - name: Download pinned baksmali
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          policy = json.load(open("device/marble/standalone-apk-policy.json"))
+          tool = policy["toolchain"]["smali"]
+          print(tool["baksmali_url"])
+          print(tool["baksmali_sha256"])
+          PY
+          )
+          curl --fail --location --silent --show-error --retry 3 "${TOOL[0]}" -o "$RUNNER_TEMP/baksmali.jar"
+          echo "${TOOL[1]}  $RUNNER_TEMP/baksmali.jar" | sha256sum --check --strict
+
+      - name: Disassemble classes.dex and isolate mjy
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/smali"
+          java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/dex/classes.dex" -o "$OUT"
+          MJY="$OUT/mjy.smali"
+          test -s "$MJY"
+          cp "$MJY" "$RUNNER_TEMP/mjy.smali"
+
+          echo "=== mjy IllegalArgumentException sites ==="
+          grep -n -B 24 -A 36 -F "Ljava/lang/IllegalArgumentException;" "$MJY" || true
+          echo
+          echo "=== mjy Gcam_Create / InitParams region ==="
+          grep -n -B 180 -A 220 -F "Gcam_Create" "$MJY" || true
+          echo
+          echo "=== mjy all throw sites ==="
+          grep -n -B 16 -A 16 -E "^[[:space:]]*throw " "$MJY" || true
+
+      - name: Upload mjy smali
+        uses: actions/upload-artifact@v7
+        with:
+          name: tested-pixel-camera-mjy-smali
+          path: ${{ runner.temp }}/mjy.smali
+          retention-days: 7
+          if-no-files-found: error
