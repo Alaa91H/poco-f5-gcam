@@ -246,7 +246,12 @@ public final class PixelGraphProbeActivity extends Activity {
                     .put("error", "One or more exact stream sizes are not advertised");
         }
 
-        SurfaceTexture texture = new SurfaceTexture(false);
+        SurfaceTexture texture;
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            texture = new SurfaceTexture(false);
+        } else {
+            texture = new SurfaceTexture(0);
+        }
         texture.setDefaultBufferSize(800, 600);
         Surface privateSurface = new Surface(texture);
         ImageReader rawReader = needRaw
