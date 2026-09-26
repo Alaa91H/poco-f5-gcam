@@ -155,6 +155,126 @@ jobs:
 
           sed -n '1,2400p' "$RUNNER_TEMP/mjy-crash-analysis.txt"
 
+      - name: Extract OneCamera provider crash path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/ofe.dex" <<'PY'
+          import io, sys, zipfile
+          from pathlib import Path
+
+          package=Path(sys.argv[1])
+          out=Path(sys.argv[2])
+          needle=b"Lofe;"
+          candidates=[]
+          with zipfile.ZipFile(package) as outer:
+              for info in outer.infolist():
+                  if not info.filename.lower().endswith(".apk"):
+                      continue
+                  blob=outer.read(info)
+                  if not zipfile.is_zipfile(io.BytesIO(blob)):
+                      continue
+                  with zipfile.ZipFile(io.BytesIO(blob)) as apk:
+                      for dex in apk.namelist():
+                          if not (dex.startswith("classes") and dex.endswith(".dex")):
+                              continue
+                          data=apk.read(dex)
+                          if needle in data:
+                              candidates.append((info.filename,dex,data))
+          if len(candidates) != 1:
+              raise SystemExit(f"expected one dex containing Lofe;, found {[(a,b) for a,b,_ in candidates]}")
+          apk_name,dex_name,data=candidates[0]
+          out.write_bytes(data)
+          print(f"source_apk={apk_name}")
+          print(f"dex={dex_name}")
+          print(f"size={len(data)}")
+          PY
+
+          rm -rf "$RUNNER_TEMP/ofe-smali"
+          mkdir -p "$RUNNER_TEMP/ofe-smali"
+          java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/ofe.dex" -o "$RUNNER_TEMP/ofe-smali"
+
+          OFE="$(find "$RUNNER_TEMP/ofe-smali" -type f -name 'ofe.smali' -print -quit)"
+          test -n "$OFE"
+          cp "$OFE" "$RUNNER_TEMP/ofe.smali"
+
+          python - "$RUNNER_TEMP/ofe-smali" "$OFE" "$RUNNER_TEMP/ofe-onecamera-analysis.txt" <<'PY'
+          import re, sys
+          from pathlib import Path
+
+          root=Path(sys.argv[1])
+          ofe=Path(sys.argv[2])
+          out_path=Path(sys.argv[3])
+          lines=ofe.read_text(encoding="utf-8").splitlines()
+          out=[]
+
+          def bounds(index):
+              s=index
+              while s>=0 and not lines[s].startswith(".method "):
+                  s-=1
+              e=index
+              while e<len(lines) and lines[e].strip()!=".end method":
+                  e+=1
+              return s,min(e,len(lines)-1)
+
+          optional_sites=[
+              i for i,l in enumerate(lines)
+              if "Lj$/util/Optional;->of(" in l
+          ]
+          out.append(f"ofe_optional_of_site_count={len(optional_sites)}")
+          out.append("")
+          seen=set()
+          for idx in optional_sites:
+              s,e=bounds(idx)
+              if (s,e) in seen:
+                  continue
+              seen.add((s,e))
+              out.append("="*80)
+              out.append(f"ofe Optional.of method lines {s+1}-{e+1}: {lines[s]}")
+              out.extend(f"{i+1:06d}: {lines[i]}" for i in range(s,e+1))
+              out.append("")
+
+          # Find direct callers of Lofe;->a and dump those complete methods.
+          caller_count=0
+          for smali in root.rglob("*.smali"):
+              if smali == ofe:
+                  continue
+              slines=smali.read_text(encoding="utf-8", errors="replace").splitlines()
+              hits=[i for i,l in enumerate(slines) if "Lofe;->a(" in l]
+              if not hits:
+                  continue
+              for idx in hits:
+                  s=idx
+                  while s>=0 and not slines[s].startswith(".method "):
+                      s-=1
+                  e=idx
+                  while e<len(slines) and slines[e].strip()!=".end method":
+                      e+=1
+                  caller_count+=1
+                  out.append("="*80)
+                  out.append(f"caller {smali.relative_to(root)} lines {s+1}-{e+1}: {slines[s]}")
+                  if e-s <= 700:
+                      out.extend(f"{i+1:06d}: {slines[i]}" for i in range(s,e+1))
+                  else:
+                      lo=max(s,idx-220); hi=min(e,idx+220)
+                      out.extend(f"{i+1:06d}: {slines[i]}" for i in range(lo,hi+1))
+                  out.append("")
+          out.insert(1, f"direct_ofe_a_caller_count={caller_count}")
+          out_path.write_text("\n".join(out)+"\n", encoding="utf-8")
+          PY
+
+          sed -n '1,3200p' "$RUNNER_TEMP/ofe-onecamera-analysis.txt"
+
+      - name: Upload OneCamera provider diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-ofe-onecamera-diagnostics
+          path: |
+            ${{ runner.temp }}/ofe.smali
+            ${{ runner.temp }}/ofe-onecamera-analysis.txt
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Upload mjy diagnostics
         uses: actions/upload-artifact@v7
         with:
