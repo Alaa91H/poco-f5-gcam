@@ -90,6 +90,49 @@ jobs:
 
           cat "$REPORT"
 
+      - name: Disassemble tuning decision regions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LIB="$RUNNER_TEMP/libgcastartup.so"
+          OUT="$RUNNER_TEMP/pixel-camera-native-tuning-disassembly.txt"
+
+          python - "$PIXEL_CAMERA_SOURCE" "$LIB" <<'PY'
+          import sys
+          from pathlib import Path
+          from scripts.analyze_pixel_camera_native import find_native_library
+
+          data, _ = find_native_library(Path(sys.argv[1]))
+          Path(sys.argv[2]).write_bytes(data)
+          PY
+
+          DISASM="$(command -v llvm-objdump || command -v objdump || true)"
+          if [ -z "$DISASM" ]; then
+            echo "::error::No objdump implementation is available on the runner."
+            exit 1
+          fi
+
+          {
+            echo "tool=$DISASM"
+            echo
+            echo "=== failed tuning / abort region ==="
+            "$DISASM" -d --start-address=0x691be80 --stop-address=0x691c300 "$LIB"
+            echo
+            echo "=== tuning defaults region ==="
+            "$DISASM" -d --start-address=0x6e3f800 --stop-address=0x6e3fc80 "$LIB"
+          } > "$OUT"
+
+          sed -n '1,260p' "$OUT"
+
+      - name: Upload tuning disassembly
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-native-tuning-disassembly
+          path: ${{ runner.temp }}/pixel-camera-native-tuning-disassembly.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload tuning diagnostics
         uses: actions/upload-artifact@v7
         with:
