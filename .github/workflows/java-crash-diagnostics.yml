@@ -350,7 +350,7 @@ jobs:
               "Landroid/hardware/camera2/CameraDevice;->createCaptureSession",
               "Landroid/hardware/camera2/CameraDevice;->createReprocessableCaptureSession",
               "Landroid/hardware/camera2/params/SessionConfiguration;",
-              "new-instance v",
+              "Lrr;-><init>",
               "Lua;-><init>",
           )
           for dex_info in manifest["dex_files"]:
@@ -359,8 +359,9 @@ jobs:
                   lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
                   for idx,line in enumerate(lines):
                       camera2_hit=any(token in line for token in patterns[:4])
-                      lua_hit=("Lua;-><init>" in line) or ("new-instance" in line and "Lua;" in line)
-                      if not (camera2_hit or lua_hit):
+                      rr_ctor_hit="Lrr;-><init>" in line
+                      lua_hit="Lua;-><init>" in line
+                      if not (camera2_hit or rr_ctor_hit or lua_hit):
                           continue
                       ms,me=method_bounds(lines,idx)
                       key=(str(p),ms,me)
