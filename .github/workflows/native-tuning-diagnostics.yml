@@ -5,6 +5,9 @@ on:
   push:
     paths:
       - ".github/workflows/native-tuning-diagnostics.yml"
+      - "scripts/analyze_pixel_camera_native.py"
+      - "scripts/patch_pixel_camera_device_gate.py"
+      - "tests/test_analyze_pixel_camera_native.py"
 
 permissions:
   contents: read
@@ -73,7 +76,11 @@ jobs:
               out.write("- Profile spoof: `false`\n")
               for marker, entry in strings.items():
                   xrefs = sum(
-                      len(item.get("xref_offsets") or [])
+                      len(
+                          item.get("resolved_xref_offsets")
+                          or item.get("xref_offsets")
+                          or []
+                      )
                       for item in entry.get("occurrences") or []
                   )
                   out.write(
