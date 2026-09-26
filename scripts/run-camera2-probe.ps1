@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
-$ExpectedProbeVersion = "0.3.4"
+$ExpectedProbeVersion = "0.3.5"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
@@ -399,6 +399,19 @@ if ($YuvRuntime) {
 
     $successCount = @($yuvParsed.cameras | Where-Object { $_.success -eq $true }).Count
     $cameraCount = @($yuvParsed.cameras).Count
+    $maxCamerasInUseCount = @(
+        $yuvParsed.cameras |
+            Where-Object {
+                $_.error -and [string]$_.error -match 'CameraDevice error 2\b'
+            }
+    ).Count
+    if ($cameraCount -gt 0 -and $maxCamerasInUseCount -eq $cameraCount) {
+        Fail (
+            "YUV runtime probe was invalid because every camera open failed with " +
+            "ERROR_MAX_CAMERAS_IN_USE. Close any camera client and retry. " +
+            "The runner already force-stops Pixel Camera before this test."
+        )
+    }
     Write-Host "YUV runtime probe: $successCount/$cameraCount exposed camera IDs delivered sustained YUV frames."
 }
 $deviceCode = [string]$parsed.device.device
