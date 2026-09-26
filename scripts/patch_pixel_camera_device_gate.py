@@ -1755,6 +1755,21 @@ def patch_onecamera_optional_key_smali_text(
     if method_end >= len(lines):
         raise PatchError("ofe.a() is unterminated")
 
+    first_key_line = (
+        "sget-object v1, Ltdn;->a:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    first_key_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == first_key_line
+    ]
+    if len(first_key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdn.a request key in Lodr.a(Object); "
+            f"found {len(first_key_indexes)}"
+        )
+    first_key_index = first_key_indexes[0]
+
     key_line = (
         "sget-object v0, Ltdn;->b:"
         "Landroid/hardware/camera2/CaptureRequest$Key;"
@@ -2117,14 +2132,30 @@ def patch_onecamera_odr_missing_request_key_smali_text(
             "Lodr two-entry request-set result no longer lands in p1"
         )
 
+    label_first_absent = "poco_odr_ldtn_a_absent"
     label_absent = "poco_odr_ldtn_b_absent"
     label_ready = "poco_odr_request_set_ready"
-    for label in (label_absent, label_ready):
+    for label in (label_first_absent, label_absent, label_ready):
         if any(
             line.strip() == f":{label}"
             for line in lines[method_start:method_end]
         ):
             raise PatchError(f"Lodr compatibility label already exists: {label}")
+
+    first_key_indent = re.match(r"^(\s*)", lines[first_key_index]).group(1)
+    first_key_guard = [
+        "",
+        f"{first_key_indent}# POCO F5: Ltdn.a is optional on non-Pixel camera HALs.",
+        f"{first_key_indent}if-eqz v1, :{label_first_absent}",
+    ]
+    lines = (
+        lines[: first_key_index + 1]
+        + first_key_guard
+        + lines[first_key_index + 1 :]
+    )
+    key_index += len(first_key_guard)
+    pair_index += len(first_key_guard)
+    move_result_index += len(first_key_guard)
 
     key_indent = re.match(r"^(\s*)", lines[key_index]).group(1)
     key_guard = [
@@ -2148,6 +2179,15 @@ def patch_onecamera_odr_missing_request_key_smali_text(
         "",
         f"{result_indent}move-result-object p1",
         "",
+        f"{result_indent}goto :{label_ready}",
+        "",
+        f"{result_indent}:{label_first_absent}",
+        "",
+        f"{result_indent}invoke-static {{}}, "
+        "Ljava/util/Collections;->emptySet()Ljava/util/Set;",
+        "",
+        f"{result_indent}move-result-object p1",
+        "",
         f"{result_indent}:{label_ready}",
     ]
     lines = lines[: move_result_index + 1] + fallback + lines[move_result_index + 1 :]
@@ -2159,7 +2199,8 @@ def patch_onecamera_odr_missing_request_key_smali_text(
         "method": signature,
         "key": "Ltdn.b",
         "preserved_key": "Ltdn.a",
-        "fallback": "Collections.singleton(first_request_entry)",
+        "additional_nullable_key": "Ltdn.a",
+        "fallback": "singleton(Ltdn.a) when only Ltdn.b is absent; emptySet when Ltdn.a is absent",
         "behavior": (
             "omit only the absent Pixel-only Ltdn.b request entry while "
             "preserving the supported Ltdn.a request"
