@@ -46,6 +46,7 @@ KEEPALIVE_RECEIVER_BYTES = KEEPALIVE_RECEIVER_DESCRIPTOR.encode("utf-8")
 ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
+ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
 )
@@ -2008,6 +2009,193 @@ def find_and_patch_onecamera_missing_request_key_smali_tree(
     metadata["smali_path"] = os.fspath(target.relative_to(root))
     return metadata
 
+
+
+def patch_onecamera_odr_missing_request_key_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Omit only the absent Ltdn.b request entry in Lodr.a(Object).
+
+    Real-device Android 17 evidence identifies odr.a(PG:24) as the remaining
+    direct caller of Lupd.<init> with a null request key. The same Pixel Camera
+    build already proves Ltdn.b is absent on marble while Ltdn.a is usable.
+
+    Keep the Ltdn.a request entry unchanged. If Ltdn.b is null, reuse a normal
+    singleton Set containing the first entry instead of constructing Lupd with
+    the absent key. This remains caller-local and does not weaken Lupd's
+    non-null contract globally.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*" + re.escape(ONECAMERA_ODR_DESCRIPTOR) + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one OneCamera request-entry class Lodr;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = ".method public final a(Ljava/lang/Object;)V"
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == signature
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Lodr.a(Object) method; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lodr.a(Object) is unterminated")
+
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    expected_tokens = (
+        "sget-object v1, Ltdn;->a:Landroid/hardware/camera2/CaptureRequest$Key;",
+        "invoke-direct {v2, v1, v0}, "
+        "Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V",
+        "sget-object v0, Ltdn;->b:Landroid/hardware/camera2/CaptureRequest$Key;",
+        "invoke-direct {v1, v0, p1}, "
+        "Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V",
+        "invoke-static {v2, v1}, "
+        "Lyfm;->I(Ljava/lang/Object;Ljava/lang/Object;)Lyfm;",
+        "invoke-interface {p0, p1}, Luoi;->t(Ljava/util/Set;)V",
+    )
+    for token in expected_tokens:
+        if method_text.count(token) != 1:
+            raise PatchError(
+                "Lodr Ltdn.a/Ltdn.b request-entry shape changed; expected one "
+                f"{token!r}"
+            )
+
+    key_line = (
+        "sget-object v0, Ltdn;->b:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    key_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == key_line
+    ]
+    if len(key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdn.b request key in Lodr.a(Object); "
+            f"found {len(key_indexes)}"
+        )
+    key_index = key_indexes[0]
+
+    pair_call = (
+        "invoke-static {v2, v1}, "
+        "Lyfm;->I(Ljava/lang/Object;Ljava/lang/Object;)Lyfm;"
+    )
+    pair_indexes = [
+        i for i in range(key_index + 1, method_end)
+        if lines[i].strip() == pair_call
+    ]
+    if len(pair_indexes) != 1:
+        raise PatchError(
+            "expected exactly one two-entry request-set builder after Ltdn.b"
+        )
+    pair_index = pair_indexes[0]
+
+    move_result_index = pair_index + 1
+    while move_result_index < method_end and not lines[move_result_index].strip():
+        move_result_index += 1
+    if (
+        move_result_index >= method_end
+        or lines[move_result_index].strip() != "move-result-object p1"
+    ):
+        raise PatchError(
+            "Lodr two-entry request-set result no longer lands in p1"
+        )
+
+    label_absent = "poco_odr_ldtn_b_absent"
+    label_ready = "poco_odr_request_set_ready"
+    for label in (label_absent, label_ready):
+        if any(
+            line.strip() == f":{label}"
+            for line in lines[method_start:method_end]
+        ):
+            raise PatchError(f"Lodr compatibility label already exists: {label}")
+
+    key_indent = re.match(r"^(\s*)", lines[key_index]).group(1)
+    key_guard = [
+        "",
+        f"{key_indent}# POCO F5: Ltdn.b is an optional Pixel-only request key.",
+        f"{key_indent}if-eqz v0, :{label_absent}",
+    ]
+    lines = lines[: key_index + 1] + key_guard + lines[key_index + 1 :]
+
+    pair_index += len(key_guard)
+    move_result_index += len(key_guard)
+    result_indent = re.match(r"^(\s*)", lines[move_result_index]).group(1)
+    fallback = [
+        "",
+        f"{result_indent}goto :{label_ready}",
+        "",
+        f"{result_indent}:{label_absent}",
+        "",
+        f"{result_indent}invoke-static {{v2}}, "
+        "Ljava/util/Collections;->singleton(Ljava/lang/Object;)Ljava/util/Set;",
+        "",
+        f"{result_indent}move-result-object p1",
+        "",
+        f"{result_indent}:{label_ready}",
+    ]
+    lines = lines[: move_result_index + 1] + fallback + lines[move_result_index + 1 :]
+
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "omit_absent_ldtn_b_request_entry",
+        "class": ONECAMERA_ODR_DESCRIPTOR,
+        "method": signature,
+        "key": "Ltdn.b",
+        "preserved_key": "Ltdn.a",
+        "fallback": "Collections.singleton(first_request_entry)",
+        "behavior": (
+            "omit only the absent Pixel-only Ltdn.b request entry while "
+            "preserving the supported Ltdn.a request"
+        ),
+    }
+
+
+def find_and_patch_onecamera_odr_missing_request_key_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*" + re.escape(ONECAMERA_ODR_DESCRIPTOR) + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected OneCamera request-entry class Lodr; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_odr_missing_request_key_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
 
 
 def patch_onecamera_open_camera_fallback_smali_text(
