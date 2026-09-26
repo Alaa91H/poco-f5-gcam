@@ -146,7 +146,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|mjy\\.a\\(PG:1626\\)|sensor-ID uniqueness)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -179,7 +179,7 @@ for ($i = 0; $i -lt $logLines.Count; $i++) {
 $rootCauseLines = @(
     $logLines |
         Where-Object {
-            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION)"
+            $_ -match "(?i)(Caused by:|NullPointerException|IllegalStateException|IllegalArgumentException|SecurityException|UnsatisfiedLinkError|ClassNotFoundException|NoClassDefFoundError|Resources(\$|\.)NotFoundException|dlopen failed|GxpCapi_|Gcam_Create|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|KeepAliveBroadcastReceiver|BackgroundServiceStartNotAllowedException|lib_aion_buffer|aion_context|AION|Gcam_AllSensorIdsUnique|mjy\\.a\\(PG:1626\\))"
         } |
         Select-Object -Last 200
 )
@@ -270,6 +270,17 @@ $keepAliveBackgroundCrashObserved = $keepAliveBackgroundCrashLines.Count -gt 0
 $aionMissingLibraryObserved = $aionMissingLibraryLines.Count -gt 0
 $aionFatalCheckObserved = $aionFatalCheckLines.Count -gt 0
 
+$sensorIdUniquenessCrashLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(mjy\.a\(PG:1626\)|Gcam_AllSensorIdsUnique)'
+        } |
+        Select-Object -Last 50
+)
+$sensorIdUniquenessCrashObserved = (
+    $logcat -match '(?is)java\.lang\.IllegalArgumentException.*?\bat\s+mjy\.a\(PG:1626\)'
+)
+
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
 $topActivityMatches = $resumedLines.Count -gt 0
@@ -330,6 +341,8 @@ $report = [ordered]@{
         aionMissingLibraryLines = $aionMissingLibraryLines
         aionFatalCheckObserved = $aionFatalCheckObserved
         aionFatalCheckLines = $aionFatalCheckLines
+        sensorIdUniquenessCrashObserved = $sensorIdUniquenessCrashObserved
+        sensorIdUniquenessCrashLines = $sensorIdUniquenessCrashLines
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
@@ -381,6 +394,7 @@ Write-Host "Tuning abort observed: $tuningAbortObserved"
 Write-Host "KeepAlive background crash observed: $keepAliveBackgroundCrashObserved"
 Write-Host "AION missing library observed: $aionMissingLibraryObserved"
 Write-Host "AION fatal check observed: $aionFatalCheckObserved"
+Write-Host "Sensor-ID uniqueness crash observed: $sensorIdUniquenessCrashObserved"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
