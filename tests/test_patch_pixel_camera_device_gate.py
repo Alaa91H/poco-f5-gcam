@@ -208,6 +208,7 @@ RP_SAMPLE = r'''.class public final Lrp;
 .method public final e(Lve;)Z
     .registers 21
 
+    :cond_119
     iget-object v5, v6, Lve;->g:Ljava/util/Map;
 
     invoke-interface {v5}, Ljava/util/Map;->entrySet()Ljava/util/Set;
@@ -821,7 +822,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                 changed
             )
 
-    def test_logs_applied_session_parameters_without_changing_behavior(self):
+    def test_injects_xiaomi_client_name_into_session_parameters(self):
         patched, metadata = (
             patcher.patch_onecamera_session_parameter_logging_smali_text(
                 RP_SAMPLE
@@ -857,17 +858,60 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "Ljava/lang/String;",
             patched,
         )
-        self.assertEqual(metadata["status"], "diagnostic_logging")
+        self.assertIn(
+            'const-string v14, "com.xiaomi.sessionparams.clientName"',
+            patched,
+        )
+        self.assertIn(
+            'const-string v14, "com.android.camera"',
+            patched,
+        )
+        self.assertIn(
+            "Landroid/hardware/camera2/CaptureRequest$Key;-><init>"
+            "(Ljava/lang/String;Ljava/lang/Class;)V",
+            patched,
+        )
+        self.assertIn(
+            "Landroid/hardware/camera2/CaptureRequest$Builder;->set"
+            "(Landroid/hardware/camera2/CaptureRequest$Key;"
+            "Ljava/lang/Object;)V",
+            patched,
+        )
+        self.assertIn(
+            'const-string v13, "GCamXiaomiClientName"',
+            patched,
+        )
+        self.assertIn(":poco_xiaomi_client_name_done", patched)
+        self.assertLess(
+            patched.index('const-string v14, "com.xiaomi.sessionparams.clientName"'),
+            patched.index("iget-object v5, v6, Lve;->g:Ljava/util/Map;"),
+        )
+        self.assertNotIn("com.xiaomi.sessionparams.operation", patched)
+        self.assertNotIn("com.xiaomi.sessionparams.cameraxConnection", patched)
+        self.assertNotIn("com.xiaomi.sessionparams.thirdPartyYUVSnapshot", patched)
+        self.assertEqual(
+            metadata["status"],
+            "xiaomi_client_name_session_injection",
+        )
         self.assertEqual(metadata["class"], "Lrp;")
         self.assertEqual(metadata["tag"], "GCamSessionParamKey")
         self.assertEqual(metadata["scratch_register"], "v15")
-        self.assertEqual(
-            metadata["scratch_liveness"],
-            "verified unused after key-name lookup",
-        )
+        self.assertIn("v13/v14 are overwritten", metadata["scratch_liveness"])
         self.assertTrue(metadata["logs_only_applied_session_parameters"])
         self.assertIn("Lpi.d()", metadata["source"])
-        self.assertFalse(metadata["behavior_changed"])
+        self.assertTrue(metadata["behavior_changed"])
+        self.assertEqual(
+            metadata["xiaomi_client_name"]["key"],
+            "com.xiaomi.sessionparams.clientName",
+        )
+        self.assertEqual(
+            metadata["xiaomi_client_name"]["value"],
+            "com.android.camera",
+        )
+        self.assertEqual(
+            metadata["xiaomi_client_name"]["additional_xiaomi_session_tags_changed"],
+            [],
+        )
         self.assertIn(
             "did not change the Xiaomi logical-camera type 7 failure",
             metadata["session_parameter_isolation_result"],
@@ -885,6 +929,33 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         with self.assertRaisesRegex(
             patcher.PatchError,
             "diagnostic scratch register v15",
+        ):
+            patcher.patch_onecamera_session_parameter_logging_smali_text(
+                changed
+            )
+
+
+    def test_xiaomi_client_name_injection_fails_closed_if_allowlist_boundary_moves(self):
+        changed = RP_SAMPLE.replace(":cond_119", ":cond_118")
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "allowlist construction no longer ends at :cond_119",
+        ):
+            patcher.patch_onecamera_session_parameter_logging_smali_text(
+                changed
+            )
+
+    def test_xiaomi_client_name_injection_fails_closed_if_v15_becomes_live(self):
+        changed = RP_SAMPLE.replace(
+            ":cond_119\n"
+            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;",
+            ":cond_119\n"
+            "    const/4 v15, 0x1\n\n"
+            "    iget-object v5, v6, Lve;->g:Ljava/util/Map;",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "Xiaomi clientName scratch register v15",
         ):
             patcher.patch_onecamera_session_parameter_logging_smali_text(
                 changed
