@@ -327,7 +327,7 @@ jobs:
                   e+=1
               return s,min(e,len(lines)-1)
 
-          targets=("upd","mta","oys","oyt","oty","tdi")
+          targets=("upd","mta","oys","oyt","oty","tdi","rr")
           target_locations={}
           for name in targets:
               matches=[]
