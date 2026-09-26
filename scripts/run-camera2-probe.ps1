@@ -15,6 +15,7 @@ Set-StrictMode -Version Latest
 
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
+$ExpectedProbeVersion = "0.3.1"
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
 $ErrorRelativePath = "files/camera2-probe-error.txt"
@@ -138,6 +139,33 @@ if ($packageCheck.ExitCode -ne 0 -or
     )
 }
 
+$installedPackageDump = Invoke-Adb -Arguments @(
+    $adbPrefix + @("shell", "dumpsys", "package", $Package)
+) -AllowFailure
+$versionMatch = [regex]::Match(
+    $installedPackageDump.Text,
+    "(?m)^\s*versionName=([^\s]+)"
+)
+if (-not $versionMatch.Success -or
+        $versionMatch.Groups[1].Value -ne $ExpectedProbeVersion) {
+    $actualVersion = if ($versionMatch.Success) {
+        $versionMatch.Groups[1].Value
+    }
+    else {
+        "<unknown>"
+    }
+    Fail (
+        "Camera2 probe version mismatch." +
+        [Environment]::NewLine +
+        "Expected: $ExpectedProbeVersion" +
+        [Environment]::NewLine +
+        "Installed: $actualVersion" +
+        [Environment]::NewLine +
+        "Download the latest camera2-probe-debug artifact before retrying."
+    )
+}
+
+Write-Host "Camera2 probe version: $ExpectedProbeVersion"
 Write-Host "Launching probe and generating report..."
 Invoke-Adb -Arguments @($adbPrefix + @("shell", "am", "force-stop", $Package)) -AllowFailure | Out-Null
 Invoke-Adb -Arguments @(
