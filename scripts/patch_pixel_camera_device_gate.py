@@ -719,65 +719,107 @@ def _patch_logical_camera_sensor_ids(
     """
 
     method_text = "\n".join(lines[method_start : method_end + 1])
-    required_shape = (
+
+    # Keep global checks only for camera-specific tokens that are expected to
+    # be unique in this provider method. Generic register operations such as
+    # move-result-object v7 can legitimately occur many times elsewhere in the
+    # same large synthetic method, so those are verified locally around the
+    # unique metadata converter call below.
+    unique_camera_shape = (
         "sget-object v0, Luve;->b:Luve;",
         "aput-object v0, v13, v12",
         "sget-object v0, Luve;->a:Luve;",
         "aput-object v0, v13, p0",
         "aget-object v0, v13, v12",
-        "invoke-static {v5}, "
-        "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->"
-        "C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;",
-        "move-result-object v7",
-        "move-object/from16 v24, v5",
+    )
+    for token in unique_camera_shape:
+        count = method_text.count(token)
+        if count != 1:
+            raise PatchError(
+                "top-level logical-camera metadata shape changed; expected one "
+                f"{token!r}, found {count}"
+            )
+
+    converter_indexes = [
+        i
+        for i in range(method_start, method_end)
+        if (
+            "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->"
+            "C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;" in lines[i]
+            and "{v5}" in lines[i]
+        )
+    ]
+    if len(converter_indexes) != 1:
+        raise PatchError(
+            "expected exactly one top-level NativeMetadataConverter.C(v5) call; "
+            f"found {len(converter_indexes)}"
+        )
+    converter_index = converter_indexes[0]
+
+    def _previous_code_line(index: int) -> int:
+        cursor = index - 1
+        while cursor >= method_start:
+            stripped = lines[cursor].strip()
+            if stripped and not stripped.startswith("#"):
+                return cursor
+            cursor -= 1
+        raise PatchError("metadata converter has no preceding code instruction")
+
+    def _next_code_line_local(index: int) -> int:
+        cursor = index + 1
+        while cursor < method_end:
+            stripped = lines[cursor].strip()
+            if stripped and not stripped.startswith("#"):
+                return cursor
+            cursor += 1
+        raise PatchError("metadata converter sequence ended unexpectedly")
+
+    saved_source_index = _previous_code_line(converter_index)
+    if lines[saved_source_index].strip() != "move-object/from16 v24, v5":
+        raise PatchError(
+            "top-level metadata converter is no longer preceded by "
+            "'move-object/from16 v24, v5'"
+        )
+
+    result_index = _next_code_line_local(converter_index)
+    if lines[result_index].strip() != "move-result-object v7":
+        raise PatchError(
+            "top-level metadata converter is no longer followed by "
+            "'move-result-object v7'"
+        )
+
+    add_index = _next_code_line_local(result_index)
+    add_call = (
+        "invoke-virtual {v14, v7}, "
+        "Lcom/google/googlex/gcam/StaticMetadataVector;->"
+        "c(Lcom/google/googlex/gcam/StaticMetadata;)V"
+    )
+    if lines[add_index].strip() != add_call:
+        raise PatchError(
+            "top-level metadata result is no longer added to StaticMetadataVector"
+        )
+
+    post_add_code: list[tuple[int, str]] = []
+    cursor = add_index + 1
+    while cursor < method_end and len(post_add_code) < 8:
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#"):
+            post_add_code.append((cursor, stripped))
+        cursor += 1
+
+    expected_post_add_prefix = (
         "move-object/from16 v5, v24",
         "check-cast v5, Luur;",
         "iget-object v5, v5, Luur;->b:Lyfm;",
         "invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;",
     )
-    for token in required_shape:
-        if method_text.count(token) != 1:
-            raise PatchError(
-                "top-level logical-camera metadata shape changed; expected one "
-                f"{token!r}, found {method_text.count(token)}"
-            )
-
-    add_call = (
-        "    invoke-virtual {v14, v7}, "
-        "Lcom/google/googlex/gcam/StaticMetadataVector;->"
-        "c(Lcom/google/googlex/gcam/StaticMetadata;)V"
+    actual_post_add_prefix = tuple(
+        item[1] for item in post_add_code[: len(expected_post_add_prefix)]
     )
-    add_indexes = [
-        i
-        for i in range(method_start, method_end)
-        if lines[i] == add_call
-    ]
-    if len(add_indexes) != 1:
+    if actual_post_add_prefix != expected_post_add_prefix:
         raise PatchError(
-            "expected exactly one top-level StaticMetadataVector add; "
-            f"found {len(add_indexes)}"
-        )
-    add_index = add_indexes[0]
-
-    converter_indexes = [
-        i
-        for i in range(max(method_start, add_index - 45), add_index)
-        if "NativeMetadataConverter;->C(Luus;)" in lines[i]
-        and "{v5}" in lines[i]
-    ]
-    if len(converter_indexes) != 1:
-        raise PatchError(
-            "top-level metadata add is no longer paired with one converter call"
-        )
-
-    physical_set_indexes = [
-        i
-        for i in range(add_index + 1, min(method_end, add_index + 30))
-        if lines[i].strip() == "iget-object v5, v5, Luur;->b:Lyfm;"
-    ]
-    if len(physical_set_indexes) != 1:
-        raise PatchError(
-            "top-level metadata add is no longer followed by the physical-ID set"
+            "top-level metadata physical-ID sequence changed after vector add; "
+            f"expected {expected_post_add_prefix!r}, got {actual_post_add_prefix!r}"
         )
 
     labels = (
