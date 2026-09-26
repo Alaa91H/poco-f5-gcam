@@ -682,13 +682,24 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                 changed
             )
 
-    def test_logs_onecamera_session_parameter_keys_without_changing_flow(self):
+    def test_omits_unsupported_stabilization_session_key_and_logs_rest(self):
         patched, metadata = (
             patcher.patch_onecamera_session_parameter_logging_smali_text(
                 RP_SAMPLE
             )
         )
 
+        self.assertIn(
+            "sget-object v15, "
+            "Landroid/hardware/camera2/CaptureRequest;->"
+            "CONTROL_VIDEO_STABILIZATION_MODE:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;",
+            patched,
+        )
+        self.assertIn(
+            "if-eq v13, v15, :goto_123",
+            patched,
+        )
         self.assertIn(
             'const-string v15, "GCamSessionParamKey"',
             patched,
@@ -726,7 +737,16 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertTrue(metadata["logs_only_applied_session_parameters"])
         self.assertIn("Lpi.d()", metadata["source"])
-        self.assertFalse(metadata["behavior_changed"])
+        self.assertTrue(metadata["behavior_changed"])
+        self.assertEqual(
+            metadata["skipped_session_key"],
+            "android.control.videoStabilizationMode",
+        )
+        self.assertEqual(metadata["skip_scope"], "session_parameters_only")
+        self.assertEqual(
+            metadata["preserved_session_keys"],
+            ["android.control.aeTargetFpsRange"],
+        )
 
     def test_session_parameter_logging_fails_closed_if_scratch_register_moves(self):
         changed = RP_SAMPLE.replace(
