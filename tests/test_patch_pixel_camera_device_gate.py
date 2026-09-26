@@ -123,11 +123,11 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 
     aget-object v0, v13, v12
 
+    move-object/from16 v24, v5
+
     invoke-static {v5}, Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;
 
     move-result-object v7
-
-    move-object/from16 v24, v5
 
     invoke-virtual {v14, v7}, Lcom/google/googlex/gcam/StaticMetadataVector;->c(Lcom/google/googlex/gcam/StaticMetadata;)V
 
