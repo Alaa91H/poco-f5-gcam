@@ -156,6 +156,21 @@ jobs:
               for line in diff:
                   out.write(line+"\n")
           print(report.read_text(encoding="utf-8"))
+
+          gcam_path=root / "com/google/googlex/gcam/Gcam.smali"
+          if gcam_path.is_file():
+              gcam=gcam_path.read_text(encoding="utf-8",errors="replace").splitlines()
+              indexes=[i for i,l in enumerate(gcam) if l.strip()==".method public final g()Z"]
+              print("\n=== Gcam.g()Z implementation ===")
+              if len(indexes)!=1:
+                  print(f"unexpected Gcam.g() count: {len(indexes)}")
+              else:
+                  gs=indexes[0]
+                  ge=next(i for i in range(gs+1,len(gcam)) if gcam[i].strip()==".end method")
+                  for i in range(gs,ge+1):
+                      print(f"{i+1:06d}: {gcam[i]}")
+          else:
+              print("\nGcam.smali not present in selected GCam-init dex")
           PY
 
       - name: Upload GCam init diagnostics
