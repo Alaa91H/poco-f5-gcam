@@ -176,9 +176,34 @@ jobs:
                           out.write(f"\n=== StaticMetadataVector method {s+1}-{e+1}: {sig} ===\n")
                           out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
 
+              for class_name in ("uve","uur"):
+                  class_path=root/f"{class_name}.smali"
+                  if class_path.is_file():
+                      lines,ms=methods(class_path)
+                      out.write(f"\n=== {class_name} fields ===\n")
+                      for i,line in enumerate(lines):
+                          if line.startswith(".field "):
+                              out.write(f"{i+1:06d}: {line}\n")
+                      for sig,s,e,body in ms:
+                          if "<clinit>()V" in sig or "<init>(" in sig:
+                              out.write(f"\n=== {class_name} method {s+1}-{e+1}: {sig} ===\n")
+                              out.write("\n".join(f"{s+i+1:06d}: {line}" for i,line in enumerate(body))+"\n")
+
+              out.write("\n=== logical multi-camera capability references ===\n")
+              for path in root.rglob("*.smali"):
+                  txt=path.read_text(encoding="utf-8",errors="replace")
+                  if "LOGICAL_MULTI_CAMERA" in txt or "REQUEST_AVAILABLE_CAPABILITIES" in txt and "0xb" in txt:
+                      rel=path.relative_to(root)
+                      for i,line in enumerate(txt.splitlines()):
+                          if "LOGICAL_MULTI_CAMERA" in line:
+                              out.write(f"{rel}:{i+1}: {line}\n")
+
               mjy_path=root/"mjy.smali"
               if mjy_path.is_file():
                   lines,ms=methods(mjy_path)
+                  out.write("\n=== mjy top-level/physical metadata construction ===\n")
+                  for i in range(180,min(len(lines),500)):
+                      out.write(f"{i+1:06d}: {lines[i]}\n")
                   targets=[i for i,line in enumerate(lines) if "Gcam_Create" in line]
                   for target in targets:
                       out.write("\n=== mjy Gcam_Create build context ===\n")
