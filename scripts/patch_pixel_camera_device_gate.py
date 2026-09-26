@@ -699,6 +699,135 @@ def _find_skip_branch_for_call(
     return branch_index, label
 
 
+def _patch_logical_camera_sensor_ids(
+    lines: list[str],
+    *,
+    method_start: int,
+    method_end: int,
+) -> tuple[list[str], dict[str, Any]]:
+    """Assign GCam logical sensor IDs to top-level multi-camera entries.
+
+    Pixel Camera first adds each top-level camera to StaticMetadataVector, then
+    appends its physical camera IDs. On POCO F5 the Xiaomi converter can label
+    the top-level logical camera with the same physical GCam sensor ID as one of
+    its children. Native Gcam_AllSensorIdsUnique() then rejects the vector.
+
+    Luur.b is the top-level camera's physical-ID set. Only entries with a
+    non-empty set are remapped. The enclosing Luve array is verified as
+    BACK-first / FRONT-second, so v12 selects kRearLogical or kFrontLogical.
+    Physical cameras and synthetic binned/max-resolution entries remain intact.
+    """
+
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    required_shape = (
+        "sget-object v0, Luve;->b:Luve;",
+        "aput-object v0, v13, v12",
+        "sget-object v0, Luve;->a:Luve;",
+        "aput-object v0, v13, p0",
+        "aget-object v0, v13, v12",
+        "invoke-static {v5}, "
+        "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->"
+        "C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;",
+        "move-result-object v7",
+        "move-object/from16 v24, v5",
+        "move-object/from16 v5, v24",
+        "check-cast v5, Luur;",
+        "iget-object v5, v5, Luur;->b:Lyfm;",
+        "invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;",
+    )
+    for token in required_shape:
+        if method_text.count(token) != 1:
+            raise PatchError(
+                "top-level logical-camera metadata shape changed; expected one "
+                f"{token!r}, found {method_text.count(token)}"
+            )
+
+    add_call = (
+        "    invoke-virtual {v14, v7}, "
+        "Lcom/google/googlex/gcam/StaticMetadataVector;->"
+        "c(Lcom/google/googlex/gcam/StaticMetadata;)V"
+    )
+    add_indexes = [
+        i
+        for i in range(method_start, method_end)
+        if lines[i] == add_call
+    ]
+    if len(add_indexes) != 1:
+        raise PatchError(
+            "expected exactly one top-level StaticMetadataVector add; "
+            f"found {len(add_indexes)}"
+        )
+    add_index = add_indexes[0]
+
+    converter_indexes = [
+        i
+        for i in range(max(method_start, add_index - 45), add_index)
+        if "NativeMetadataConverter;->C(Luus;)" in lines[i]
+        and "{v5}" in lines[i]
+    ]
+    if len(converter_indexes) != 1:
+        raise PatchError(
+            "top-level metadata add is no longer paired with one converter call"
+        )
+
+    physical_set_indexes = [
+        i
+        for i in range(add_index + 1, min(method_end, add_index + 30))
+        if lines[i].strip() == "iget-object v5, v5, Luur;->b:Lyfm;"
+    ]
+    if len(physical_set_indexes) != 1:
+        raise PatchError(
+            "top-level metadata add is no longer followed by the physical-ID set"
+        )
+
+    labels = (
+        "poco_top_level_front_logical",
+        "poco_top_level_set_logical",
+        "poco_top_level_logical_done",
+    )
+    if any(f":{label}" in method_text for label in labels):
+        raise PatchError("logical camera sensor-ID patch labels already exist")
+
+    guard = [
+        "    # POCO F5: logical camera must not reuse a physical GCam sensor ID.",
+        "    move-object/from16 v5, v24",
+        "",
+        "    check-cast v5, Luur;",
+        "",
+        "    iget-object v5, v5, Luur;->b:Lyfm;",
+        "",
+        "    invoke-interface {v5}, Ljava/util/Set;->isEmpty()Z",
+        "",
+        "    move-result v5",
+        "",
+        "    if-nez v5, :poco_top_level_logical_done",
+        "",
+        "    if-nez v12, :poco_top_level_front_logical",
+        "",
+        "    sget-object v5, Lzoi;->s:Lzoi;",
+        "",
+        "    goto :poco_top_level_set_logical",
+        "",
+        "    :poco_top_level_front_logical",
+        "    sget-object v5, Lzoi;->v:Lzoi;",
+        "",
+        "    :poco_top_level_set_logical",
+        "    invoke-virtual {v7, v5}, "
+        "Lcom/google/googlex/gcam/StaticMetadata;->u(Lzoi;)V",
+        "",
+        "    :poco_top_level_logical_done",
+        "",
+    ]
+    patched = lines[:add_index] + guard + lines[add_index:]
+    return patched, {
+        "status": "remapped_top_level_logical_entries",
+        "predicate": "non_empty_physical_camera_id_set",
+        "back_sensor_id": "kRearLogical (5)",
+        "front_sensor_id": "kFrontLogical (3)",
+        "physical_entries_preserved": True,
+    }
+
+
 def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     """Keep startup off unsupported Pixel accelerator paths.
 
@@ -766,16 +895,14 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         indent = re.match(r"^(\s*)", lines[branch_index]).group(1)
         lines[branch_index] = f"{indent}goto/32 :{label}"
 
-    # Gcam.g() is only a wrapper around native Gcam_AllSensorIdsUnique().
-    # POCO F5 runtime proves Gcam_Create returns a non-null object and camera
-    # streaming starts, but this Pixel-specific sensor-ID uniqueness assertion
-    # is false for Xiaomi's logical/physical camera mapping. The stock provider
-    # turns that result into IllegalArgumentException on the main thread.
-    #
-    # Keep the native Gcam object and continue through the provider's existing
-    # success path. This is deliberately caller-local: Gcam.g() remains
-    # unchanged everywhere else, and the patch fails closed if the exact
-    # control-flow shape changes.
+    lines, logical_mapping_metadata = _patch_logical_camera_sensor_ids(
+        lines,
+        method_start=method_start,
+        method_end=method_end,
+    )
+
+    # Preserve Pixel Camera's native uniqueness check. The compatibility fix
+    # changes only the misidentified logical entries before Gcam_Create.
     create_indexes = [
         i for i, line in enumerate(lines) if GCAM_CREATE_SYMBOL in line
     ]
@@ -838,13 +965,11 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             f"found {len(failure_indexes)}"
         )
     failure_index = failure_indexes[0]
-
     success_block = "\n".join(lines[branch_index + 1 : failure_index])
     if "return-object" not in success_block:
         raise PatchError(
             "Gcam sensor-ID success path no longer returns the Gcam object"
         )
-
     failure_block = "\n".join(lines[failure_index : method_end])
     if failure_block.count("Ljava/lang/IllegalArgumentException;") != 2:
         raise PatchError(
@@ -856,15 +981,12 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             "Gcam sensor-ID failure block no longer throws the exception"
         )
 
-    indent = re.match(r"^(\s*)", lines[branch_index]).group(1)
-    lines[branch_index] = (
-        f"{indent}nop    # POCO F5: accept Xiaomi sensor-ID mapping"
-    )
     sensor_id_metadata = {
-        "status": "accepted_existing_nonnull_gcam",
+        **logical_mapping_metadata,
         "native_check": "Gcam_AllSensorIdsUnique",
-        "original_failure_label": failure_label,
-        "original_failure": "IllegalArgumentException",
+        "native_check_preserved": True,
+        "failure_label": failure_label,
+        "failure_behavior": "IllegalArgumentException if duplicates remain",
     }
 
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
