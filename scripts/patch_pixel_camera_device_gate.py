@@ -913,6 +913,18 @@ def _patch_logical_camera_sensor_ids(
         "",
         "    if-nez v5, :poco_top_level_alias_done",
         "",
+        "    # Camera2 ID 4 is Xiaomi's logical rear camera. Real-device logs",
+        "    # show its MultiCameraSAT graph cannot initialize for this app",
+        "    # (logical camera type 7 / invalid logical camera ID). Keep it",
+        "    # enumerated in Camera2 but omit it from the native GCam vector.",
+        '    const-string v25, "4"',
+        "",
+        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v5",
+        "",
+        "    if-nez v5, :poco_top_level_alias_done",
+        "",
         '    const-string v25, "5"',
         "",
         "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
@@ -941,13 +953,15 @@ def _patch_logical_camera_sensor_ids(
         + lines[add_index + 1 :]
     )
     return patched, {
-        "status": "remapped_logical_and_filtered_duplicate_aliases",
+        "status": "filtered_xiaomi_logical_and_duplicate_aliases",
         "predicate": "non_empty_physical_camera_id_set",
         "back_sensor_id": "kRearLogical (5)",
         "front_sensor_id": "kFrontLogical (3)",
         "duplicate_alias_camera_ids_excluded_from_gcam_vector": ["3", "5", "6"],
+        "unsupported_logical_camera_ids_excluded_from_gcam_vector": ["4"],
+        "excluded_camera_ids_from_gcam_vector": ["3", "4", "5", "6"],
         "camera2_enumeration_unchanged": True,
-        "expected_kept_camera_ids": ["0", "2", "4", "1"],
+        "expected_kept_camera_ids": ["0", "2", "1"],
         "physical_entries_preserved": True,
     }
 
