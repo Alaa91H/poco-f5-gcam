@@ -261,6 +261,35 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         with self.assertRaisesRegex(patcher.PatchError, "crosses another"):
             patcher.patch_gcam_init_smali_text(changed)
 
+    def test_smali_tree_ignores_gcam_module_jni_declarations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "mjy.smali").write_text(GCAM_INIT_SAMPLE, encoding="utf-8")
+            (root / "com").mkdir()
+            jni = root / "com" / "GcamModuleJNI.smali"
+            jni.write_text(
+                """.class public final Lcom/google/googlex/gcam/GcamModuleJNI;
+.super Ljava/lang/Object;
+
+.method public static native InitParams_almond_use_tpu_set(JLcom/google/googlex/gcam/InitParams;Z)V
+.end method
+
+.method public static native InitParams_finish_tomte_grain_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
+.end method
+
+.method public static native Gcam_Create(JLcom/google/googlex/gcam/InitParams;JLcom/google/googlex/gcam/StaticMetadataVector;)J
+.end method
+""",
+                encoding="utf-8",
+            )
+
+            metadata = patcher.find_and_patch_gcam_init_smali_tree(root)
+
+            self.assertEqual(metadata["smali_path"], "mjy.smali")
+            patched = (root / "mjy.smali").read_text(encoding="utf-8")
+            self.assertIn("goto/32 :cond_2a", patched)
+            self.assertIn("goto/32 :cond_2c", patched)
+
     def test_finds_gcam_init_dex_by_exact_symbol_set(self):
         with tempfile.TemporaryDirectory() as temp:
             apk = Path(temp) / "camera.apk"
