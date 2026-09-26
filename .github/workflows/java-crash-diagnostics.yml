@@ -299,40 +299,41 @@ jobs:
                           if b"Landroid/hardware/camera2/CameraManager;" in data:
                               camera_manager_dexes.append((info.filename,dex_name,data))
 
-          manifest={"targets":{}, "camera_manager_dexes":[]}
           unique={}
-          for name,candidates in hits.items():
-              if len(candidates) != 1:
-                  raise SystemExit(f"expected one dex containing L{name};, found {[(a,b) for a,b,_ in candidates]}")
-              apk_name,dex_name,data=candidates[0]
-              key=(apk_name,dex_name)
-              unique[key]=data
-              manifest["targets"][name]={"apk":apk_name,"dex":dex_name}
-
+          for candidates in hits.values():
+              for apk_name,dex_name,data in candidates:
+                  unique[(apk_name,dex_name)]=data
           for apk_name,dex_name,data in camera_manager_dexes:
-              key=(apk_name,dex_name)
-              unique[key]=data
-              manifest["camera_manager_dexes"].append({"apk":apk_name,"dex":dex_name})
+              unique[(apk_name,dex_name)]=data
+          if not unique:
+              raise SystemExit("no candidate dex files found")
 
+          manifest={"targets":{}, "camera_manager_dexes":[], "dex_files":[]}
+          for name,candidates in hits.items():
+              if not candidates:
+                  raise SystemExit(f"no dex references L{name};")
+              manifest["targets"][name]=[
+                  {"apk":a,"dex":b} for a,b,_ in candidates
+              ]
+          manifest["camera_manager_dexes"]=[
+              {"apk":a,"dex":b} for a,b,_ in camera_manager_dexes
+          ]
+
+          pair_to_index={}
           for idx,((apk_name,dex_name),data) in enumerate(unique.items()):
               (outdir/f"dex-{idx}.dex").write_bytes(data)
-              manifest.setdefault("dex_files",[]).append(
+              pair_to_index[(apk_name,dex_name)]=idx
+              manifest["dex_files"].append(
                   {"index":idx,"apk":apk_name,"dex":dex_name,"size":len(data)}
               )
+          for name,candidates in manifest["targets"].items():
+              for item in candidates:
+                  item["index"]=pair_to_index[(item["apk"],item["dex"])]
+          for item in manifest["camera_manager_dexes"]:
+              item["index"]=pair_to_index[(item["apk"],item["dex"])]
+
           (outdir/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
           print(json.dumps(manifest,indent=2))
-          PY
-
-          : > "$RUNNER_TEMP/onecamera-stream-selection-analysis.txt"
-          python - "$RUNNER_TEMP/onecamera-paths/manifest.json" "$RUNNER_TEMP/onecamera-paths" <<'PY'
-          import json, sys
-          from pathlib import Path
-          m=json.load(open(sys.argv[1]))
-          root=Path(sys.argv[2])
-          by_pair={(x["apk"],x["dex"]):x["index"] for x in m["dex_files"]}
-          for name,src in m["targets"].items():
-              src["index"]=by_pair[(src["apk"],src["dex"])]
-          root.joinpath("manifest.json").write_text(json.dumps(m,indent=2)+"\n",encoding="utf-8")
           PY
 
           COUNT="$(python -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["dex_files"]))' "$RUNNER_TEMP/onecamera-paths/manifest.json")"
@@ -342,7 +343,7 @@ jobs:
           done
 
           python - "$RUNNER_TEMP/onecamera-paths" "$RUNNER_TEMP/onecamera-stream-selection-analysis.txt" <<'PY'
-          import json, re, sys
+          import json, sys
           from pathlib import Path
 
           root=Path(sys.argv[1])
@@ -359,16 +360,20 @@ jobs:
                   e+=1
               return s,min(e,len(lines)-1)
 
-          for name,src in manifest["targets"].items():
-              smali_root=root/f"smali-{src['index']}"
-              matches=list(smali_root.rglob(name+".smali"))
+          for name,candidates in manifest["targets"].items():
+              matches=[]
+              for src in candidates:
+                  smali_root=root/f"smali-{src['index']}"
+                  matches.extend(smali_root.rglob(name+".smali"))
+              # de-duplicate in case candidate metadata repeats
+              matches=sorted(set(matches))
               if len(matches)!=1:
-                  raise SystemExit(f"expected one {name}.smali in {smali_root}, found {matches}")
+                  raise SystemExit(f"expected one actual {name}.smali definition, found {matches}")
               p=matches[0]
               lines=p.read_text(encoding="utf-8",errors="replace").splitlines()
               out.append("="*100)
               out.append(f"TARGET {name} path={p.relative_to(root)}")
-              out.extend(f"{i+1:06d}: {line}" for i,line in enumerate(lines))
+              out.extend(f"{idx+1:06d}: {line}" for idx,line in enumerate(lines))
               out.append("")
 
           seen_methods=set()
@@ -393,7 +398,7 @@ jobs:
                       out.append("="*100)
                       out.append(f"CAMERA2 CALLSITE {p.relative_to(root)} lines {s+1}-{e+1}: {lines[s]}")
                       lo=max(s,idx-120); hi=min(e,idx+180)
-                      out.extend(f"{i+1:06d}: {lines[i]}" for i in range(lo,hi+1))
+                      out.extend(f"{n+1:06d}: {lines[n]}" for n in range(lo,hi+1))
                       out.append("")
 
           out_path.write_text("\n".join(out)+"\n",encoding="utf-8")
