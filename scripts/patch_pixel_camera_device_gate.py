@@ -2494,7 +2494,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "Xiaomi clientName compatibility label already exists"
         )
 
-    map_indent = re.match(r"^(\\s*)", lines[map_cursor]).group(1)
+    map_indent = re.match(r"^(\s*)", lines[map_cursor]).group(1)
     client_injected = [
         "",
         f"{map_indent}# POCO F5: restore Xiaomi's missing camera client session identity.",
