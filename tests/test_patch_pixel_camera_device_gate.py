@@ -607,7 +607,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(
-            "Ljava/util/Collections;->emptySet()Ljava/util/Set;",
+            ":poco_odr_ldtn_a_absent\n\n    return-void",
             patched,
         )
         self.assertIn(
