@@ -2025,13 +2025,23 @@ def patch_onecamera_open_camera_fallback_smali_text(
         "Lrr;-><init>(Ljava/lang/String;Lpi;IJLjom;Lsz;Lufk;Ldan;Lsb;)V",
         "invoke-direct {v1, v0, v10, v9, v8}, "
         "Luf;-><init>(Lug;Ljava/lang/String;Lrr;Ladel;)V",
-        "move-object v10, v1",
     ):
         if method_text.count(token) != 1:
             raise PatchError(
                 "Lug camera-ID/callback flow changed; expected exactly one "
                 f"{token!r}"
             )
+
+    propagated_camera_id = "move-object v10, v1"
+    propagated_indexes = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == propagated_camera_id
+    ]
+    if len(propagated_indexes) != 1:
+        raise PatchError(
+            "Lug camera-ID/callback flow changed; expected exactly one exact "
+            f"{propagated_camera_id!r} line; found {len(propagated_indexes)}"
+        )
 
     camera_move = "move-object/from16 v1, p1"
     camera_move_indexes = [
