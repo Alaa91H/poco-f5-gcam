@@ -2436,15 +2436,115 @@ def patch_onecamera_session_parameter_logging_smali_text(
     ]
     lines = lines[:set_cursor] + injected + lines[set_cursor:]
 
+    # Xiaomi's stock cameraserver injects com.xiaomi.sessionparams.clientName
+    # before HAL configureStreams.  Marble advertises that vendor key as a
+    # session key, but the Android 17 runtime reports it missing.  PhotonCamera
+    # independently uses the same app-side compatibility technique on Xiaomi:
+    # set clientName to com.android.camera before creating the session.
+    #
+    # Keep this narrowly scoped: only set the tag when the HAL's own
+    # getAvailableSessionKeys() name list contains it.  Do not synthesize
+    # operation/cameraxConnection/thirdPartyYUVSnapshot values here.
+    map_line = "iget-object v5, v6, Lve;->g:Ljava/util/Map;"
+    method_end_after_logging = method_end + len(injected)
+    map_indexes = [
+        i for i in range(method_start, method_end_after_logging)
+        if lines[i].strip() == map_line
+    ]
+    if len(map_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Lve.g session-parameter map lookup in "
+            f"Lrp.e(Lve;); found {len(map_indexes)}"
+        )
+    map_cursor = map_indexes[0]
+
+    previous_cursor = map_cursor - 1
+    while previous_cursor > method_start and not lines[previous_cursor].strip():
+        previous_cursor -= 1
+    if lines[previous_cursor].strip() != ":cond_119":
+        raise PatchError(
+            "session-key allowlist construction no longer ends at :cond_119 "
+            "before Lve.g"
+        )
+
+    name_call_after_logging = [
+        i for i in range(map_cursor, method_end_after_logging)
+        if lines[i].strip() == name_call
+    ]
+    if len(name_call_after_logging) != 1:
+        raise PatchError(
+            "expected one session-parameter key-name lookup after Lve.g"
+        )
+    first_key_name_call = name_call_after_logging[0]
+    if any(
+        re.search(r"\\bv15\\b", line)
+        for line in lines[map_cursor:first_key_name_call]
+    ):
+        raise PatchError(
+            "Lrp.e(Lve;) now uses Xiaomi clientName scratch register v15 "
+            "between session-key allowlist construction and parameter loop"
+        )
+
+    label_client_done = "poco_xiaomi_client_name_done"
+    if any(
+        line.strip() == f":{label_client_done}"
+        for line in lines[method_start:method_end_after_logging]
+    ):
+        raise PatchError(
+            "Xiaomi clientName compatibility label already exists"
+        )
+
+    map_indent = re.match(r"^(\\s*)", lines[map_cursor]).group(1)
+    client_injected = [
+        "",
+        f"{map_indent}# POCO F5: restore Xiaomi's missing camera client session identity.",
+        f"{map_indent}new-instance v13, "
+        "Landroid/hardware/camera2/CaptureRequest$Key;",
+        "",
+        f'{map_indent}const-string v14, "com.xiaomi.sessionparams.clientName"',
+        "",
+        f"{map_indent}const-class v15, Ljava/lang/String;",
+        "",
+        f"{map_indent}invoke-direct {{v13, v14, v15}}, "
+        "Landroid/hardware/camera2/CaptureRequest$Key;-><init>"
+        "(Ljava/lang/String;Ljava/lang/Class;)V",
+        "",
+        f"{map_indent}invoke-interface {{v9, v14}}, "
+        "Ljava/util/List;->contains(Ljava/lang/Object;)Z",
+        "",
+        f"{map_indent}move-result v15",
+        "",
+        f"{map_indent}if-eqz v15, :{label_client_done}",
+        "",
+        f'{map_indent}const-string v14, "com.android.camera"',
+        "",
+        f"{map_indent}invoke-virtual {{v0, v13, v14}}, "
+        "Landroid/hardware/camera2/CaptureRequest$Builder;->set"
+        "(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V",
+        "",
+        f'{map_indent}const-string v13, "GCamXiaomiClientName"',
+        "",
+        f"{map_indent}invoke-static {{v13, v14}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{map_indent}move-result v15",
+        "",
+        f"{map_indent}:{label_client_done}",
+    ]
+    lines = lines[:map_cursor] + client_injected + lines[map_cursor:]
+
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
-        "status": "diagnostic_logging",
+        "status": "xiaomi_client_name_session_injection",
         "class": ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
         "method": signature,
         "tag": "GCamSessionParamKey",
-        "behavior_changed": False,
+        "behavior_changed": True,
         "scratch_register": "v15",
-        "scratch_liveness": "verified unused after key-name lookup",
+        "scratch_liveness": (
+            "v13/v14 are overwritten by the parameter loop; v15 is unused "
+            "between allowlist construction and the existing diagnostics"
+        ),
         "stream_graph_evidence": (
             "marble Camera2 probe configured PRIVATE 1280x720 + RAW10 "
             "4624x3472 + YUV_420_888 1280x720 successfully"
@@ -2458,6 +2558,19 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "removing videoStabilizationMode and aeTargetFpsRange did not "
             "change the Xiaomi logical-camera type 7 failure"
         ),
+        "xiaomi_client_name": {
+            "key": "com.xiaomi.sessionparams.clientName",
+            "value": "com.android.camera",
+            "scope": "SessionConfiguration session parameters only",
+            "guard": "HAL-advertised session-key name",
+            "diagnostic_tag": "GCamXiaomiClientName",
+            "additional_xiaomi_session_tags_changed": [],
+            "evidence": [
+                "marble advertises clientName as an available session key",
+                "Xiaomi CameraImpl injects clientName before configureStreams",
+                "PhotonCamera injects com.android.camera for Xiaomi compatibility",
+            ],
+        },
     }
 
 
