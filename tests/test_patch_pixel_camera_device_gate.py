@@ -113,6 +113,32 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
     invoke-static {v2, v3, v1, v12}, Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_finish_tomte_grain_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
 
     :cond_2c
+    sget-object v0, Luve;->b:Luve;
+
+    aput-object v0, v13, v12
+
+    sget-object v0, Luve;->a:Luve;
+
+    aput-object v0, v13, p0
+
+    aget-object v0, v13, v12
+
+    move-object/from16 v5, v24
+
+    invoke-static {v5}, Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;
+
+    move-result-object v7
+
+    invoke-virtual {v14, v7}, Lcom/google/googlex/gcam/StaticMetadataVector;->c(Lcom/google/googlex/gcam/StaticMetadata;)V
+
+    move-object/from16 v5, v24
+
+    check-cast v5, Luur;
+
+    iget-object v5, v5, Luur;->b:Lyfm;
+
+    invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;
+
     iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
 
     invoke-static/range {v14 .. v19}, Lcom/google/googlex/gcam/GcamModuleJNI;->Gcam_Create(JLcom/google/googlex/gcam/InitParams;JLcom/google/googlex/gcam/StaticMetadataVector;)J
@@ -328,12 +354,31 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             "forced_default_false",
         )
         self.assertIn(
-            "nop    # POCO F5: accept Xiaomi sensor-ID mapping",
+            "# POCO F5: logical camera must not reuse a physical GCam sensor ID.",
+            patched,
+        )
+        self.assertIn(
+            "sget-object v5, Lzoi;->s:Lzoi;",
+            patched,
+        )
+        self.assertIn(
+            "sget-object v5, Lzoi;->v:Lzoi;",
+            patched,
+        )
+        self.assertIn(
+            "Lcom/google/googlex/gcam/StaticMetadata;->u(Lzoi;)V",
+            patched,
+        )
+        self.assertIn(
+            "if-eqz v0, :cond_656",
             patched,
         )
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["status"],
-            "accepted_existing_nonnull_gcam",
+            "remapped_top_level_logical_entries",
+        )
+        self.assertTrue(
+            metadata["sensor_id_uniqueness"]["native_check_preserved"],
         )
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["native_check"],
