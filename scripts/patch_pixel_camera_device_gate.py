@@ -901,6 +901,106 @@ def _patch_logical_camera_sensor_ids(
     }
 
 
+def _inject_sensor_vector_runtime_diagnostics(
+    lines: list[str],
+) -> tuple[list[str], dict[str, Any]]:
+    """Log every StaticMetadata sensor enum immediately before Gcam_Create.
+
+    This is intentionally diagnostic-only. It does not mutate sensor IDs or
+    bypass Gcam_AllSensorIdsUnique. Real-device logs can then identify the exact
+    duplicate enum(s) produced by the Xiaomi camera topology before applying a
+    narrower compatibility fix.
+    """
+
+    create_indexes = [
+        i for i, line in enumerate(lines) if GCAM_CREATE_SYMBOL in line
+    ]
+    if len(create_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Gcam_Create before sensor-vector diagnostics; "
+            f"found {len(create_indexes)}"
+        )
+    create_index = create_indexes[0]
+    method_start, method_end = _method_bounds(lines, create_index)
+
+    labels = ("poco_sensor_diag_loop", "poco_sensor_diag_done")
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    if any(f":{label}" in method_text for label in labels):
+        raise PatchError("sensor-vector diagnostic labels already exist")
+
+    code_indexes: list[int] = []
+    cursor = create_index - 1
+    while cursor >= method_start and len(code_indexes) < 6:
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#"):
+            code_indexes.append(cursor)
+        cursor -= 1
+    code_indexes.reverse()
+
+    expected_prefix = (
+        "iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J",
+        "iget-wide v4, v14, Lcom/google/googlex/gcam/StaticMetadataVector;->a:J",
+        "move-object/from16 v16, v1",
+        "move-wide/from16 v17, v4",
+        "move-object/from16 v19, v14",
+        "move-wide v14, v2",
+    )
+    actual_prefix = tuple(lines[i].strip() for i in code_indexes)
+    if actual_prefix != expected_prefix:
+        raise PatchError(
+            "Gcam_Create pre-call register flow changed; expected "
+            f"{expected_prefix!r}, got {actual_prefix!r}"
+        )
+
+    insert_index = code_indexes[0]
+    diagnostic_block = [
+        "    # POCO F5 diagnostic: log StaticMetadata sensor IDs before Gcam_Create.",
+        "    const/4 v0, 0x0",
+        "",
+        "    :poco_sensor_diag_loop",
+        "    invoke-virtual {v14}, Lcom/google/googlex/gcam/StaticMetadataVector;->a()J",
+        "",
+        "    move-result-wide v2",
+        "",
+        "    int-to-long v4, v0",
+        "",
+        "    cmp-long v6, v4, v2",
+        "",
+        "    if-gez v6, :poco_sensor_diag_done",
+        "",
+        "    invoke-virtual {v14, v0}, Lcom/google/googlex/gcam/StaticMetadataVector;->b(I)Lcom/google/googlex/gcam/StaticMetadata;",
+        "",
+        "    move-result-object v2",
+        "",
+        "    invoke-virtual {v2}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
+        "",
+        "    move-result-object v2",
+        "",
+        "    invoke-virtual {v2}, Lzoi;->toString()Ljava/lang/String;",
+        "",
+        "    move-result-object v2",
+        "",
+        '    const-string v3, "GCamSensorIds"',
+        "",
+        "    invoke-static {v3, v2}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        "    add-int/lit8 v0, v0, 0x1",
+        "",
+        "    goto :poco_sensor_diag_loop",
+        "",
+        "    :poco_sensor_diag_done",
+        "",
+    ]
+
+    patched = lines[:insert_index] + diagnostic_block + lines[insert_index:]
+    return patched, {
+        "status": "logged_static_metadata_sensor_ids",
+        "tag": "GCamSensorIds",
+        "location": "immediately_before_Gcam_Create",
+        "behavior_changed": False,
+    }
+
+
 def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
     """Keep startup off unsupported Pixel accelerator paths.
 
@@ -973,6 +1073,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         method_start=method_start,
         method_end=method_end,
     )
+    lines, sensor_vector_diagnostics = _inject_sensor_vector_runtime_diagnostics(lines)
 
     # Preserve Pixel Camera's native uniqueness check. The compatibility fix
     # changes only the misidentified logical entries before Gcam_Create.
@@ -1075,6 +1176,7 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
             "continuation_label": tomte_label,
         },
         "sensor_id_uniqueness": sensor_id_metadata,
+        "sensor_vector_diagnostics": sensor_vector_diagnostics,
     }
 
 
