@@ -169,7 +169,14 @@ public final class MainActivity extends Activity {
 
             JSONArray cameras = new JSONArray();
             for (String id : ids) {
-                cameras.put(buildCamera(manager, id));
+                try {
+                    cameras.put(buildCamera(manager, id));
+                } catch (Throwable error) {
+                    JSONObject failedCamera = new JSONObject();
+                    failedCamera.put("id", id);
+                    failedCamera.put("error", error.toString());
+                    cameras.put(failedCamera);
+                }
             }
             root.put("cameras", cameras);
 
@@ -299,12 +306,28 @@ public final class MainActivity extends Activity {
             for (CameraCharacteristics.Key<?> key : c.getKeys()) {
                 String name = key.getName();
                 keyNames.put(name);
-                Object value = getCharacteristic(c, key);
 
-                if (value instanceof StreamConfigurationMap) {
-                    allCharacteristics.put(name, "<see streamConfiguration>");
-                } else {
-                    allCharacteristics.put(name, toJsonValue(value));
+                // Vendor tags on Xiaomi/Qualcomm devices can be extremely large,
+                // slow, or unsafe to materialize through generic Camera2 access.
+                // Their names are still recorded for compatibility analysis; the
+                // selected standardized values above remain fully captured.
+                if (!name.startsWith("android.")) {
+                    allCharacteristics.put(name, "<vendor-value-skipped>");
+                    continue;
+                }
+
+                try {
+                    Object value = getCharacteristic(c, key);
+                    if (value instanceof StreamConfigurationMap) {
+                        allCharacteristics.put(name, "<see streamConfiguration>");
+                    } else {
+                        allCharacteristics.put(name, toJsonValue(value));
+                    }
+                } catch (Throwable error) {
+                    allCharacteristics.put(
+                            name,
+                            new JSONObject().put("error", error.toString())
+                    );
                 }
             }
             camera.put("characteristicKeyNames", keyNames);
