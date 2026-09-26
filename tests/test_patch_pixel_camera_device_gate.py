@@ -123,6 +123,14 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 
     aget-object v0, v13, v12
 
+    iget-object v7, v5, Luuv;->a:Ljava/lang/String;
+
+    if-eqz v7, :cond_131
+
+    invoke-interface {v2, v5}, Luut;->a(Luuv;)Luus;
+
+    move-result-object v5
+
     invoke-static {v5}, Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;
 
     move-result-object v7
@@ -148,6 +156,29 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
     iget-object v5, v5, Luur;->b:Lyfm;
 
     invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;
+
+    invoke-interface {v15, v7}, Ljava/util/List;->get(I)Ljava/lang/Object;
+
+    move-result-object v0
+
+    check-cast v0, Luuv;
+
+    invoke-interface {v2, v0}, Luut;->a(Luuv;)Luus;
+
+    move-result-object v0
+
+    invoke-static {v0}, Lmjt;->b(Luus;)Z
+
+    move-result v18
+
+    if-nez v18, :cond_160
+
+    :cond_160
+    invoke-static {v0}, Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;
+
+    move-result-object v2
+
+    invoke-virtual {v14, v2}, Lcom/google/googlex/gcam/StaticMetadataVector;->c(Lcom/google/googlex/gcam/StaticMetadata;)V
 
     iget-wide v2, v1, Lcom/google/googlex/gcam/InitParams;->a:J
 
@@ -403,6 +434,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["native_check"],
             "Gcam_AllSensorIdsUnique",
+        )
+        self.assertIn('const-string v24, "GCamTopCameraId"', patched)
+        self.assertIn('const-string v25, "GCamPhysicalCameraId"', patched)
+        self.assertEqual(
+            metadata["camera_source_diagnostics"]["status"],
+            "logged_android_camera_ids",
+        )
+        self.assertFalse(
+            metadata["camera_source_diagnostics"]["behavior_changed"],
         )
         self.assertIn('const-string v3, "GCamSensorIds"', patched)
         self.assertIn(":poco_sensor_diag_loop", patched)
