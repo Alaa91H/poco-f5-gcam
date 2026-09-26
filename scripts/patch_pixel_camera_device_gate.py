@@ -102,7 +102,33 @@ TUNING_FALLBACK_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
     ),
 )
 
-GCASTARTUP_NATIVE_PATCHES = GXP_CPU_PATCHES + TUNING_FALLBACK_PATCHES
+# AION's context constructor already has a non-fatal failure path. After the
+# lazy loader returns an error (for example when lib_aion_buffer.so is absent),
+# it stores valid_=false and returns unless bit 0 of the caller-provided strict
+# flag is set:
+#
+#   0x682e600  cmp   w0, #0
+#   0x682e604  cset  w8, eq
+#   0x682e608  strb  w8, [x20]      ; valid_ = (status == 0)
+#   0x682e60c  cbz   w0, 0x682e614 ; success -> return
+#   0x682e610  tbnz  w19,#0,0x682e624  ; strict failure -> CHECK(valid_)
+#   0x682e614  ...                  ; existing non-fatal return path
+#
+# The POCO F5 runtime proves lib_aion_buffer.so is unavailable and the strict
+# branch terminates the process. NOPing only that TBNZ preserves valid_=false
+# and reuses the library's existing non-fatal return path.
+AION_FALLBACK_PATCHES: tuple[tuple[str, int, bytes, bytes], ...] = (
+    (
+        "allow_missing_aion_buffer_nonfatal_fallback",
+        0x682E610,
+        bytes.fromhex("b3000037"),
+        bytes.fromhex("1f2003d5"),
+    ),
+)
+
+GCASTARTUP_NATIVE_PATCHES = (
+    GXP_CPU_PATCHES + TUNING_FALLBACK_PATCHES + AION_FALLBACK_PATCHES
+)
 DEX_NAME_RE = re.compile(r"^classes(?:\d+)?\.dex$")
 LABEL_RE = re.compile(r"^\s*:(?P<label>[A-Za-z0-9_.$-]+)\s*$")
 BRANCH_RE_TEMPLATE = r"^\s*if-[^\s]+\s+.+,\s*:(?P<label>{label})\s*$"
@@ -455,6 +481,54 @@ def _verify_uncalibrated_tuning_branch(data: bytes) -> dict[str, Any]:
     }
 
 
+def _verify_aion_nonfatal_branch(data: bytes) -> dict[str, Any]:
+    """Verify AION's existing invalid-context non-fatal return path."""
+
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != GCASTARTUP_11_0_073_SHA256:
+        raise PatchError(
+            "libgcastartup SHA-256 changed; refusing version-specific AION "
+            f"fallback patch: expected {GCASTARTUP_11_0_073_SHA256}, found {digest}"
+        )
+
+    sequence_offset = 0x682E600
+    expected_sequence = bytes.fromhex(
+        "1f000071"  # cmp w0, #0
+        "e8179f1a"  # cset w8, eq
+        "88020039"  # strb w8, [x20]
+        "40000034"  # cbz w0, 0x682e614
+        "b3000037"  # tbnz w19, #0, 0x682e624
+    )
+    actual_sequence = data[
+        sequence_offset : sequence_offset + len(expected_sequence)
+    ]
+    if actual_sequence != expected_sequence:
+        raise PatchError(
+            "AION failure-control sequence changed at "
+            f"0x{sequence_offset:x}: expected {expected_sequence.hex()}, "
+            f"found {actual_sequence.hex()}"
+        )
+
+    branch_offset = AION_FALLBACK_PATCHES[0][1]
+    branch_word = struct.unpack_from("<I", data, branch_offset)[0]
+    decoded = _decode_aarch64_branch(branch_word, branch_offset)
+    if decoded != "tbnz 0x682e624":
+        raise PatchError(
+            "unexpected AION strict-failure branch semantics at "
+            f"0x{branch_offset:x}: {decoded!r}"
+        )
+
+    return {
+        "library_sha256": digest,
+        "sequence_offset": f"0x{sequence_offset:x}",
+        "sequence_hex": actual_sequence.hex(),
+        "strict_branch_offset": f"0x{branch_offset:x}",
+        "strict_branch_hex": data[branch_offset : branch_offset + 4].hex(),
+        "strict_branch": decoded,
+        "fallback_target": "existing invalid-AION nonfatal return path",
+    }
+
+
 def patch_gcastartup_cpu_fallback(
     archive: zipfile.ZipFile,
     root: Path,
@@ -470,6 +544,7 @@ def patch_gcastartup_cpu_fallback(
     original = archive.read(GCASTARTUP_LIBRARY)
     tuning_diagnostics = analyze_libgcam_tuning(original)
     tuning_fallback_verification = _verify_uncalibrated_tuning_branch(original)
+    aion_fallback_verification = _verify_aion_nonfatal_branch(original)
     patched, instruction_report = patch_native_bytes(original)
     output = root / "libgcastartup-cpu-fallback.so"
     output.write_bytes(patched)
@@ -482,10 +557,12 @@ def patch_gcastartup_cpu_fallback(
         "instructions": instruction_report,
         "tuning_diagnostics": tuning_diagnostics,
         "tuning_fallback_verification": tuning_fallback_verification,
+        "aion_fallback_verification": aion_fallback_verification,
         "model_verification_bypass_performed": False,
         "tuning_bypass_performed": False,
         "tuning_profile_spoof_performed": False,
         "uncalibrated_tuning_fallback_enabled": True,
+        "aion_missing_library_nonfatal_fallback_enabled": True,
     }
 
 
