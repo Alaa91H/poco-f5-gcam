@@ -774,13 +774,6 @@ def _patch_logical_camera_sensor_ids(
             cursor += 1
         raise PatchError("metadata converter sequence ended unexpectedly")
 
-    saved_source_index = _previous_code_line(converter_index)
-    if lines[saved_source_index].strip() != "move-object/from16 v24, v5":
-        raise PatchError(
-            "top-level metadata converter is no longer preceded by "
-            "'move-object/from16 v24, v5'"
-        )
-
     result_index = _next_code_line_local(converter_index)
     if lines[result_index].strip() != "move-result-object v7":
         raise PatchError(
@@ -788,7 +781,13 @@ def _patch_logical_camera_sensor_ids(
             "'move-result-object v7'"
         )
 
-    add_index = _next_code_line_local(result_index)
+    saved_source_index = _next_code_line_local(result_index)
+    if lines[saved_source_index].strip() != "move-object/from16 v24, v5":
+        raise PatchError(
+            "top-level metadata source is no longer preserved after conversion"
+        )
+
+    add_index = _next_code_line_local(saved_source_index)
     add_call = (
         "invoke-virtual {v14, v7}, "
         "Lcom/google/googlex/gcam/StaticMetadataVector;->"
