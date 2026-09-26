@@ -975,11 +975,18 @@ def _inject_camera_source_runtime_diagnostics(
 
     physical_block = [
         "",
-        '    const-string v24, "GCamPhysicalCameraId"',
+        "    # iget-object uses 4-bit registers; preserve a low temp explicitly.",
+        "    move-object/from16 v24, v3",
         "",
-        "    iget-object v25, v0, Luuv;->a:Ljava/lang/String;",
+        "    iget-object v3, v0, Luuv;->a:Ljava/lang/String;",
         "",
-        "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    move-object/from16 v26, v3",
+        "",
+        "    move-object/from16 v3, v24",
+        "",
+        '    const-string v25, "GCamPhysicalCameraId"',
+        "",
+        "    invoke-static/range {v25 .. v26}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
     lines = lines[:physical_call_index] + physical_block + lines[physical_call_index:]
