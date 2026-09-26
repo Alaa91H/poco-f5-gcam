@@ -417,6 +417,32 @@ foreach ($entry in $cameraSensorThreadGroups.GetEnumerator()) {
         }
 }
 
+$cameraServiceConnectLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)CameraService::connect call .*camera ID'
+        } |
+        Select-Object -Last 100
+)
+$cameraServiceConnectedIds = @(
+    $cameraServiceConnectLines |
+        ForEach-Object {
+            if ($_ -match '(?i)camera ID\s+([^\s\)]+)') {
+                $Matches[1]
+            }
+        } |
+        Select-Object -Unique
+)
+
+$xiaomiMultiCameraGraphFailureLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Cannot map logical camera type|Invalid logical camera id|MultiCameraSAT.*(failed|failure)|CreateUsecaseObject failed|Failed to initialize Multicamera|Feature graph manager initialization failed)'
+        } |
+        Select-Object -Last 150
+)
+$xiaomiMultiCameraGraphFailureObserved = $xiaomiMultiCameraGraphFailureLines.Count -gt 0
+
 $logicalCameraMappingLines = @(
     $logLines |
         Where-Object {
@@ -449,7 +475,14 @@ $googleAllowlistRejectionObserved = $googleAllowlistLines.Count -gt 0
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
 $topActivityMatches = $resumedLines.Count -gt 0
-$runtimePassed = $launcherAccepted -and $processAlive -and $fatalEvidence.Count -eq 0
+$startupPassed = $launcherAccepted -and $processAlive -and $fatalEvidence.Count -eq 0
+$cameraPipelineCompatibilityPassed = (
+    $startupPassed -and
+    -not $logicalCameraMappingErrorsObserved -and
+    -not $xiaomiMultiCameraGraphFailureObserved
+)
+# Keep runtimePassed as the startup/crash gate for backward compatibility.
+$runtimePassed = $startupPassed
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
@@ -518,6 +551,10 @@ $report = [ordered]@{
         sensorVectorDuplicateIdsPerThread = $sensorVectorDuplicateIdsPerThread.ToArray()
         sensorSourceMappingThreads = $sensorSourceMappingThreads.ToArray()
         sensorSourceMappings = $sensorSourceMappings.ToArray()
+        cameraServiceConnectLines = $cameraServiceConnectLines
+        cameraServiceConnectedIds = $cameraServiceConnectedIds
+        xiaomiMultiCameraGraphFailureObserved = $xiaomiMultiCameraGraphFailureObserved
+        xiaomiMultiCameraGraphFailureLines = $xiaomiMultiCameraGraphFailureLines
         logicalCameraMappingErrorsObserved = $logicalCameraMappingErrorsObserved
         logicalCameraMappingLines = $logicalCameraMappingLines
         oneCameraOptionalNpeObserved = $oneCameraOptionalNpeObserved
@@ -534,6 +571,8 @@ $report = [ordered]@{
         diagnosticLines = $diagnosticLines
     }
     result = [ordered]@{
+        startupPassed = $startupPassed
+        cameraPipelineCompatibilityPassed = $cameraPipelineCompatibilityPassed
         runtimePassed = $runtimePassed
         reason = if ($runtimePassed) {
             "Launcher accepted the app, its process remained alive, and no package-associated fatal crash signature was found."
@@ -597,9 +636,13 @@ if ($sensorSourceMappings.Count -gt 0) {
 else {
     Write-Host "Camera2 -> GCam sensor mappings: none observed"
 }
+Write-Host "CameraService connected IDs: $($cameraServiceConnectedIds -join ', ')"
+Write-Host "Xiaomi multi-camera graph failure observed: $xiaomiMultiCameraGraphFailureObserved"
 Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsObserved"
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
+Write-Host "Startup passed: $startupPassed"
+Write-Host "Camera pipeline compatibility passed: $cameraPipelineCompatibilityPassed"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
@@ -616,6 +659,6 @@ if (-not $runtimePassed) {
     }
 }
 
-if ($Strict -and -not $runtimePassed) {
+if ($Strict -and -not $cameraPipelineCompatibilityPassed) {
     exit 2
 }
