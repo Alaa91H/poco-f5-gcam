@@ -127,7 +127,7 @@ $fatalMarkers = @(
     "Abort message"
 )
 
-$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond)"
+$diagnosticPattern = "(?i)(" + (($fatalMarkers | ForEach-Object { [regex]::Escape($_) }) -join "|") + "|" + [regex]::Escape($PackageName) + "|CameraProvider|CameraService|CamX|CHI|QNN|CDSP|Gcam_Create|GxpCapi|gxp_host_late_binding|libgxp|DarwiNN|Tomte|almond|Unknown device code|Failed to get tuning|uncalibrated|Using tuning defaults)"
 $diagnosticLines = @(
     $logLines |
         Where-Object { $_ -match $diagnosticPattern } |
@@ -164,6 +164,46 @@ $rootCauseLines = @(
         } |
         Select-Object -Last 200
 )
+
+$tuningUncalibratedLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)Unknown device code.*Treating as "uncalibrated"'
+        } |
+        Select-Object -Last 50
+)
+
+$tuningAbortLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Unknown device code.*Aborting|Failed to get tuning for device code.*Aborting)'
+        } |
+        Select-Object -Last 50
+)
+
+$tuningDefaultsLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)(Unsupported sensor ID.*Using tuning defaults|Using tuning defaults)'
+        } |
+        Select-Object -Last 50
+)
+
+$tuningFallbackObserved = $tuningUncalibratedLines.Count -gt 0
+$tuningAbortObserved = $tuningAbortLines.Count -gt 0
+$tuningDefaultsObserved = $tuningDefaultsLines.Count -gt 0
+$tuningState = if ($tuningAbortObserved) {
+    "abort_observed"
+}
+elseif ($tuningFallbackObserved) {
+    "uncalibrated_fallback_observed"
+}
+elseif ($tuningDefaultsObserved) {
+    "sensor_defaults_observed"
+}
+else {
+    "not_observed"
+}
 
 $processAlive = -not [string]::IsNullOrWhiteSpace($finalPid)
 $launcherAccepted = $launch.ExitCode -eq 0 -and $launch.Text -notmatch "(?i)(No activities found|monkey aborted)"
@@ -203,6 +243,15 @@ $report = [ordered]@{
         processAliveAfterWait = $processAlive
         topActivityMatchesPackage = $topActivityMatches
         resumedActivityLines = $resumedLines
+    }
+    tuningAnalysis = [ordered]@{
+        state = $tuningState
+        uncalibratedFallbackObserved = $tuningFallbackObserved
+        abortObserved = $tuningAbortObserved
+        sensorDefaultsObserved = $tuningDefaultsObserved
+        uncalibratedLines = $tuningUncalibratedLines
+        abortLines = $tuningAbortLines
+        defaultsLines = $tuningDefaultsLines
     }
     crashAnalysis = [ordered]@{
         fatalContextCount = $fatalEvidence.Count
@@ -245,6 +294,9 @@ Write-Host "Launcher accepted: $launcherAccepted"
 Write-Host "Process alive after $WaitSeconds seconds: $processAlive"
 Write-Host "Fatal contexts: $($fatalEvidence.Count)"
 Write-Host "Root-cause lines: $($rootCauseLines.Count)"
+Write-Host "GCam tuning state: $tuningState"
+Write-Host "Uncalibrated fallback observed: $tuningFallbackObserved"
+Write-Host "Tuning abort observed: $tuningAbortObserved"
 Write-Host "Runtime passed: $runtimePassed"
 
 if (-not $runtimePassed) {
