@@ -332,8 +332,8 @@ jobs:
 
       - name: Download latest compatible Pixel Camera
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -360,8 +360,8 @@ jobs:
 
       - name: Install APK signature verifier
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -374,8 +374,8 @@ jobs:
 
       - name: Audit downloaded Pixel Camera bundle
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -405,8 +405,8 @@ jobs:
 
       - name: Validate split dependency graph
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         shell: bash
         run: |
           set -euo pipefail
@@ -451,8 +451,8 @@ jobs:
 
       - name: Upload original Google-signed Pixel Camera bundle
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: poco-f5-pixel-camera-original-splits-${{ steps.selected.outputs.version }}
@@ -722,7 +722,7 @@ jobs:
         if: >-
           (
             github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+            inputs.build_experimental_standalone == true
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -936,8 +936,8 @@ jobs:
 
       - name: Upload Pixel Camera audit report
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: pixel-camera-audit-${{ steps.selected.outputs.version }}
