@@ -1,0 +1,169 @@
+name: Pixel Camera GCam init runtime diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/gcam-init-runtime-diagnostics.yml"
+      - "scripts/patch_pixel_camera_device_gate.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-camera-gcam-init-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate patcher
+        run: python -m unittest tests.test_patch_pixel_camera_device_gate -v
+
+      - name: Download selected Pixel Camera bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pixel-camera"
+          python scripts/download_latest_pixel_camera.py \
+            --lock device/marble/upstream/pixel-camera.json \
+            --output-dir "$RUNNER_TEMP/pixel-camera" \
+            --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
+          PACKAGE_PATH="$(python -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"] + "/pixel-camera-download.json"))["path"])')"
+          echo "PIXEL_CAMERA_SOURCE=$PACKAGE_PATH" >> "$GITHUB_ENV"
+
+      - name: Download pinned baksmali
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t TOOL < <(python - <<'PY'
+          import json
+          p=json.load(open("device/marble/standalone-apk-policy.json"))["toolchain"]["smali"]
+          print(p["baksmali_url"])
+          print(p["baksmali_sha256"])
+          PY
+          )
+          curl --fail --location --silent --show-error --retry 3 "${TOOL[0]}" -o "$RUNNER_TEMP/baksmali.jar"
+          echo "${TOOL[1]}  $RUNNER_TEMP/baksmali.jar" | sha256sum --check --strict
+
+      - name: Extract GCam InitParams dex
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$PIXEL_CAMERA_SOURCE" "$RUNNER_TEMP/gcam-init.dex" "$RUNNER_TEMP/gcam-init-location.json" <<'PY'
+          import io, json, re, sys, zipfile
+          from pathlib import Path
+          from scripts.patch_pixel_camera_device_gate import GCAM_INIT_SYMBOLS
+
+          src=Path(sys.argv[1]); out=Path(sys.argv[2]); meta=Path(sys.argv[3])
+          dex_re=re.compile(r"^classes(?:\d+)?\.dex$")
+          matches=[]
+          with zipfile.ZipFile(src) as outer:
+              for info in outer.infolist():
+                  if dex_re.fullmatch(info.filename):
+                      data=outer.read(info)
+                      if all(s in data for s in GCAM_INIT_SYMBOLS):
+                          matches.append((None,info.filename,data))
+                  elif info.filename.lower().endswith(".apk"):
+                      raw=outer.read(info)
+                      try:
+                          nested=zipfile.ZipFile(io.BytesIO(raw))
+                      except zipfile.BadZipFile:
+                          continue
+                      with nested:
+                          for dinfo in nested.infolist():
+                              if not dex_re.fullmatch(dinfo.filename):
+                                  continue
+                              data=nested.read(dinfo)
+                              if all(s in data for s in GCAM_INIT_SYMBOLS):
+                                  matches.append((info.filename,dinfo.filename,data))
+          if len(matches)!=1:
+              raise SystemExit(f"expected exactly one GCam init dex, found {[(a,b) for a,b,_ in matches]}")
+          nested,dex,data=matches[0]
+          out.write_bytes(data)
+          meta.write_text(json.dumps({"nested_apk":nested,"dex":dex,"size":len(data)},indent=2)+"\n")
+          print(meta.read_text())
+          PY
+
+      - name: Disassemble and inspect mjy.a(PG:1626)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/gcam-init-smali"
+          java -jar "$RUNNER_TEMP/baksmali.jar" d "$RUNNER_TEMP/gcam-init.dex" -o "$RUNNER_TEMP/gcam-init-smali"
+          REPORT="$RUNNER_TEMP/gcam-init-mjy-diagnostics.txt"
+          python - "$RUNNER_TEMP/gcam-init-smali" "$REPORT" <<'PY'
+          import difflib, re, sys
+          from pathlib import Path
+          from scripts.patch_pixel_camera_device_gate import (
+              PatchError,
+              _has_gcam_init_callsites,
+              patch_gcam_init_smali_text,
+          )
+
+          root=Path(sys.argv[1]); report=Path(sys.argv[2])
+          matches=[]
+          for p in root.rglob("*.smali"):
+              t=p.read_text(encoding="utf-8",errors="replace")
+              if _has_gcam_init_callsites(t):
+                  matches.append((p,t))
+          if len(matches)!=1:
+              raise SystemExit(f"expected one GCam init smali, found {[str(p) for p,_ in matches]}")
+          path,text=matches[0]
+          patched,metadata=patch_gcam_init_smali_text(text)
+          lines=text.splitlines()
+          starts=[i for i,l in enumerate(lines) if l.lstrip().startswith(".method ") and " synthetic a()Ljava/lang/Object;" in l]
+          if len(starts)!=1:
+              raise SystemExit(f"expected one synthetic a() provider, found {len(starts)}")
+          start=starts[0]
+          end=next(i for i in range(start+1,len(lines)) if lines[i].strip()==".end method")
+          body=lines[start:end+1]
+
+          interesting=set()
+          for rel,line in enumerate(body):
+              if ".line 1626" in line or "IllegalArgumentException" in line or line.lstrip().startswith("throw "):
+                  for j in range(max(0,rel-28),min(len(body),rel+45)):
+                      interesting.add(j)
+
+          with report.open("w",encoding="utf-8") as out:
+              out.write(f"smali_path={path.relative_to(root)}\n")
+              out.write(f"method_start_file_line={start+1}\n")
+              out.write(f"method_line_count={len(body)}\n")
+              out.write(f"patch_metadata={metadata!r}\n\n")
+              out.write("=== contexts for PG:1626 / IllegalArgumentException / throws ===\n")
+              if not interesting:
+                  out.write("NO_DIRECT_CONTEXT_MARKERS_FOUND\n")
+              last=-2
+              for rel in sorted(interesting):
+                  if rel>last+1:
+                      out.write("\n--- gap ---\n")
+                  out.write(f"{start+rel+1:06d}: {body[rel]}\n")
+                  last=rel
+              out.write("\n=== original vs compatibility-patched provider diff ===\n")
+              diff=difflib.unified_diff(
+                  text.splitlines(),patched.splitlines(),
+                  fromfile="original",tofile="patched",lineterm=""
+              )
+              for line in diff:
+                  out.write(line+"\n")
+          print(report.read_text(encoding="utf-8"))
+          PY
+
+      - name: Upload GCam init diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: pixel-camera-gcam-init-runtime-diagnostics
+          path: |
+            ${{ runner.temp }}/gcam-init-location.json
+            ${{ runner.temp }}/gcam-init-mjy-diagnostics.txt
+          if-no-files-found: error
+          retention-days: 14
