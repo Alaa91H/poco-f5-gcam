@@ -11,6 +11,9 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.OutputConfiguration;
+import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
 import android.os.Bundle;
@@ -201,48 +204,88 @@ public final class PixelGraphProbeActivity extends Activity {
         final boolean needRaw;
         final boolean needYuv;
         final boolean useGcamImageReaders;
+        final boolean useSessionConfiguration;
+        final String xiaomiClientNameValue;
         switch (candidate) {
             case "private800+raw10full":
                 use1280 = false;
                 needRaw = true;
                 needYuv = false;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "private800+yuv800":
                 use1280 = false;
                 needRaw = false;
                 needYuv = true;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "private800+raw10full+yuv800":
                 use1280 = false;
                 needRaw = true;
                 needYuv = true;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "private1280+raw10full":
                 use1280 = true;
                 needRaw = true;
                 needYuv = false;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "private1280+yuv1280":
                 use1280 = true;
                 needRaw = false;
                 needYuv = true;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "private1280+raw10full+yuv1280":
                 use1280 = true;
                 needRaw = true;
                 needYuv = true;
                 useGcamImageReaders = false;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
                 break;
             case "gcam-private1280m11+raw10fullm30+yuv1280m52":
                 use1280 = true;
                 needRaw = true;
                 needYuv = true;
                 useGcamImageReaders = true;
+                useSessionConfiguration = false;
+                xiaomiClientNameValue = null;
+                break;
+            case "gcam-sessioncfg-private1280m11+raw10fullm30+yuv1280m52":
+                use1280 = true;
+                needRaw = true;
+                needYuv = true;
+                useGcamImageReaders = true;
+                useSessionConfiguration = true;
+                xiaomiClientNameValue = null;
+                break;
+            case "gcam-sessioncfg-client-real-private1280m11+raw10fullm30+yuv1280m52":
+                use1280 = true;
+                needRaw = true;
+                needYuv = true;
+                useGcamImageReaders = true;
+                useSessionConfiguration = true;
+                xiaomiClientNameValue = "com.google.android.GoogleCamera";
+                break;
+            case "gcam-sessioncfg-client-system-private1280m11+raw10fullm30+yuv1280m52":
+                use1280 = true;
+                needRaw = true;
+                needYuv = true;
+                useGcamImageReaders = true;
+                useSessionConfiguration = true;
+                xiaomiClientNameValue = "com.android.camera";
                 break;
             default:
                 return result
@@ -339,10 +382,21 @@ public final class PixelGraphProbeActivity extends Activity {
         if (yuvReader != null) {
             surfaces.add(yuvReader.getSurface());
         }
+        result.put("sessionApi", useSessionConfiguration
+                ? "SessionConfiguration"
+                : "legacy-surface-list");
+        result.put("xiaomiClientNameRequested",
+                xiaomiClientNameValue == null
+                        ? JSONObject.NULL
+                        : xiaomiClientNameValue);
 
         AtomicReference<CameraDevice> deviceRef = new AtomicReference<>();
         AtomicReference<CameraCaptureSession> sessionRef = new AtomicReference<>();
         AtomicReference<String> errorRef = new AtomicReference<>();
+        AtomicReference<Boolean> xiaomiClientNameApplied =
+                new AtomicReference<>(false);
+        AtomicReference<String> xiaomiClientNameError =
+                new AtomicReference<>();
         CountDownLatch done = new CountDownLatch(1);
         long startedAtNs = System.nanoTime();
 
@@ -352,8 +406,7 @@ public final class PixelGraphProbeActivity extends Activity {
                 public void onOpened(CameraDevice camera) {
                     deviceRef.set(camera);
                     try {
-                        camera.createCaptureSession(
-                                surfaces,
+                        CameraCaptureSession.StateCallback stateCallback =
                                 new CameraCaptureSession.StateCallback() {
                                     @Override
                                     public void onConfigured(CameraCaptureSession session) {
@@ -370,8 +423,56 @@ public final class PixelGraphProbeActivity extends Activity {
                                                 "Capture session configuration failed");
                                         done.countDown();
                                     }
-                                },
-                                cameraHandler);
+                                };
+
+                        if (useSessionConfiguration
+                                && android.os.Build.VERSION.SDK_INT
+                                >= android.os.Build.VERSION_CODES.P) {
+                            List<OutputConfiguration> outputConfigurations =
+                                    new ArrayList<>();
+                            for (Surface outputSurface : surfaces) {
+                                outputConfigurations.add(
+                                        new OutputConfiguration(outputSurface));
+                            }
+                            SessionConfiguration configuration =
+                                    new SessionConfiguration(
+                                            SessionConfiguration.SESSION_REGULAR,
+                                            outputConfigurations,
+                                            command -> cameraHandler.post(command),
+                                            stateCallback);
+
+                            if (xiaomiClientNameValue != null) {
+                                try {
+                                    CaptureRequest.Builder sessionBuilder =
+                                            camera.createCaptureRequest(
+                                                    CameraDevice.TEMPLATE_PREVIEW);
+                                    CaptureRequest.Key<String> clientNameKey =
+                                            new CaptureRequest.Key<>(
+                                                    "com.xiaomi.sessionparams.clientName",
+                                                    String.class);
+                                    sessionBuilder.set(
+                                            clientNameKey,
+                                            xiaomiClientNameValue);
+                                    configuration.setSessionParameters(
+                                            sessionBuilder.build());
+                                    xiaomiClientNameApplied.set(true);
+                                } catch (Exception e) {
+                                    xiaomiClientNameError.set(e.toString());
+                                    errorRef.compareAndSet(
+                                            null,
+                                            "Xiaomi clientName session parameter: " + e);
+                                    done.countDown();
+                                    return;
+                                }
+                            }
+
+                            camera.createCaptureSession(configuration);
+                        } else {
+                            camera.createCaptureSession(
+                                    surfaces,
+                                    stateCallback,
+                                    cameraHandler);
+                        }
                     } catch (Exception e) {
                         errorRef.compareAndSet(
                                 null,
@@ -406,6 +507,15 @@ public final class PixelGraphProbeActivity extends Activity {
             result.put("completed", completed);
             result.put("sessionConfigured", configured);
             result.put("elapsedMs", elapsedMs);
+            result.put(
+                    "xiaomiClientNameApplied",
+                    xiaomiClientNameApplied.get());
+            String clientNameError = xiaomiClientNameError.get();
+            result.put(
+                    "xiaomiClientNameError",
+                    clientNameError == null
+                            ? JSONObject.NULL
+                            : clientNameError);
             if (error != null) {
                 result.put("error", error);
             } else if (!completed) {
