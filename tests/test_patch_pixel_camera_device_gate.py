@@ -941,7 +941,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(
-            "invoke-static {p1}, "
+            "invoke-static/range {p1 .. p1}, "
             "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
             patched,
         )

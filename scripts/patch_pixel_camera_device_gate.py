@@ -2636,7 +2636,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "",
         f'{indent}const-string v15, "GCamSessionConfig"',
         "",
-        f"{indent}invoke-static {{p1}}, "
+        f"{indent}invoke-static/range {{p1 .. p1}}, "
         "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
         "",
         f"{indent}move-result-object v14",
