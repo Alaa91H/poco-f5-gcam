@@ -2438,9 +2438,9 @@ def patch_onecamera_session_parameter_logging_smali_text(
 
     # Xiaomi's stock cameraserver injects com.xiaomi.sessionparams.clientName
     # before HAL configureStreams.  Marble advertises that vendor key as a
-    # session key, but the Android 17 runtime reports it missing.  PhotonCamera
-    # independently uses the same app-side compatibility technique on Xiaomi:
-    # set clientName to com.android.camera before creating the session.
+    # session key, but the Android 17 runtime reports it missing. Evolution-X
+    # cameraserver is designed to write the validated current client package
+    # into this vendor tag before configureStreams; mirror that semantics here.
     #
     # Keep this narrowly scoped: only set the tag when the HAL's own
     # getAvailableSessionKeys() name list contains it.  Do not synthesize
@@ -2516,7 +2516,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "",
         f"{map_indent}if-eqz v15, :{label_client_done}",
         "",
-        f'{map_indent}const-string v14, "com.android.camera"',
+        f'{map_indent}const-string v14, "com.google.android.GoogleCamera"',
         "",
         f"{map_indent}invoke-virtual {{v0, v13, v14}}, "
         "Landroid/hardware/camera2/CaptureRequest$Builder;->set"
@@ -2560,7 +2560,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         ),
         "xiaomi_client_name": {
             "key": "com.xiaomi.sessionparams.clientName",
-            "value": "com.android.camera",
+            "value": "com.google.android.GoogleCamera",
             "scope": "SessionConfiguration session parameters only",
             "guard": "HAL-advertised session-key name",
             "diagnostic_tag": "GCamXiaomiClientName",
@@ -2568,7 +2568,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
             "evidence": [
                 "marble advertises clientName as an available session key",
                 "Xiaomi CameraImpl injects clientName before configureStreams",
-                "PhotonCamera injects com.android.camera for Xiaomi compatibility",
+                "Evolution-X cameraserver writes the validated current client package into the configured vendor tag",
             ],
         },
     }
