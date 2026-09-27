@@ -766,6 +766,24 @@ $cameraStreamConfigurationFailureLines = @(
 )
 $cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureLines.Count -gt 0
 
+# AOSP libcameraservice uses CAMERA_PACKAGE_NAME as the *vendor metadata
+# key* passed to CameraMetadata::getTagFromName(), then writes the current
+# client package into that key.  On Xiaomi, the established key is
+# com.xiaomi.sessionparams.clientName.  Seeing a literal com.android.camera
+# lookup fail is therefore strong evidence that the ROM camera package-name
+# Soong value is being used as a metadata key rather than a package value.
+$cameraFrameworkPackageTagLookupFailureLines = @(
+    $logLines |
+        Where-Object {
+            $_ -match '(?i)Camera3-Device.*Unable to get com\.android\.camera tag'
+        } |
+        Select-Object -Last 50
+)
+$cameraFrameworkPackageTagLookupFailureObserved = (
+    $cameraFrameworkPackageTagLookupFailureLines.Count -gt 0
+)
+$cameraFrameworkExpectedClientNameTag = "com.xiaomi.sessionparams.clientName"
+
 # Preserve raw log windows around vendor-HAL/session negotiation failures.
 # Filtering individual lines hides the stream dimensions and role-selection
 # messages that usually occur immediately before configure_streams fails.
@@ -963,6 +981,9 @@ $report = [ordered]@{
         googleAllowlistLines = $googleAllowlistLines
         cameraStreamConfigurationFailureObserved = $cameraStreamConfigurationFailureObserved
         cameraStreamConfigurationFailureLines = $cameraStreamConfigurationFailureLines
+        cameraFrameworkPackageTagLookupFailureObserved = $cameraFrameworkPackageTagLookupFailureObserved
+        cameraFrameworkPackageTagLookupFailureLines = $cameraFrameworkPackageTagLookupFailureLines
+        cameraFrameworkExpectedClientNameTag = $cameraFrameworkExpectedClientNameTag
         cameraPipelineFailureContexts = $cameraPipelineFailureContexts.ToArray()
         cameraSessionSuccessObserved = $cameraSessionSuccessObserved
         cameraSessionSuccessLines = $cameraSessionSuccessLines
@@ -1133,6 +1154,10 @@ Write-Host "Logical camera mapping errors observed: $logicalCameraMappingErrorsO
 Write-Host "OneCamera Optional NPE observed: $oneCameraOptionalNpeObserved"
 Write-Host "Google allowlist rejection observed: $googleAllowlistRejectionObserved"
 Write-Host "Camera stream configuration failure observed: $cameraStreamConfigurationFailureObserved"
+Write-Host "Camera framework package-tag lookup failure observed: $cameraFrameworkPackageTagLookupFailureObserved"
+if ($cameraFrameworkPackageTagLookupFailureObserved) {
+    Write-Host "Expected Xiaomi client-name vendor tag: $cameraFrameworkExpectedClientNameTag"
+}
 Write-Host "Camera pipeline failure contexts: $($cameraPipelineFailureContexts.Count)"
 Write-Host "CameraService dumpsys lines: $($cameraServiceDumpLines.Count)"
 Write-Host "Camera session success observed: $cameraSessionSuccessObserved"
