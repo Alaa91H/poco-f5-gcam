@@ -1,3 +1,4 @@
+import re
 import struct
 import tempfile
 import unittest
@@ -520,7 +521,8 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn(":poco_nontensor_orig_x", patched)
         self.assertEqual(
             metadata["forced_false_patterns"],
-            ["camera.lasagna*", "*use_tpu*", "*darwinn*", "*edgetpu*"],
+            ["camera.micro_prestab", "camera.micro_ls_always_prestab",
+             "camera.lasagna*", "*use_tpu*", "*darwinn*", "*edgetpu*"],
         )
 
     def test_nontensor_guards_accept_baksmali_registers_directive(self):
@@ -1394,6 +1396,81 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                 archive.writestr("classes2.dex", patcher.MARKER_BYTES)
             with self.assertRaisesRegex(patcher.PatchError, "exactly one classes"):
                 patcher.find_target_dex(apk)
+
+
+def query_fixture():
+    return ".class public final Lklm;\n.super Ljava/lang/Object;\n" + "\n".join(
+        f""".method public final {name}(Lkiz;)Z
+    .registers 4
+    const/4 v0, 0x1
+    return v0
+.end method"""
+        for name in ("q", "x")
+    )
+
+
+def execute_query(text, method, flag):
+    body = text.split(f".method public final {method}(Lkiz;)Z\n", 1)[1]
+    body = body.split(".end method", 1)[0]
+    lines = [line.strip() for line in body.splitlines()
+             if line.strip() and not line.strip().startswith(("#", "."))]
+    labels = {line: i for i, line in enumerate(lines) if line.startswith(":")}
+    registers = {"p1": {"name": flag}}
+    cursor = 0
+    result = None
+    for _ in range(200):
+        line = lines[cursor]
+        cursor += 1
+        if line.startswith(":"):
+            continue
+        if line.startswith("iget-object "):
+            registers["v0"] = registers["p1"]["name"]
+        elif match := re.fullmatch(r'const-string (\w+), "([^"]*)"', line):
+            registers[match[1]] = match[2]
+        elif match := re.fullmatch(r"const/4 (\w+), (0x[0-9a-f]+)", line):
+            registers[match[1]] = int(match[2], 16)
+        elif match := re.fullmatch(r"if-(eqz|nez) (\w+), (:\w+)", line):
+            zero = registers[match[2]] is None or registers[match[2]] == 0
+            if zero == (match[1] == "eqz"):
+                cursor = labels[match[3]]
+        elif match := re.fullmatch(r"invoke-virtual \{(\w+), (\w+)\}, Ljava/lang/String;->(\w+)\(.*", line):
+            left, right = registers[match[1]], registers[match[2]]
+            operations = {"startsWith": lambda: left.startswith(right),
+                          "contains": lambda: right in left,
+                          "equals": lambda: left == right}
+            result = operations[match[3]]()
+        elif line.startswith("move-result "):
+            registers[line.split()[1]] = result
+        elif line.startswith("return "):
+            return bool(registers[line.split()[1]])
+        else:
+            raise AssertionError(f"Unsupported instruction: {line}")
+    raise AssertionError("Guard did not terminate")
+
+
+class MotionStabilizationGuardTests(unittest.TestCase):
+    def test_disables_both_routes_to_pixel_motion_stabilizer(self):
+        patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
+        for method in ("q", "x"):
+            for flag in ("camera.micro_prestab", "camera.micro_ls_always_prestab"):
+                with self.subTest(method=method, flag=flag):
+                    self.assertFalse(execute_query(patched, method, flag))
+
+    def test_preserves_other_motion_features_and_similar_names(self):
+        patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
+        for method in ("q", "x"):
+            for flag in (None, "camera.enable_micro", "micro_video_supported",
+                         "camera.micro_prestab_extra", "prefix.camera.micro_prestab",
+                         "camera.micro_ls_always_prestab_extra"):
+                with self.subTest(method=method, flag=flag):
+                    self.assertTrue(execute_query(patched, method, flag))
+
+    def test_preserves_existing_accelerator_rejections(self):
+        patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
+        for method in ("q", "x"):
+            for flag in ("camera.lasagna_test", "camera.use_tpu", "darwinn", "edgetpu"):
+                with self.subTest(method=method, flag=flag):
+                    self.assertFalse(execute_query(patched, method, flag))
 
 
 if __name__ == "__main__":

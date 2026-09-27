@@ -1546,6 +1546,10 @@ def _inject_nontensor_guard(
       * any flag name containing use_tpu
       * any flag name containing darwinn
       * any flag name containing edgetpu
+      * camera.micro_prestab / camera.micro_ls_always_prestab: both routes
+        enable Pixel-only motion stabilization (Llio -> Lrdw.j), which throws
+        "Device is not recognizable. Aborting." on marble. Disabling both
+        lets the existing optional-stabilizer path remain absent.
 
     Everything else falls through to the original method body.
     """
@@ -1609,12 +1613,28 @@ def _inject_nontensor_guard(
 
     guard = [
         "",
-        "    # POCO F5 / Snapdragon compatibility: skip Tensor-only accelerators.",
+        "    # POCO F5: skip Pixel motion stabilization and Tensor accelerators.",
         f"    if-eqz p1, :{original_label}",
         "",
         "    iget-object v0, p1, Lkix;->a:Ljava/lang/String;",
         "",
         f"    if-eqz v0, :{original_label}",
+        "",
+        '    const-string v1, "camera.micro_prestab"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-nez v1, :{false_label}",
+        "",
+        '    const-string v1, "camera.micro_ls_always_prestab"',
+        "",
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "",
+        "    move-result v1",
+        "",
+        f"    if-nez v1, :{false_label}",
         "",
         '    const-string v1, "camera.lasagna"',
         "",
@@ -1685,6 +1705,8 @@ def patch_nontensor_flag_queries(text: str) -> tuple[str, dict[str, Any]]:
     return patched, {
         "status": "patched",
         "forced_false_patterns": [
+            "camera.micro_prestab",
+            "camera.micro_ls_always_prestab",
             "camera.lasagna*",
             "*use_tpu*",
             "*darwinn*",
