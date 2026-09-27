@@ -11,6 +11,7 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
@@ -439,7 +440,8 @@ public final class PixelGraphProbeActivity extends Activity {
                                 if (addDefaultSensorPixelMode
                                         && android.os.Build.VERSION.SDK_INT
                                         >= android.os.Build.VERSION_CODES.S) {
-                                    outputConfiguration.addSensorPixelModeUsed(0);
+                                    outputConfiguration.addSensorPixelModeUsed(
+                                            CameraMetadata.SENSOR_PIXEL_MODE_DEFAULT);
                                 }
                                 outputConfigurations.add(outputConfiguration);
                             }
