@@ -1085,7 +1085,7 @@ def _inject_camera_source_runtime_diagnostics(
         "",
         '    const-string v24, "GCamCompatRevision"',
         "",
-        '    const-string v25, "output-config-v1"',
+        '    const-string v25, "xiaomi-client-v1"',
         "",
         "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
@@ -1138,7 +1138,7 @@ def _inject_camera_source_runtime_diagnostics(
     return lines, {
         "status": "logged_android_camera_ids",
         "compat_revision_tag": "GCamCompatRevision",
-        "compat_revision": "output-config-v1",
+        "compat_revision": "xiaomi-client-v1",
         "top_level_tag": "GCamTopCameraId",
         "physical_tag": "GCamPhysicalCameraId",
         "ordering": "top_level_then_physical_matches_StaticMetadataVector",
