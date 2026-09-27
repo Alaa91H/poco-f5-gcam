@@ -863,7 +863,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(
-            'const-string v14, "com.android.camera"',
+            'const-string v14, "com.google.android.GoogleCamera"',
             patched,
         )
         self.assertIn(
@@ -906,7 +906,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(
             metadata["xiaomi_client_name"]["value"],
-            "com.android.camera",
+            "com.google.android.GoogleCamera",
         )
         self.assertEqual(
             metadata["xiaomi_client_name"]["additional_xiaomi_session_tags_changed"],
