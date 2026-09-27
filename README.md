@@ -171,8 +171,8 @@ checks the resumed activity, and captures package-associated fatal crash evidenc
 from logcat into a JSON report.
 
 The merged single-APK path is still available for controlled experiments, but it
-is marked **experimental / runtime-unvalidated**, is not automatically delivered,
-and must not be promoted until the real-device smoke test passes on POCO F5
+is marked **experimental / runtime-unvalidated** and is delivered to the configured
+Telegram chat for testing. It must not be promoted until the real-device smoke test passes on POCO F5
 (Android 17 / API 37).
 
 See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
