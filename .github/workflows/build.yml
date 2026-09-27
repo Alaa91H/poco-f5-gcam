@@ -1,4 +1,4 @@
-name: Unified build and validation
+name: Build, validate and deliver modified Pixel Camera
 
 on:
   push:
@@ -41,10 +41,10 @@ on:
   workflow_dispatch:
     inputs:
       build_experimental_standalone:
-        description: "Build the POCO F5 compatibility-patched single APK (runtime validation required)"
+        description: "Build the modified APK and send it to Telegram on main (device validation required)"
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -113,7 +113,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml|.github/workflows/native-tuning-diagnostics.yml)
+              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -707,10 +707,11 @@ jobs:
           if-no-files-found: error
 
       - name: Prepare official Telegram Bot API source
+        # Owner-requested experimental delivery; runtime validation stays pending.
         id: telegram-source
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true' &&
+          github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -735,8 +736,8 @@ jobs:
       - name: Restore Telegram Bot API binary cache
         id: telegram-cache
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true' &&
+          github.ref == 'refs/heads/main'
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/telegram-bot-api-bin
@@ -745,8 +746,8 @@ jobs:
       - name: Build official Telegram Local Bot API server
         if: >-
           (
-            github.event_name == 'workflow_dispatch' &&
-            inputs.build_experimental_standalone == true
+            steps.standalone.outputs.enabled == 'true' &&
+            github.ref == 'refs/heads/main'
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -775,8 +776,8 @@ jobs:
       - name: Save Telegram Bot API binary cache
         if: >-
           (
-            github.event_name == 'workflow_dispatch' &&
-            inputs.build_experimental_standalone == true
+            steps.standalone.outputs.enabled == 'true' &&
+            github.ref == 'refs/heads/main'
           ) &&
           steps.telegram-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -786,8 +787,8 @@ jobs:
 
       - name: Select Telegram Bot API binary
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true' &&
+          github.ref == 'refs/heads/main'
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.telegram-source.outputs.sha }}
@@ -805,8 +806,8 @@ jobs:
 
       - name: Deliver modified POCO F5 Pixel Camera APK through Local Bot API
         if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.build_experimental_standalone == true
+          steps.standalone.outputs.enabled == 'true' &&
+          github.ref == 'refs/heads/main'
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -818,8 +819,8 @@ jobs:
 
           for name in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_API_ID TELEGRAM_API_HASH; do
             if [ -z "${!name:-}" ]; then
-              echo "::warning::Telegram delivery skipped because $name is not configured."
-              exit 0
+              echo "::error::Telegram delivery requires $name."
+              exit 1
             fi
           done
 
@@ -846,7 +847,7 @@ jobs:
           TELEGRAM_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
 
           if [ "$SIZE" -gt "$TELEGRAM_MAX_BYTES" ]; then
-            echo "::error::Original Pixel Camera bundle is too large for single-file Telegram delivery: $SIZE bytes."
+            echo "::error::Modified Pixel Camera APK is too large for single-file Telegram delivery: $SIZE bytes."
             exit 1
           fi
 
@@ -910,7 +911,7 @@ jobs:
             exit 1
           fi
 
-          CAPTION="$(printf '✅ POCO F5 Pixel Camera modified APK\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s\nPackage: com.google.android.GoogleCamera\nInstall: single APK' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
+          CAPTION="$(printf 'POCO F5 Pixel Camera modified APK\nExperimental: device validation pending\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s\nPackage: com.google.android.GoogleCamera\nInstall: single APK' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
 
           curl --silent --show-error --fail-with-body \
             --retry 3 --retry-all-errors --max-time 1800 \

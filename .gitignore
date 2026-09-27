@@ -12,6 +12,9 @@ dist/
 out/
 tmp/
 *.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Android packages and proprietary binaries
 *.apk
@@ -35,6 +38,7 @@ tmp/
 # Local test captures
 captures/
 samples/private/
+device/marble/runtime/
 
 # Locally downloaded proprietary upstream packages
 downloads/

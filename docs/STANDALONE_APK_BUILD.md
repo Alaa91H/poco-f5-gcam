@@ -106,11 +106,14 @@ For that reason the merged output is now explicitly recorded as:
 - `distribution.status = compatibility-patched-unvalidated`;
 - `distribution.automatic_delivery_allowed = false`.
 
-GitHub Actions does not automatically distribute this modified APK during
-scheduled upstream refreshes. A manual workflow run must explicitly enable
-`build_experimental_standalone` to produce it, and the artifact name includes
-`compatibility-patched-unvalidated`. Real-device validation remains mandatory
-before treating the build as stable.
+These report fields describe eligibility for stable distribution. The owner
+has explicitly requested delivery of experimental builds to the configured
+Telegram chat: relevant pushes to `main` and manual standalone builds on `main`
+now build and send the modified APK. Manual runs default
+`build_experimental_standalone` to true. The artifact name includes
+`compatibility-patched-unvalidated`, and the Telegram caption states that device
+validation is pending. Real-device validation remains mandatory before treating
+the build as stable. Scheduled upstream refreshes do not send modified APKs.
 
 ## CI behavior
 
@@ -121,10 +124,13 @@ Scheduled or manually dispatched upstream refreshes continue to:
 3. audit all APK signatures and the split dependency graph;
 4. upload the original Google-signed package together with the audit report,
    split plan, and installation/runtime-test scripts;
-5. on an explicit manual standalone build, when Telegram credentials are
-   available, deliver only the generated compatibility-patched standalone APK;
-   scheduled upstream refreshes do not automatically distribute the modified
-   APK.
+5. on a standalone build triggered by a relevant push or manual run on `main`,
+   deliver only the generated compatibility-patched standalone APK to Telegram;
+   missing Telegram credentials fail the delivery step. Scheduled upstream
+   refreshes do not distribute the modified APK.
+
+`.github/workflows/build.yml` is the only active workflow. Historical one-off
+diagnostic workflows were removed; their source remains available in Git history.
 
 Pull requests run static/unit validation without downloading or redistributing
 the proprietary upstream package.

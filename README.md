@@ -1,5 +1,22 @@
 # POCO F5 GCam
 
+## Build and Telegram delivery
+
+The single workflow, `.github/workflows/build.yml`, validates the project and
+builds the modified Pixel Camera APK when relevant changes reach `main`. After
+a successful APK build it sends that signed APK to the configured Telegram chat.
+Manual runs on `main` also build and send by default; clear
+`build_experimental_standalone` for an upstream-only run. Pull requests validate
+changes without Telegram delivery. Scheduled runs check upstream availability.
+
+Required repository secrets: `GCMOD_KEYSTORE_B64`, `GCMOD_KEY_ALIAS`,
+`GCMOD_KEYSTORE_PASSWORD`, `GCMOD_KEY_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `TELEGRAM_API_ID`, and `TELEGRAM_API_HASH`.
+
+These are experimental compatibility builds. Successful CI and Telegram delivery
+do not prove camera functionality on the phone. See
+[the latest runtime findings](docs/RUNTIME_2026-09-27.md) for the remaining issues.
+
 Device-focused compatibility, configuration, testing, and optimization project for Google Camera mods on the **POCO F5 5G (marble)**.
 
 ## Goals
