@@ -48,6 +48,9 @@ ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
 ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
 ONECAMERA_SESSION_CONFIG_DESCRIPTOR = "Lrp;"
+MOTION_STABILIZER_DESCRIPTOR = "Llio;"
+MOTION_STABILIZER_START_SIGNATURE = ".method public final i()V"
+MOTION_STABILIZER_PROFILE_CALL = "Lrdw;->j()Lnbv;"
 # Runtime-verified on marble: Lodr is in base classes.dex.
 KEEPALIVE_ON_RECEIVE_DESCRIPTOR = (
     "onReceive(Landroid/content/Context;Landroid/content/Intent;)V"
@@ -1443,6 +1446,92 @@ def _method_bounds(lines: list[str], index: int) -> tuple[int, int]:
     return start, end
 
 
+def patch_motion_stabilizer_startup_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Disable Pixel-only microvideo/EIS startup on the POCO F5 build.
+
+    Runtime evidence on marble reaches Llio.i() on MicrovideoQSharedStartup.
+    Every startup branch asks Lrdw.j() for a Pixel device profile, and that
+    method throws "Device is not recognizable. Aborting." when none matches.
+    Llio already treats a null native wrapper as a supported disabled state, so
+    this POCO-specific build skips only the wrapper startup instead of faking a
+    Pixel calibration/device profile.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i
+        for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*" + re.escape(MOTION_STABILIZER_DESCRIPTOR) + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one motion stabilizer class Llio;; "
+            f"found {len(class_matches)}"
+        )
+
+    method_starts = [
+        i
+        for i, line in enumerate(lines)
+        if line.strip() == MOTION_STABILIZER_START_SIGNATURE
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Llio.i() motion stabilizer startup method; "
+            f"found {len(method_starts)}"
+        )
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Llio.i() is unterminated")
+
+    method_text = "\n".join(lines[method_start : method_end + 1])
+    profile_call_count = method_text.count(MOTION_STABILIZER_PROFILE_CALL)
+    if profile_call_count != 4:
+        raise PatchError(
+            "expected four Lrdw.j() profile lookups in Llio.i(); "
+            f"found {profile_call_count}"
+        )
+    if "Llio;->G:Lthi;" not in method_text:
+        raise PatchError("Llio.i() no longer initializes the expected Lthi wrapper")
+
+    register_indexes = [
+        i
+        for i in range(method_start + 1, method_end)
+        if re.match(r"^\s*\.(?:registers|locals)\s+\d+\s*$", lines[i])
+    ]
+    if len(register_indexes) != 1:
+        raise PatchError(
+            "expected exactly one register declaration in Llio.i(); "
+            f"found {len(register_indexes)}"
+        )
+    register_index = register_indexes[0]
+    indent = re.match(r"^(\s*)", lines[register_index]).group(1)
+    guard = [
+        "",
+        f"{indent}# POCO F5: Pixel microvideo/EIS requires a recognized Pixel profile.",
+        f"{indent}# Leave the native stabilizer wrapper disabled instead of spoofing one.",
+        f"{indent}return-void",
+    ]
+    patched_lines = lines[: register_index + 1] + guard + lines[register_index + 1 :]
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "disabled_on_unrecognized_poco_f5",
+        "class": MOTION_STABILIZER_DESCRIPTOR,
+        "method": MOTION_STABILIZER_START_SIGNATURE,
+        "profile_lookup": MOTION_STABILIZER_PROFILE_CALL,
+        "profile_lookup_count": profile_call_count,
+        "behavior": "skip Pixel-only microvideo/EIS native wrapper startup",
+        "pixel_profile_spoofed": False,
+    }
+
+
 def patch_smali_text(text: str) -> tuple[str, dict[str, str]]:
     lines = text.splitlines()
     marker_indexes = [i for i, line in enumerate(lines) if MARKER in line]
@@ -1743,6 +1832,37 @@ def find_and_patch_smali_tree(root: Path) -> dict[str, str]:
     target.write_text(patched, encoding="utf-8")
     metadata["smali_path"] = os.fspath(target.relative_to(root))
     metadata["nontensor_flag_guards"] = nontensor_metadata
+    return metadata
+
+
+def find_and_patch_motion_stabilizer_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*" + re.escape(MOTION_STABILIZER_DESCRIPTOR) + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected motion stabilizer Llio; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    original = target.read_text(encoding="utf-8")
+    patched, metadata = patch_motion_stabilizer_startup_smali_text(original)
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
     return metadata
 
 
@@ -3409,6 +3529,9 @@ def patch_apk(
                     report_for_dex["gcam_init"] = find_and_patch_gcam_init_smali_tree(
                         smali_dir
                     )
+                    report_for_dex["motion_stabilizer"] = (
+                        find_and_patch_motion_stabilizer_smali_tree(smali_dir)
+                    )
                     report_for_dex["onecamera_optional"] = (
                         find_and_patch_onecamera_optional_key_smali_tree(smali_dir)
                     )
@@ -3495,6 +3618,7 @@ def patch_apk(
 
     device_metadata = dex_reports[target_dex]["device_gate"]
     gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
+    motion_stabilizer_metadata = dex_reports[gcam_init_dex]["motion_stabilizer"]
     onecamera_optional_metadata = dex_reports[gcam_init_dex]["onecamera_optional"]
     onecamera_missing_request_key_metadata = dex_reports[gcam_init_dex][
         "onecamera_missing_request_key"
@@ -3524,6 +3648,10 @@ def patch_apk(
         "gcam_init_patch": {
             "target_dex": gcam_init_dex,
             **gcam_metadata,
+        },
+        "microvideo_motion_stabilizer_patch": {
+            "target_dex": gcam_init_dex,
+            **motion_stabilizer_metadata,
         },
         "onecamera_optional_key_patch": {
             "target_dex": gcam_init_dex,
