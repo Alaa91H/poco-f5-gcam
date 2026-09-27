@@ -2675,7 +2675,25 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "",
         f"{map_indent}:{label_client_done}",
     ]
-    lines = lines[:map_cursor] + client_injected + lines[map_cursor:]
+    session_config_injected = [
+        "",
+        f'{map_indent}const-string v13, "GCamSessionConfig"',
+        "",
+        f"{map_indent}invoke-virtual {{v6}}, Lve;->toString()Ljava/lang/String;",
+        "",
+        f"{map_indent}move-result-object v14",
+        "",
+        f"{map_indent}invoke-static {{v13, v14}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{map_indent}move-result v15",
+    ]
+    lines = (
+        lines[:map_cursor]
+        + client_injected
+        + session_config_injected
+        + lines[map_cursor:]
+    )
 
     patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     return patched, {
@@ -2683,6 +2701,7 @@ def patch_onecamera_session_parameter_logging_smali_text(
         "class": ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
         "method": signature,
         "tag": "GCamSessionParamKey",
+        "session_config_tag": "GCamSessionConfig",
         "behavior_changed": True,
         "scratch_register": "v15",
         "scratch_liveness": (

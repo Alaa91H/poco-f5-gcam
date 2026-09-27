@@ -884,6 +884,19 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(":poco_xiaomi_client_name_done", patched)
+        self.assertIn(
+            'const-string v13, "GCamSessionConfig"',
+            patched,
+        )
+        self.assertIn(
+            "invoke-virtual {v6}, Lve;->toString()Ljava/lang/String;",
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {v13, v14}, "
+            "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+            patched,
+        )
         self.assertLess(
             patched.index('const-string v14, "com.xiaomi.sessionparams.clientName"'),
             patched.index("iget-object v5, v6, Lve;->g:Ljava/util/Map;"),
@@ -897,6 +910,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         self.assertEqual(metadata["class"], "Lrp;")
         self.assertEqual(metadata["tag"], "GCamSessionParamKey")
+        self.assertEqual(metadata["session_config_tag"], "GCamSessionConfig")
         self.assertEqual(metadata["scratch_register"], "v15")
         self.assertIn("v13/v14 are overwritten", metadata["scratch_liveness"])
         self.assertTrue(metadata["logs_only_applied_session_parameters"])
