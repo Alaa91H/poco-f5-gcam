@@ -200,36 +200,49 @@ public final class PixelGraphProbeActivity extends Activity {
         final boolean use1280;
         final boolean needRaw;
         final boolean needYuv;
+        final boolean useGcamImageReaders;
         switch (candidate) {
             case "private800+raw10full":
                 use1280 = false;
                 needRaw = true;
                 needYuv = false;
+                useGcamImageReaders = false;
                 break;
             case "private800+yuv800":
                 use1280 = false;
                 needRaw = false;
                 needYuv = true;
+                useGcamImageReaders = false;
                 break;
             case "private800+raw10full+yuv800":
                 use1280 = false;
                 needRaw = true;
                 needYuv = true;
+                useGcamImageReaders = false;
                 break;
             case "private1280+raw10full":
                 use1280 = true;
                 needRaw = true;
                 needYuv = false;
+                useGcamImageReaders = false;
                 break;
             case "private1280+yuv1280":
                 use1280 = true;
                 needRaw = false;
                 needYuv = true;
+                useGcamImageReaders = false;
                 break;
             case "private1280+raw10full+yuv1280":
                 use1280 = true;
                 needRaw = true;
                 needYuv = true;
+                useGcamImageReaders = false;
+                break;
+            case "gcam-private1280m11+raw10fullm30+yuv1280m52":
+                use1280 = true;
+                needRaw = true;
+                needYuv = true;
+                useGcamImageReaders = true;
                 break;
             default:
                 return result
@@ -241,7 +254,9 @@ public final class PixelGraphProbeActivity extends Activity {
         int previewWidth = use1280 ? 1280 : 800;
         int previewHeight = use1280 ? 720 : 600;
         Size privateOutput = findExactSize(
-                map.getOutputSizes(SurfaceTexture.class),
+                useGcamImageReaders
+                        ? map.getOutputSizes(ImageFormat.PRIVATE)
+                        : map.getOutputSizes(SurfaceTexture.class),
                 previewWidth,
                 previewHeight);
         Size raw10Full = findExactSize(
@@ -271,24 +286,50 @@ public final class PixelGraphProbeActivity extends Activity {
                     .put("error", "One or more exact stream sizes are not advertised");
         }
 
-        SurfaceTexture texture;
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            texture = new SurfaceTexture(false);
+        SurfaceTexture texture = null;
+        ImageReader privateReader = null;
+        Surface privateSurface;
+        if (useGcamImageReaders) {
+            // Match the Pixel runtime consumer itself, not only its nominal
+            // size/format. ImageReader PRIVATE defaults to consumer usage 0,
+            // and the recorded GCam consumer names expose maxImages m11/m30/m52.
+            privateReader = ImageReader.newInstance(
+                    previewWidth,
+                    previewHeight,
+                    ImageFormat.PRIVATE,
+                    11);
+            privateSurface = privateReader.getSurface();
         } else {
-            texture = new SurfaceTexture(0);
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                texture = new SurfaceTexture(false);
+            } else {
+                texture = new SurfaceTexture(0);
+            }
+            texture.setDefaultBufferSize(previewWidth, previewHeight);
+            privateSurface = new Surface(texture);
         }
-        texture.setDefaultBufferSize(previewWidth, previewHeight);
-        Surface privateSurface = new Surface(texture);
+        int rawMaxImages = useGcamImageReaders ? 30 : 2;
+        int yuvMaxImages = useGcamImageReaders ? 52 : 2;
         ImageReader rawReader = needRaw
-                ? ImageReader.newInstance(4624, 3472, ImageFormat.RAW10, 2)
+                ? ImageReader.newInstance(
+                        4624,
+                        3472,
+                        ImageFormat.RAW10,
+                        rawMaxImages)
                 : null;
         ImageReader yuvReader = needYuv
                 ? ImageReader.newInstance(
                         previewWidth,
                         previewHeight,
                         ImageFormat.YUV_420_888,
-                        2)
+                        yuvMaxImages)
                 : null;
+        result.put("privateConsumer", useGcamImageReaders
+                ? "ImageReader"
+                : "SurfaceTexture");
+        result.put("privateMaxImages", useGcamImageReaders ? 11 : JSONObject.NULL);
+        result.put("rawMaxImages", needRaw ? rawMaxImages : JSONObject.NULL);
+        result.put("yuvMaxImages", needYuv ? yuvMaxImages : JSONObject.NULL);
 
         List<Surface> surfaces = new ArrayList<>();
         surfaces.add(privateSurface);
@@ -385,8 +426,14 @@ public final class PixelGraphProbeActivity extends Activity {
             if (yuvReader != null) {
                 yuvReader.close();
             }
-            privateSurface.release();
-            texture.release();
+            if (privateReader != null) {
+                privateReader.close();
+            } else {
+                privateSurface.release();
+            }
+            if (texture != null) {
+                texture.release();
+            }
         }
 
         return result;
