@@ -152,6 +152,7 @@ foreach ($remotePath in $remoteLibraries) {
             neededLibraries = @($analysis.dynamic.needed)
             candidateExports = @($analysis.symbols.candidateExports)
             expectedHookCoverage = $coverage
+            integrationAssessment = $analysis.integrationAssessment
             interestingStrings = @($analysis.strings.interesting)
         })
     }
@@ -202,6 +203,14 @@ foreach ($result in $successful) {
     Write-Host "ELF: $($result.elfClass), machine=$($result.machine)"
 
     $coverage = $result.expectedHookCoverage
+    $assessment = $result.integrationAssessment
+    if ($assessment) {
+        Write-Host "Recommended integration: $($assessment.recommendedIntegration)"
+        Write-Host "Legacy CameraStub core: $($assessment.legacyCameraStubCore)"
+        Write-Host "Modern scene identification: $($assessment.modernSceneIdentification)"
+        Write-Host "Client lifecycle registration: $($assessment.clientLifecycleRegistration)"
+    }
+
     foreach ($name in @(
         "create",
         "hookModuleInit",
