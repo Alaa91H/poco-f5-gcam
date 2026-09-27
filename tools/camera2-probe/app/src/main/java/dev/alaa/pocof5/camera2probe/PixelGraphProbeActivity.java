@@ -280,6 +280,7 @@ public final class PixelGraphProbeActivity extends Activity {
                 xiaomiClientNameValue = "com.google.android.GoogleCamera";
                 break;
             case "gcam-sessioncfg-client-system-private1280m11+raw10fullm30+yuv1280m52":
+            case "gcam-sessioncfg-client-system-pixelmode0-private1280m11+raw10fullm30+yuv1280m52":
                 use1280 = true;
                 needRaw = true;
                 needYuv = true;
@@ -293,6 +294,8 @@ public final class PixelGraphProbeActivity extends Activity {
                         .put("sessionConfigured", false)
                         .put("error", "Unknown candidate: " + candidate);
         }
+
+        boolean addDefaultSensorPixelMode = candidate.contains("pixelmode0");
 
         int previewWidth = use1280 ? 1280 : 800;
         int previewHeight = use1280 ? 720 : 600;
@@ -431,9 +434,18 @@ public final class PixelGraphProbeActivity extends Activity {
                             List<OutputConfiguration> outputConfigurations =
                                     new ArrayList<>();
                             for (Surface outputSurface : surfaces) {
-                                outputConfigurations.add(
-                                        new OutputConfiguration(outputSurface));
+                                OutputConfiguration outputConfiguration =
+                                        new OutputConfiguration(outputSurface);
+                                if (addDefaultSensorPixelMode
+                                        && android.os.Build.VERSION.SDK_INT
+                                        >= android.os.Build.VERSION_CODES.S) {
+                                    outputConfiguration.addSensorPixelModeUsed(0);
+                                }
+                                outputConfigurations.add(outputConfiguration);
                             }
+                            result.put(
+                                    "defaultSensorPixelModeAdded",
+                                    addDefaultSensorPixelMode);
                             SessionConfiguration configuration =
                                     new SessionConfiguration(
                                             SessionConfiguration.SESSION_REGULAR,

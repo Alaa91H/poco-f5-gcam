@@ -16,7 +16,7 @@ Set-StrictMode -Version Latest
 $Activity = ".MainActivity"
 $YuvActivity = ".YuvProbeActivity"
 $PixelGraphActivity = ".PixelGraphProbeActivity"
-$ExpectedProbeVersion = "0.4.5"
+$ExpectedProbeVersion = "0.4.6"
 # YUV runtime probing is isolated per Camera2 ID so a stuck logical camera cannot block the full capture.
 $ReportRelativePath = "files/camera2-report.json"
 $StatusRelativePath = "files/camera2-probe-status.json"
@@ -369,7 +369,8 @@ if ($YuvRuntime) {
         "gcam-private1280m11+raw10fullm30+yuv1280m52",
         "gcam-sessioncfg-private1280m11+raw10fullm30+yuv1280m52",
         "gcam-sessioncfg-client-real-private1280m11+raw10fullm30+yuv1280m52",
-        "gcam-sessioncfg-client-system-private1280m11+raw10fullm30+yuv1280m52"
+        "gcam-sessioncfg-client-system-private1280m11+raw10fullm30+yuv1280m52",
+        "gcam-sessioncfg-client-system-pixelmode0-private1280m11+raw10fullm30+yuv1280m52"
     )
     $pixelGraphResults = New-Object System.Collections.Generic.List[object]
     foreach ($candidate in $pixelGraphCandidates) {
