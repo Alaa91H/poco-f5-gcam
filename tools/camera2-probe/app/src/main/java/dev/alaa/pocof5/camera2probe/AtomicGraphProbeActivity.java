@@ -103,7 +103,10 @@ public final class AtomicGraphProbeActivity extends Activity {
                     writer.write(report.toString(2));
                     writer.write("\n");
                 }
-                runOnUiThread(() -> statusText.setText("Atomic graph report generated."));
+                runOnUiThread(() -> {
+                    statusText.setText("Atomic graph report generated.");
+                    finishAndRemoveTask();
+                });
             } catch (Exception e) {
                 runOnUiThread(() -> statusText.setText("Atomic graph probe failed: " + e));
             }
