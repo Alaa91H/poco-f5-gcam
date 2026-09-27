@@ -344,6 +344,7 @@ public final class AtomicGraphProbeActivity extends Activity {
         for (ImageReader reader : readers) reader.close();
         return root;
     }
+    @SuppressLint("NewApi")
     private static ImageReader buildReader(
             Size size, int format, int maxImages, long usage) {
         ImageReader.Builder builder =
