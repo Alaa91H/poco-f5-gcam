@@ -35,6 +35,9 @@ CANDIDATE_PATTERNS = [
         r"detachSceneIdentify",
         r"notifyRequestSubmit",
         r"notifyCancelRequest",
+        r"destroy",
+        r"getCustomBestSize",
+        r"isPrivilegedClient",
     )
 ]
 
@@ -238,6 +241,9 @@ def parse_elf(path: Path):
         "detachSceneIdentify",
         "notifyRequestSubmit",
         "notifyCancelRequest",
+        "destroy",
+        "getCustomBestSize",
+        "isPrivilegedClient",
     ]
 
     coverage = {}
@@ -246,6 +252,41 @@ def parse_elf(path: Path):
             symbol["name"] for symbol in exported
             if logical_name in symbol["name"]
         ]
+
+    def has_hook(name: str) -> bool:
+        return bool(coverage.get(name))
+
+    legacy_core = all(
+        has_hook(name)
+        for name in (
+            "create",
+            "setClientPackageName",
+            "updateSessionParams",
+            "createCustomDefaultRequest",
+        )
+    )
+    modern_scene = legacy_core and all(
+        has_hook(name)
+        for name in (
+            "executeSceneIdentify",
+            "detachSceneIdentify",
+        )
+    )
+    lifecycle_registration = all(
+        has_hook(name)
+        for name in (
+            "splitClientPackageActivityName",
+            "setClientActivityName",
+            "parseCustomizedJsonData",
+        )
+    )
+
+    if modern_scene:
+        recommended_integration = "cameraimpl_scene_hook"
+    elif legacy_core:
+        recommended_integration = "camera_stub_legacy_core"
+    else:
+        recommended_integration = "no_direct_cameraimpl_hook"
 
     return {
         "schemaVersion": 1,
@@ -268,6 +309,16 @@ def parse_elf(path: Path):
         "dynamic": {
             "soname": soname,
             "needed": needed,
+        },
+        "integrationAssessment": {
+            "legacyCameraStubCore": legacy_core,
+            "modernSceneIdentification": modern_scene,
+            "clientLifecycleRegistration": lifecycle_registration,
+            "recommendedIntegration": recommended_integration,
+            "warning": (
+                "Symbol presence is ABI evidence only; method signatures and "
+                "runtime linker/SELinux access still require device validation."
+            ),
         },
         "symbols": {
             "dynamicCount": len(dyn_symbols),
