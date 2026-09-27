@@ -203,6 +203,53 @@ ODR_SAMPLE = r'''.class public final Lodr;
 '''
 
 
+OPP_SAMPLE = r'''.class public final Lopp;
+.super Ljava/lang/Object;
+
+.field private final synthetic a:I
+
+.method public final synthetic a()Ljava/lang/Object;
+    .registers 3
+
+    iget p0, p0, Lopp;->a:I
+
+    const/4 v0, 0x1
+
+    invoke-static {v0}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
+
+    move-result-object v1
+
+    packed-switch p0, :pswitch_data_20
+
+    invoke-static {}, Lnbw;->F()Lowf;
+    move-result-object p0
+    return-object p0
+
+    :pswitch_10
+    sget-object p0, Ltdn;->g:Landroid/hardware/camera2/CaptureRequest$Key;
+
+    invoke-static {v0}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;
+
+    move-result-object v0
+
+    new-instance v1, Lupd;
+
+    invoke-direct {v1, p0, v0}, Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V
+
+    invoke-static {v1}, Lnbw;->B(Lupd;)Lowf;
+
+    move-result-object p0
+
+    return-object p0
+
+    :pswitch_data_20
+    .packed-switch 0x0
+        :pswitch_10
+    .end packed-switch
+.end method
+'''
+
+
 RP_SAMPLE = r'''.class public final Lrp;
 .super Ljava/lang/Object;
 
@@ -734,6 +781,62 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
                 changed
             )
 
+    def test_camcorder_omits_absent_lookahead_eis_request(self):
+        patched, metadata = (
+            patcher.patch_onecamera_camcorder_lookahead_eis_smali_text(
+                OPP_SAMPLE
+            )
+        )
+
+        self.assertIn(
+            "sget-object p0, Ltdn;->g:"
+            "Landroid/hardware/camera2/CaptureRequest$Key;\n\n"
+            "    # POCO F5: Pixel Lookahead EIS key can be absent; "
+            "emit no request entry.\n"
+            "    if-nez p0, :poco_lookahead_eis_key_present",
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {}, Lnbw;->F()Lowf;\n\n"
+            "    move-result-object p0\n\n"
+            "    return-object p0",
+            patched,
+        )
+        self.assertIn(":poco_lookahead_eis_key_present", patched)
+        self.assertEqual(
+            metadata["status"],
+            "omit_absent_pixel_lookahead_eis_request",
+        )
+        self.assertEqual(metadata["key"], "Ltdn.g")
+        self.assertEqual(
+            metadata["resolved_feature"],
+            "REQUEST_LOOKAHEAD_EIS_MODE_ENABLED",
+        )
+        self.assertFalse(metadata["lupd_global_behavior_changed"])
+
+    def test_camcorder_lookahead_eis_patch_fails_closed_if_key_moves(self):
+        changed = OPP_SAMPLE.replace("Ltdn;->g:", "Ltdn;->h:")
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "exactly one Ltdn.g Lookahead EIS CaptureRequest key",
+        ):
+            patcher.patch_onecamera_camcorder_lookahead_eis_smali_text(
+                changed
+            )
+
+    def test_camcorder_lookahead_eis_patch_fails_closed_if_shape_changes(self):
+        changed = OPP_SAMPLE.replace(
+            "invoke-static {v1}, Lnbw;->B(Lupd;)Lowf;",
+            "invoke-static {}, Lnbw;->F()Lowf;",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "request-provider shape changed",
+        ):
+            patcher.patch_onecamera_camcorder_lookahead_eis_smali_text(
+                changed
+            )
+
     def test_logs_final_output_configurations_before_session_creation(self):
         patched, metadata = (
             patcher.patch_onecamera_final_output_configuration_logging_smali_text(
@@ -833,6 +936,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
 
         self.assertNotIn("CONTROL_VIDEO_STABILIZATION_MODE:", patched)
         self.assertNotIn("CONTROL_AE_TARGET_FPS_RANGE:", patched)
+        self.assertIn(
+            'const-string v15, "GCamSessionConfig"',
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {p1}, "
+            "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+            patched,
+        )
         self.assertIn(
             'const-string v15, "GCamSessionParamKey"',
             patched,

@@ -47,6 +47,7 @@ ONECAMERA_PROVIDER_DESCRIPTOR = "Lofe;"
 ONECAMERA_REQUEST_PROVIDER_DESCRIPTOR = "Lmta;"
 ONECAMERA_OPEN_CAMERA_DESCRIPTOR = "Lug;"
 ONECAMERA_ODR_DESCRIPTOR = "Lodr;"
+ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR = "Lopp;"
 ONECAMERA_SESSION_CONFIG_DESCRIPTOR = "Lrp;"
 MOTION_STABILIZER_DESCRIPTOR = "Llio;"
 MOTION_STABILIZER_START_SIGNATURE = ".method public final i()V"
@@ -2415,6 +2416,166 @@ def find_and_patch_onecamera_odr_missing_request_key_smali_tree(
     return metadata
 
 
+def patch_onecamera_camcorder_lookahead_eis_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Omit Pixel-only Lookahead EIS when its request key is unavailable.
+
+    Real POCO F5 runtime evidence reaches opp.a(PG:78) and then crashes in
+    Lupd.<init>(PG:3). In this exact provider, the only nullable argument to
+    Lupd is Ltdn.g. Static analysis maps Ltdn.g to
+    REQUEST_LOOKAHEAD_EIS_MODE_ENABLED. Returning Lnbw.F() reuses Pixel
+    Camera's existing empty-request-set representation rather than fabricating
+    a vendor key or weakening Lupd globally.
+    """
+
+    lines = text.splitlines()
+    class_matches = [
+        i
+        for i, line in enumerate(lines)
+        if re.match(
+            r"^\.class\s+.*"
+            + re.escape(ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR)
+            + r"\s*$",
+            line,
+        )
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one camcorder request provider Lopp;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = ".method public final synthetic a()Ljava/lang/Object;"
+    starts = [i for i, line in enumerate(lines) if line.strip() == signature]
+    if len(starts) != 1:
+        raise PatchError(
+            "expected exactly one Lopp.a() provider method; "
+            f"found {len(starts)}"
+        )
+    method_start = starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Lopp.a() is unterminated")
+
+    key_line = (
+        "sget-object p0, Ltdn;->g:"
+        "Landroid/hardware/camera2/CaptureRequest$Key;"
+    )
+    key_indexes = [
+        i
+        for i in range(method_start, method_end)
+        if lines[i].strip() == key_line
+    ]
+    if len(key_indexes) != 1:
+        raise PatchError(
+            "expected exactly one Ltdn.g Lookahead EIS CaptureRequest key "
+            f"in Lopp.a(); found {len(key_indexes)}"
+        )
+    key_index = key_indexes[0]
+
+    expected_after = [
+        "invoke-static {v0}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;",
+        "move-result-object v0",
+        "new-instance v1, Lupd;",
+        (
+            "invoke-direct {v1, p0, v0}, "
+            "Lupd;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;"
+            "Ljava/lang/Object;)V"
+        ),
+        "invoke-static {v1}, Lnbw;->B(Lupd;)Lowf;",
+        "move-result-object p0",
+        "return-object p0",
+    ]
+    actual_after: list[str] = []
+    cursor = key_index + 1
+    while cursor < method_end and len(actual_after) < len(expected_after):
+        stripped = lines[cursor].strip()
+        if stripped and not stripped.startswith("#") and not stripped.startswith(":"):
+            actual_after.append(stripped)
+        cursor += 1
+    if actual_after != expected_after:
+        raise PatchError(
+            "Lopp Lookahead EIS request-provider shape changed; "
+            "refusing broad nullable-key patch"
+        )
+
+    label = "poco_lookahead_eis_key_present"
+    if any(
+        line.strip() == f":{label}"
+        for line in lines[method_start:method_end]
+    ):
+        raise PatchError("Lookahead EIS fallback label already exists")
+
+    indent = re.match(r"^(\s*)", lines[key_index]).group(1)
+    guard = [
+        "",
+        (
+            f"{indent}# POCO F5: Pixel Lookahead EIS key can be absent; "
+            "emit no request entry."
+        ),
+        f"{indent}if-nez p0, :{label}",
+        "",
+        f"{indent}invoke-static {{}}, Lnbw;->F()Lowf;",
+        "",
+        f"{indent}move-result-object p0",
+        "",
+        f"{indent}return-object p0",
+        "",
+        f"{indent}:{label}",
+    ]
+    patched_lines = lines[: key_index + 1] + guard + lines[key_index + 1 :]
+    patched = "\n".join(patched_lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "omit_absent_pixel_lookahead_eis_request",
+        "class": ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR,
+        "method": signature,
+        "key": "Ltdn.g",
+        "resolved_feature": "REQUEST_LOOKAHEAD_EIS_MODE_ENABLED",
+        "fallback": "Lnbw.F() empty request set",
+        "scope": "only Lopp.a() Lookahead EIS provider",
+        "lupd_global_behavior_changed": False,
+    }
+
+
+def find_and_patch_onecamera_camcorder_lookahead_eis_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(
+        r"^\.class\s+.*"
+        + re.escape(ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR)
+        + r"\s*$",
+        re.MULTILINE,
+    )
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(
+            os.fspath(path.relative_to(root)) for path in matches
+        ) or "none"
+        raise PatchError(
+            "expected camcorder request provider Lopp; in exactly one smali "
+            f"file; found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_onecamera_camcorder_lookahead_eis_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def patch_onecamera_session_parameter_logging_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
@@ -2452,6 +2613,46 @@ def patch_onecamera_session_parameter_logging_smali_text(
         method_end += 1
     if method_end >= len(lines):
         raise PatchError("Lrp.e(Lve;) is unterminated")
+
+    register_cursor = method_start + 1
+    while register_cursor < method_end and not lines[register_cursor].strip():
+        register_cursor += 1
+    if (
+        register_cursor >= method_end
+        or lines[register_cursor].strip() != ".registers 21"
+    ):
+        actual = (
+            lines[register_cursor].strip()
+            if register_cursor < method_end
+            else "<end>"
+        )
+        raise PatchError(
+            "Lrp.e(Lve;) register layout changed before session diagnostics; "
+            f"found {actual!r}"
+        )
+
+    indent = re.match(r"^(\s*)", lines[register_cursor]).group(1)
+    session_config_log = [
+        "",
+        f'{indent}const-string v15, "GCamSessionConfig"',
+        "",
+        f"{indent}invoke-static {{p1}}, "
+        "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+        "",
+        f"{indent}move-result-object v14",
+        "",
+        f"{indent}invoke-static {{v15, v14}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{indent}move-result v15",
+    ]
+    insertion_cursor = register_cursor + 1
+    lines = (
+        lines[:insertion_cursor]
+        + session_config_log
+        + lines[insertion_cursor:]
+    )
+    method_end += len(session_config_log)
 
     name_call = (
         "invoke-virtual {v14}, "
@@ -3490,6 +3691,11 @@ def patch_apk(
         ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
         description="OneCamera session class Lrp;",
     )
+    camcorder_request_dex = find_descriptor_dex(
+        source,
+        ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR,
+        description="OneCamera camcorder request provider Lopp;",
+    )
 
     with tempfile.TemporaryDirectory(prefix="poco-f5-device-gate-") as temp:
         root = Path(temp)
@@ -3503,6 +3709,7 @@ def patch_apk(
                 gcam_init_dex,
                 keepalive_dex,
                 session_config_dex,
+                camcorder_request_dex,
             }):
                 safe_name = dex_name.replace(".", "_")
                 input_dex = root / dex_name
@@ -3543,6 +3750,12 @@ def patch_apk(
                     )
                     report_for_dex["onecamera_odr_missing_request_key"] = (
                         find_and_patch_onecamera_odr_missing_request_key_smali_tree(smali_dir)
+                    )
+                if dex_name == camcorder_request_dex:
+                    report_for_dex["onecamera_camcorder_lookahead_eis"] = (
+                        find_and_patch_onecamera_camcorder_lookahead_eis_smali_tree(
+                            smali_dir
+                        )
                     )
                 if dex_name == keepalive_dex:
                     report_for_dex["keepalive"] = (
@@ -3629,6 +3842,9 @@ def patch_apk(
     onecamera_odr_missing_request_key_metadata = dex_reports[gcam_init_dex][
         "onecamera_odr_missing_request_key"
     ]
+    onecamera_camcorder_lookahead_eis_metadata = dex_reports[
+        camcorder_request_dex
+    ]["onecamera_camcorder_lookahead_eis"]
     onecamera_session_parameter_logging_metadata = dex_reports[
         session_config_dex
     ]["onecamera_session_parameter_logging"]
@@ -3668,6 +3884,10 @@ def patch_apk(
         "onecamera_odr_missing_request_key_patch": {
             "target_dex": gcam_init_dex,
             **onecamera_odr_missing_request_key_metadata,
+        },
+        "onecamera_camcorder_lookahead_eis_patch": {
+            "target_dex": camcorder_request_dex,
+            **onecamera_camcorder_lookahead_eis_metadata,
         },
         "onecamera_session_parameter_logging": {
             "target_dex": session_config_dex,
