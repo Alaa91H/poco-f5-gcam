@@ -1448,6 +1448,61 @@ def execute_query(text, method, flag):
     raise AssertionError("Guard did not terminate")
 
 
+def motion_stabilizer_fixture():
+    return """.class public Llio;
+.super Ljava/lang/Object;
+
+.field private G:Lthi;
+.field private H:Lrdw;
+
+.method public final i()V
+    .registers 15
+
+    iget-object v0, p0, Llio;->H:Lrdw;
+    invoke-virtual {v0}, Lrdw;->j()Lnbv;
+    move-result-object v6
+
+    iget-object v0, p0, Llio;->H:Lrdw;
+    invoke-virtual {v0}, Lrdw;->j()Lnbv;
+    move-result-object v6
+
+    iget-object v3, p0, Llio;->H:Lrdw;
+    invoke-virtual {v3}, Lrdw;->j()Lnbv;
+    move-result-object v6
+
+    iget-object v4, p0, Llio;->H:Lrdw;
+    invoke-virtual {v4}, Lrdw;->j()Lnbv;
+    move-result-object v6
+
+    iput-object v6, p0, Llio;->G:Lthi;
+    return-void
+.end method
+"""
+
+
+class MicrovideoMotionStabilizerPatchTests(unittest.TestCase):
+    def test_skips_profile_lookup_without_spoofing_pixel_profile(self):
+        patched, metadata = patcher.patch_motion_stabilizer_startup_smali_text(
+            motion_stabilizer_fixture()
+        )
+        method = patched.split(patcher.MOTION_STABILIZER_START_SIGNATURE, 1)[1]
+        self.assertLess(
+            method.index("return-void"),
+            method.index(patcher.MOTION_STABILIZER_PROFILE_CALL),
+        )
+        self.assertEqual(metadata["profile_lookup_count"], 4)
+        self.assertFalse(metadata["pixel_profile_spoofed"])
+
+    def test_fails_closed_when_profile_lookup_shape_changes(self):
+        changed = motion_stabilizer_fixture().replace(
+            "    invoke-virtual {v4}, Lrdw;->j()Lnbv;\n",
+            "",
+            1,
+        )
+        with self.assertRaises(patcher.PatchError):
+            patcher.patch_motion_stabilizer_startup_smali_text(changed)
+
+
 class MotionStabilizationGuardTests(unittest.TestCase):
     def test_disables_both_routes_to_pixel_motion_stabilizer(self):
         patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
