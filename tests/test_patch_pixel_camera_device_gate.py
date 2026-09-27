@@ -941,6 +941,15 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patched,
         )
         self.assertIn(
+            "move-object/from16 v14, p1",
+            patched,
+        )
+        self.assertIn(
+            "invoke-static {v14}, "
+            "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
+            patched,
+        )
+        self.assertNotIn(
             "invoke-static {p1}, "
             "Ljava/lang/String;->valueOf(Ljava/lang/Object;)Ljava/lang/String;",
             patched,
