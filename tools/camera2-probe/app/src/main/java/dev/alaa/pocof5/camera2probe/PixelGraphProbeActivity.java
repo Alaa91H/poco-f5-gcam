@@ -572,6 +572,7 @@ public final class PixelGraphProbeActivity extends Activity {
         return result;
     }
 
+    @SuppressLint("NewApi")
     private static ImageReader buildImageReader(
             int width,
             int height,
