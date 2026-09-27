@@ -297,6 +297,12 @@ public final class PixelGraphProbeActivity extends Activity {
         }
 
         boolean addDefaultSensorPixelMode = candidate.contains("pixelmode0");
+        long privateUsage = getIntent().getLongExtra("privateUsage", -1L);
+        long rawUsage = getIntent().getLongExtra("rawUsage", -1L);
+        long yuvUsage = getIntent().getLongExtra("yuvUsage", -1L);
+        result.put("privateUsage", privateUsage);
+        result.put("rawUsage", rawUsage);
+        result.put("yuvUsage", yuvUsage);
 
         int previewWidth = use1280 ? 1280 : 800;
         int previewHeight = use1280 ? 720 : 600;
@@ -340,11 +346,12 @@ public final class PixelGraphProbeActivity extends Activity {
             // Match the Pixel runtime consumer itself, not only its nominal
             // size/format. ImageReader PRIVATE defaults to consumer usage 0,
             // and the recorded GCam consumer names expose maxImages m11/m30/m52.
-            privateReader = ImageReader.newInstance(
+            privateReader = buildImageReader(
                     previewWidth,
                     previewHeight,
                     ImageFormat.PRIVATE,
-                    11);
+                    11,
+                    privateUsage);
             privateSurface = privateReader.getSurface();
         } else {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -358,18 +365,20 @@ public final class PixelGraphProbeActivity extends Activity {
         int rawMaxImages = useGcamImageReaders ? 30 : 2;
         int yuvMaxImages = useGcamImageReaders ? 52 : 2;
         ImageReader rawReader = needRaw
-                ? ImageReader.newInstance(
+                ? buildImageReader(
                         4624,
                         3472,
                         ImageFormat.RAW10,
-                        rawMaxImages)
+                        rawMaxImages,
+                        rawUsage)
                 : null;
         ImageReader yuvReader = needYuv
-                ? ImageReader.newInstance(
+                ? buildImageReader(
                         previewWidth,
                         previewHeight,
                         ImageFormat.YUV_420_888,
-                        yuvMaxImages)
+                        yuvMaxImages,
+                        yuvUsage)
                 : null;
         result.put("privateConsumer", useGcamImageReaders
                 ? "ImageReader"
@@ -561,6 +570,22 @@ public final class PixelGraphProbeActivity extends Activity {
         }
 
         return result;
+    }
+
+    private static ImageReader buildImageReader(
+            int width,
+            int height,
+            int format,
+            int maxImages,
+            long usage) {
+        if (usage < 0) {
+            return ImageReader.newInstance(width, height, format, maxImages);
+        }
+        return new ImageReader.Builder(width, height)
+                .setImageFormat(format)
+                .setMaxImages(maxImages)
+                .setUsage(usage)
+                .build();
     }
 
     private static JSONObject streamJson(String format, Size size) throws Exception {
