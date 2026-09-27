@@ -58,7 +58,7 @@ jobs:
   changes:
     name: Detect affected components
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       android: ${{ steps.filter.outputs.android }}
       powershell: ${{ steps.filter.outputs.powershell }}
@@ -141,7 +141,7 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (needs.changes.result == 'success' && needs.changes.outputs.android == 'true')
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     strategy:
       fail-fast: false
@@ -301,7 +301,7 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (needs.changes.result == 'success' && needs.changes.outputs.upstream == 'true')
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
 
@@ -954,7 +954,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.head_ref == 'feat/patch-pixel-camera-device-gate'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout
