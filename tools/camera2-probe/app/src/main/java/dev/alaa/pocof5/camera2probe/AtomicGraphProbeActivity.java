@@ -12,6 +12,7 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.InputConfiguration;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
@@ -132,6 +133,9 @@ public final class AtomicGraphProbeActivity extends Activity {
         int videoStab = getIntent().getIntExtra("videoStab", -1);
         int fpsLower = getIntent().getIntExtra("fpsLower", -1);
         int fpsUpper = getIntent().getIntExtra("fpsUpper", -1);
+        String inputFormatName = getIntent().getStringExtra("inputFormat");
+        int inputWidth = getIntent().getIntExtra("inputWidth", 4624);
+        int inputHeight = getIntent().getIntExtra("inputHeight", 3472);
 
         CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
@@ -156,6 +160,8 @@ public final class AtomicGraphProbeActivity extends Activity {
         root.put("clientName", clientName == null ? JSONObject.NULL : clientName);
         root.put("videoStab", videoStab);
         root.put("fps", fpsLower + "-" + fpsUpper);
+        root.put("inputFormat", inputFormatName == null ? JSONObject.NULL : inputFormatName);
+        root.put("inputSize", inputWidth + "x" + inputHeight);
         List<ImageReader> readers = new ArrayList<>();
         List<Surface> surfaces = new ArrayList<>();
         JSONArray actualStreams = new JSONArray();
@@ -249,6 +255,32 @@ public final class AtomicGraphProbeActivity extends Activity {
                                         new Range<>(fpsLower, fpsUpper));
                             }
                             config.setSessionParameters(builder.build());
+                        }
+                        if (inputFormatName != null && !inputFormatName.isEmpty()) {
+                            final int inputFormat;
+                            if ("private".equalsIgnoreCase(inputFormatName)) {
+                                inputFormat = ImageFormat.PRIVATE;
+                            } else if ("yuv".equalsIgnoreCase(inputFormatName)
+                                    || "yuv_420_888".equalsIgnoreCase(inputFormatName)) {
+                                inputFormat = ImageFormat.YUV_420_888;
+                            } else if ("raw10".equalsIgnoreCase(inputFormatName)) {
+                                inputFormat = ImageFormat.RAW10;
+                            } else if ("raw12".equalsIgnoreCase(inputFormatName)) {
+                                inputFormat = ImageFormat.RAW12;
+                            } else {
+                                throw new IllegalArgumentException(
+                                        "Unsupported inputFormat: " + inputFormatName);
+                            }
+                            Size inputSize = findExact(
+                                    map.getInputSizes(inputFormat), inputWidth, inputHeight);
+                            if (inputSize == null) {
+                                throw new IllegalStateException(
+                                        "Requested input is not advertised: "
+                                                + inputFormatName + " "
+                                                + inputWidth + "x" + inputHeight);
+                            }
+                            config.setInputConfiguration(new InputConfiguration(
+                                    inputWidth, inputHeight, inputFormat));
                         }
                         camera.createCaptureSession(config);
                     } else {
