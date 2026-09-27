@@ -506,6 +506,57 @@ if ($YuvRuntime) {
         $utf8NoBom
     )
 
+    Write-Host ""
+    Write-Host "Pixel graph Xiaomi identity matrix:"
+    foreach ($graphResult in $pixelGraphResults) {
+        $sessionApi = if ($graphResult.PSObject.Properties["sessionApi"]) {
+            [string]$graphResult.sessionApi
+        }
+        else {
+            "<unavailable>"
+        }
+        $requestedClient = if ($graphResult.PSObject.Properties["xiaomiClientNameRequested"] -and
+                $null -ne $graphResult.xiaomiClientNameRequested) {
+            [string]$graphResult.xiaomiClientNameRequested
+        }
+        else {
+            "<none>"
+        }
+        $configured = if ($graphResult.PSObject.Properties["sessionConfigured"]) {
+            [bool]$graphResult.sessionConfigured
+        }
+        else {
+            $false
+        }
+        $applied = if ($graphResult.PSObject.Properties["xiaomiClientNameApplied"]) {
+            [bool]$graphResult.xiaomiClientNameApplied
+        }
+        else {
+            $false
+        }
+        $errorText = if ($graphResult.PSObject.Properties["error"] -and
+                -not [string]::IsNullOrWhiteSpace([string]$graphResult.error)) {
+            [string]$graphResult.error
+        }
+        elseif ($graphResult.PSObject.Properties["xiaomiClientNameError"] -and
+                -not [string]::IsNullOrWhiteSpace([string]$graphResult.xiaomiClientNameError)) {
+            [string]$graphResult.xiaomiClientNameError
+        }
+        else {
+            ""
+        }
+
+        Write-Host (
+            "  " + [string]$graphResult.candidate +
+            " | api=" + $sessionApi +
+            " | client=" + $requestedClient +
+            " | clientApplied=" + $applied +
+            " | configured=" + $configured +
+            $(if ($errorText) { " | error=" + $errorText } else { "" })
+        )
+    }
+    Write-Host ""
+
     $cameraIds = @($parsed.cameraIdList | ForEach-Object { [string]$_ })
     if ($cameraIds.Count -eq 0) {
         Fail "Camera2 report did not expose any camera IDs for isolated YUV probing."
