@@ -127,7 +127,12 @@ public final class AtomicGraphProbeActivity extends Activity {
         int privateMax = getIntent().getIntExtra("privateMax", 11);
         int rawMax = getIntent().getIntExtra("rawMax", 30);
         int yuvMax = getIntent().getIntExtra("yuvMax", 52);
+        long privateUsage = getIntent().getLongExtra("privateUsage", -1L);
+        long rawUsage = getIntent().getLongExtra("rawUsage", -1L);
+        long yuvUsage = getIntent().getLongExtra("yuvUsage", -1L);
         boolean sessionCfg = getIntent().getBooleanExtra("sessionCfg", true);
+        int sessionType = getIntent().getIntExtra(
+                "sessionType", SessionConfiguration.SESSION_REGULAR);
         boolean pixelMode0 = getIntent().getBooleanExtra("pixelMode0", false);
         String clientName = getIntent().getStringExtra("clientName");
         int videoStab = getIntent().getIntExtra("videoStab", -1);
@@ -156,10 +161,14 @@ public final class AtomicGraphProbeActivity extends Activity {
         root.put("rawSize", rawSize == null ? JSONObject.NULL
                 : rawSize.getWidth() + "x" + rawSize.getHeight());
         root.put("sessionCfg", sessionCfg);
+        root.put("sessionType", sessionType);
         root.put("pixelMode0", pixelMode0);
         root.put("clientName", clientName == null ? JSONObject.NULL : clientName);
         root.put("videoStab", videoStab);
         root.put("fps", fpsLower + "-" + fpsUpper);
+        root.put("privateUsage", privateUsage);
+        root.put("rawUsage", rawUsage);
+        root.put("yuvUsage", yuvUsage);
         root.put("inputFormat", inputFormatName == null ? JSONObject.NULL : inputFormatName);
         root.put("inputSize", inputWidth + "x" + inputHeight);
         List<ImageReader> readers = new ArrayList<>();
@@ -171,21 +180,21 @@ public final class AtomicGraphProbeActivity extends Activity {
             ImageReader reader;
             if ("private".equals(name)) {
                 requireSize("PRIVATE", privateSize);
-                reader = ImageReader.newInstance(
-                        privateSize.getWidth(), privateSize.getHeight(),
-                        ImageFormat.PRIVATE, privateMax);
+                reader = buildReader(
+                        privateSize,
+                        ImageFormat.PRIVATE, privateMax, privateUsage);
                 actualStreams.put(streamJson("PRIVATE", privateSize, privateMax));
             } else if ("raw10".equals(name)) {
                 requireSize("RAW10", rawSize);
-                reader = ImageReader.newInstance(
-                        rawSize.getWidth(), rawSize.getHeight(),
-                        ImageFormat.RAW10, rawMax);
+                reader = buildReader(
+                        rawSize,
+                        ImageFormat.RAW10, rawMax, rawUsage);
                 actualStreams.put(streamJson("RAW10", rawSize, rawMax));
             } else if ("yuv".equals(name)) {
                 requireSize("YUV", yuvSize);
-                reader = ImageReader.newInstance(
-                        yuvSize.getWidth(), yuvSize.getHeight(),
-                        ImageFormat.YUV_420_888, yuvMax);
+                reader = buildReader(
+                        yuvSize,
+                        ImageFormat.YUV_420_888, yuvMax, yuvUsage);
                 actualStreams.put(streamJson("YUV_420_888", yuvSize, yuvMax));
             } else {
                 throw new IllegalArgumentException("Unknown stream: " + streamName);
@@ -233,7 +242,7 @@ public final class AtomicGraphProbeActivity extends Activity {
                             outputs.add(output);
                         }
                         SessionConfiguration config = new SessionConfiguration(
-                                SessionConfiguration.SESSION_REGULAR,
+                                sessionType,
                                 outputs,
                                 command -> cameraHandler.post(command),
                                 cb);
@@ -321,6 +330,16 @@ public final class AtomicGraphProbeActivity extends Activity {
         for (ImageReader reader : readers) reader.close();
         return root;
     }
+    private static ImageReader buildReader(
+            Size size, int format, int maxImages, long usage) {
+        ImageReader.Builder builder =
+                new ImageReader.Builder(size.getWidth(), size.getHeight())
+                        .setImageFormat(format)
+                        .setMaxImages(maxImages);
+        if (usage >= 0L) builder.setUsage(usage);
+        return builder.build();
+    }
+
     private static void requireSize(String name, Size size) {
         if (size == null) throw new IllegalStateException(name + " size unavailable");
     }
