@@ -3304,6 +3304,129 @@ def find_and_patch_onecamera_output_configuration_logging_smali_tree(
     return metadata
 
 
+def patch_imagereader_builder_logging_smali_text(
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    """Log exact ImageReader builder config without changing behavior."""
+
+    lines = text.splitlines()
+    descriptor = "Luvx;"
+    class_matches = [
+        i for i, line in enumerate(lines)
+        if re.match(r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$", line)
+    ]
+    if len(class_matches) != 1:
+        raise PatchError(
+            "expected exactly one ImageReader builder helper Luvx;; "
+            f"found {len(class_matches)}"
+        )
+
+    signature = ".method public final a(Luzq;)Luzt;"
+    method_starts = [
+        i for i, line in enumerate(lines)
+        if line.strip() == signature
+    ]
+    if len(method_starts) != 1:
+        raise PatchError(
+            "expected exactly one Luvx.a(Luzq;) ImageReader builder; "
+            f"found {len(method_starts)}"
+        )
+
+    method_start = method_starts[0]
+    method_end = method_start + 1
+    while method_end < len(lines) and lines[method_end].strip() != ".end method":
+        method_end += 1
+    if method_end >= len(lines):
+        raise PatchError("Luvx.a(Luzq;) is unterminated")
+
+    register_lines = [
+        i for i in range(method_start + 1, method_end)
+        if re.fullmatch(r"\s*\.registers\s+8\s*", lines[i])
+    ]
+    if len(register_lines) != 1:
+        raise PatchError(
+            "Luvx.a(Luzq;) register layout changed; expected exactly .registers 8"
+        )
+
+    anchor_line = "iget v0, p0, Luvx;->b:I"
+    anchors = [
+        i for i in range(method_start, method_end)
+        if lines[i].strip() == anchor_line
+    ]
+    if len(anchors) != 1:
+        raise PatchError(
+            "Luvx.a(Luzq;) entry anchor changed; "
+            f"found {len(anchors)} matches"
+        )
+    anchor_index = anchors[0]
+    indent = re.match(r"^(\s*)", lines[anchor_index]).group(1)
+    injected = [
+        f'{indent}const-string v0, "GCamImageReaderConfig"',
+        "",
+        f"{indent}invoke-virtual {{p1}}, Luzq;->toString()Ljava/lang/String;",
+        "",
+        f"{indent}move-result-object v1",
+        "",
+        f"{indent}invoke-static {{v0, v1}}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "",
+        f"{indent}move-result v0",
+        "",
+    ]
+    lines = lines[:anchor_index] + injected + lines[anchor_index:]
+    patched = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return patched, {
+        "status": "diagnostic_logging",
+        "class": descriptor,
+        "method": signature,
+        "tag": "GCamImageReaderConfig",
+        "behavior_changed": False,
+        "fields": [
+            "width",
+            "height",
+            "imageFormat",
+            "maxImages",
+            "usage",
+            "defaultHardwareBufferFormat",
+            "defaultDataSpace",
+        ],
+        "scratch_registers": ["v0", "v1"],
+        "scratch_liveness": (
+            "v0 is overwritten by the original first instruction and v1 is "
+            "assigned before its first original read"
+        ),
+    }
+
+
+def find_and_patch_imagereader_builder_logging_smali_tree(
+    root: Path,
+) -> dict[str, Any]:
+    matches: list[Path] = []
+    class_line_re = re.compile(r"^\.class\s+.*Luvx;\s*$", re.MULTILINE)
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_line_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected ImageReader builder helper Luvx; in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    patched, metadata = patch_imagereader_builder_logging_smali_text(
+        target.read_text(encoding="utf-8")
+    )
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
 def find_and_patch_onecamera_session_parameter_logging_smali_tree(
     root: Path,
 ) -> dict[str, Any]:
@@ -3779,6 +3902,11 @@ def patch_apk(
                             smali_dir
                         )
                     )
+                    report_for_dex["imagereader_builder_logging"] = (
+                        find_and_patch_imagereader_builder_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
 
                 assemble_output = run(
                     [
@@ -3856,6 +3984,9 @@ def patch_apk(
     onecamera_output_configuration_logging_metadata = dex_reports[
         session_config_dex
     ]["onecamera_output_configuration_logging"]
+    imagereader_builder_logging_metadata = dex_reports[
+        session_config_dex
+    ]["imagereader_builder_logging"]
     keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
 
     return {
@@ -3902,6 +4033,10 @@ def patch_apk(
         "onecamera_output_configuration_logging": {
             "target_dex": session_config_dex,
             **onecamera_output_configuration_logging_metadata,
+        },
+        "imagereader_builder_logging": {
+            "target_dex": session_config_dex,
+            **imagereader_builder_logging_metadata,
         },
         "keepalive_receiver_patch": {
             "target_dex": keepalive_dex,

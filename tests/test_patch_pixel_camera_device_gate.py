@@ -347,6 +347,27 @@ VZ_OUTPUT_CONFIGURATION_SAMPLE = r'''.class public final Lvz;
 .end method
 '''
 
+UVX_IMAGEREADER_SAMPLE = r'''.class public final Luvx;
+.super Ljava/lang/Object;
+
+.method public final a(Luzq;)Luzt;
+    .registers 8
+
+    iget v0, p0, Luvx;->b:I
+
+    if-eqz v0, :cond_3f
+
+    new-instance p0, Landroid/media/ImageReader$Builder;
+
+    iget v0, p1, Luzq;->a:I
+
+    iget v1, p1, Luzq;->b:I
+
+    return-object p0
+.end method
+'''
+
+
 
 UG_SAMPLE = r'''.class public final Lug;
 .super Ljava/lang/Object;
@@ -926,6 +947,50 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             patcher.patch_onecamera_output_configuration_logging_smali_text(
                 changed
             )
+
+    def test_logs_exact_imagereader_builder_config_without_changing_behavior(self):
+        patched, metadata = patcher.patch_imagereader_builder_logging_smali_text(
+            UVX_IMAGEREADER_SAMPLE
+        )
+
+        self.assertIn(
+            'const-string v0, "GCamImageReaderConfig"',
+            patched,
+        )
+        self.assertIn(
+            "invoke-virtual {p1}, Luzq;->toString()Ljava/lang/String;",
+            patched,
+        )
+        self.assertLess(
+            patched.index('const-string v0, "GCamImageReaderConfig"'),
+            patched.index("iget v0, p0, Luvx;->b:I"),
+        )
+        self.assertFalse(metadata["behavior_changed"])
+        self.assertEqual(metadata["class"], "Luvx;")
+        self.assertEqual(metadata["scratch_registers"], ["v0", "v1"])
+        self.assertEqual(
+            metadata["fields"],
+            [
+                "width",
+                "height",
+                "imageFormat",
+                "maxImages",
+                "usage",
+                "defaultHardwareBufferFormat",
+                "defaultDataSpace",
+            ],
+        )
+
+    def test_imagereader_builder_logging_fails_closed_if_register_layout_moves(self):
+        changed = UVX_IMAGEREADER_SAMPLE.replace(
+            ".registers 8",
+            ".registers 9",
+        )
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "register layout changed",
+        ):
+            patcher.patch_imagereader_builder_logging_smali_text(changed)
 
     def test_injects_xiaomi_client_name_into_session_parameters(self):
         patched, metadata = (

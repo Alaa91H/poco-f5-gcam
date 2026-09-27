@@ -136,6 +136,7 @@ public final class AtomicGraphProbeActivity extends Activity {
         boolean pixelMode0 = getIntent().getBooleanExtra("pixelMode0", false);
         String clientName = getIntent().getStringExtra("clientName");
         int videoStab = getIntent().getIntExtra("videoStab", -1);
+        int sceneMode = getIntent().getIntExtra("sceneMode", -1);
         int fpsLower = getIntent().getIntExtra("fpsLower", -1);
         int fpsUpper = getIntent().getIntExtra("fpsUpper", -1);
         String inputFormatName = getIntent().getStringExtra("inputFormat");
@@ -165,6 +166,7 @@ public final class AtomicGraphProbeActivity extends Activity {
         root.put("pixelMode0", pixelMode0);
         root.put("clientName", clientName == null ? JSONObject.NULL : clientName);
         root.put("videoStab", videoStab);
+        root.put("sceneMode", sceneMode);
         root.put("fps", fpsLower + "-" + fpsUpper);
         root.put("privateUsage", privateUsage);
         root.put("rawUsage", rawUsage);
@@ -184,18 +186,27 @@ public final class AtomicGraphProbeActivity extends Activity {
                         privateSize,
                         ImageFormat.PRIVATE, privateMax, privateUsage);
                 actualStreams.put(streamJson("PRIVATE", privateSize, privateMax));
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("usage", reader.getUsage());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("hardwareBufferFormat", reader.getHardwareBufferFormat());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("dataSpace", reader.getDataSpace());
             } else if ("raw10".equals(name)) {
                 requireSize("RAW10", rawSize);
                 reader = buildReader(
                         rawSize,
                         ImageFormat.RAW10, rawMax, rawUsage);
                 actualStreams.put(streamJson("RAW10", rawSize, rawMax));
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("usage", reader.getUsage());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("hardwareBufferFormat", reader.getHardwareBufferFormat());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("dataSpace", reader.getDataSpace());
             } else if ("yuv".equals(name)) {
                 requireSize("YUV", yuvSize);
                 reader = buildReader(
                         yuvSize,
                         ImageFormat.YUV_420_888, yuvMax, yuvUsage);
                 actualStreams.put(streamJson("YUV_420_888", yuvSize, yuvMax));
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("usage", reader.getUsage());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("hardwareBufferFormat", reader.getHardwareBufferFormat());
+                actualStreams.getJSONObject(actualStreams.length() - 1).put("dataSpace", reader.getDataSpace());
             } else {
                 throw new IllegalArgumentException("Unknown stream: " + streamName);
             }
@@ -246,7 +257,7 @@ public final class AtomicGraphProbeActivity extends Activity {
                                 outputs,
                                 command -> cameraHandler.post(command),
                                 cb);
-                        if (clientName != null || videoStab >= 0
+                        if (clientName != null || videoStab >= 0 || sceneMode >= 0
                                 || (fpsLower >= 0 && fpsUpper >= 0)) {
                             CaptureRequest.Builder builder =
                                     camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
@@ -258,6 +269,9 @@ public final class AtomicGraphProbeActivity extends Activity {
                             if (videoStab >= 0) {
                                 builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                                         videoStab);
+                            }
+                            if (sceneMode >= 0) {
+                                builder.set(CaptureRequest.CONTROL_SCENE_MODE, sceneMode);
                             }
                             if (fpsLower >= 0 && fpsUpper >= 0) {
                                 builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
