@@ -1532,6 +1532,33 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "mjy.smali").write_text(GCAM_INIT_SAMPLE, encoding="utf-8")
+            (root / "zoi.smali").write_text(
+                """.class public final Lzoi;
+.super Ljava/lang/Object;
+
+.field public static final s:Lzoi;
+.field public static final v:Lzoi;
+
+.method static constructor <clinit>()V
+    .locals 4
+
+    new-instance v0, Lzoi;
+    const-string v1, "kRearLogical"
+    const/4 v2, 0x5
+    invoke-direct {v0, v1, v2}, Lzoi;-><init>(Ljava/lang/String;I)V
+    sput-object v0, Lzoi;->s:Lzoi;
+
+    new-instance v0, Lzoi;
+    const-string v1, "kFrontLogical"
+    const/4 v2, 0x3
+    invoke-direct {v0, v1, v2}, Lzoi;-><init>(Ljava/lang/String;I)V
+    sput-object v0, Lzoi;->v:Lzoi;
+
+    return-void
+.end method
+""",
+                encoding="utf-8",
+            )
             (root / "com").mkdir()
             jni = root / "com" / "GcamModuleJNI.smali"
             jni.write_text(
