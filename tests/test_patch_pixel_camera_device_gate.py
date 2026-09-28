@@ -474,6 +474,8 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
     invoke-static {v2, v3, v1, v12}, Lcom/google/googlex/gcam/GcamModuleJNI;->InitParams_finish_tomte_grain_enabled_set(JLcom/google/googlex/gcam/InitParams;Z)V
 
     :cond_2c
+    new-array v13, v15, [Luve;
+
     sget-object v0, Luve;->b:Luve;
 
     aput-object v0, v13, v12
@@ -1294,7 +1296,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn('const-string v25, "5"', patched)
         self.assertIn('const-string v25, "6"', patched)
         self.assertIn('const-string v25, "GCamMappedCameraId"', patched)
-        self.assertIn('const-string v25, "GCamMappedSensorId"', patched)
+        self.assertNotIn('const-string v25, "GCamMappedSensorId"', patched)
         self.assertEqual(
             metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
                 "camera_id_tag"
@@ -1305,7 +1307,7 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
                 "sensor_id_tag"
             ],
-            "GCamMappedSensorId",
+            None,
         )
         self.assertFalse(
             metadata["sensor_id_uniqueness"]["pre_filter_mapping_diagnostics"][
@@ -1319,10 +1321,10 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["sensor_id_uniqueness"]["native_check"],
             "Gcam_AllSensorIdsUnique",
         )
-        self.assertIn('const-string v24, "GCamTopCameraId"', patched)
+        self.assertIn('const-string v25, "GCamTopCameraId"', patched)
         self.assertIn('const-string v25, "GCamPhysicalCameraId"', patched)
         self.assertIn(
-            "invoke-static/range {v24 .. v25}, Landroid/util/Log;->e",
+            "invoke-static/range {v25 .. v26}, Landroid/util/Log;->e",
             patched,
         )
         self.assertIn("move-object/from16 v24, v3", patched)
@@ -1348,6 +1350,115 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertFalse(
             metadata["sensor_vector_diagnostics"]["behavior_changed"],
         )
+
+    def test_gcam_init_patch_accepts_pixel_camera_11_1_semantic_shape(self):
+        sample = (
+            GCAM_INIT_SAMPLE
+            .replace("Luve;", "Lvhd;")
+            .replace("Luuv;", "Lvgu;")
+            .replace("Luut;", "Lvgs;")
+            .replace("Luus;", "Lvgr;")
+            .replace(
+                "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->C(Lvgr;)",
+                "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->A(Lvgr;)",
+            )
+            .replace(
+                "Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
+                "Lcom/google/googlex/gcam/StaticMetadata;->g()Laaaj;",
+            )
+            .replace(
+                "move-object/from16 v5, v24\n\n"
+                "    check-cast v5, Luur;\n\n"
+                "    iget-object v5, v5, Luur;->b:Lyfm;",
+                "invoke-interface/range {v24 .. v24}, Lvgr;->G()Ljava/util/Set;\n\n"
+                "    move-result-object v5",
+            )
+        )
+        mapping = {
+            "descriptor": "Laaaj;",
+            "rear_field": "s",
+            "front_field": "v",
+            "rear_value": 5,
+            "front_value": 3,
+            "source": "test_11_1_enum",
+        }
+
+        patched, metadata = patcher.patch_gcam_init_smali_text(
+            sample,
+            sensor_enum_mapping=mapping,
+        )
+
+        shape = metadata["sensor_id_uniqueness"]["semantic_shape"]
+        self.assertEqual(shape["direction_enum_descriptor"], "Lvhd;")
+        self.assertEqual(shape["camera_descriptor"], "Lvgu;")
+        self.assertEqual(shape["provider_descriptor"], "Lvgs;")
+        self.assertEqual(shape["metadata_descriptor"], "Lvgr;")
+        self.assertEqual(shape["converter_method"], "A")
+        self.assertEqual(shape["sensor_enum_descriptor"], "Laaaj;")
+        self.assertEqual(shape["physical_set_profile"], "interface_set_accessor")
+        self.assertIn("sget-object v5, Laaaj;->s:Laaaj;", patched)
+        self.assertIn("sget-object v5, Laaaj;->v:Laaaj;", patched)
+        self.assertIn(
+            "Lcom/google/googlex/gcam/StaticMetadata;->u(Laaaj;)V",
+            patched,
+        )
+        self.assertIn(
+            "invoke-interface/range {v24 .. v24}, Lvgr;->G()Ljava/util/Set;",
+            patched,
+        )
+        self.assertIn(
+            "iget-object v3, v0, Lvgu;->a:Ljava/lang/String;",
+            patched,
+        )
+        self.assertIn(
+            "Lcom/google/googlex/gcam/StaticMetadata;->g()Laaaj;",
+            patched,
+        )
+
+    def test_sensor_enum_logical_mapping_reads_clinit_semantics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            enum_path = root / "aaaj.smali"
+            enum_path.write_text(
+                """.class public final Laaaj;
+.super Ljava/lang/Object;
+
+.field public static final s:Laaaj;
+.field public static final v:Laaaj;
+
+.method static constructor <clinit>()V
+    .locals 6
+
+    new-instance v1, Laaaj;
+    const-string v2, "kRearLogical"
+    const/4 v0, 0x5
+    invoke-direct {v1, v2, v0}, Laaaj;-><init>(Ljava/lang/String;I)V
+    sput-object v1, Laaaj;->s:Laaaj;
+
+    new-instance v0, Laaaj;
+    const-string v2, "kFrontLogical"
+    const/4 v1, 0x3
+    invoke-direct {v0, v2, v1}, Laaaj;-><init>(Ljava/lang/String;I)V
+    sput-object v0, Laaaj;->v:Laaaj;
+
+    return-void
+.end method
+""",
+                encoding="utf-8",
+            )
+            gcam = (
+                "invoke-virtual {v7}, "
+                "Lcom/google/googlex/gcam/StaticMetadata;->g()Laaaj;\n"
+            )
+
+            mapping = patcher._sensor_enum_logical_mapping(root, gcam)
+
+            self.assertEqual(mapping["descriptor"], "Laaaj;")
+            self.assertEqual(mapping["rear_field"], "s")
+            self.assertEqual(mapping["front_field"], "v")
+            self.assertEqual(mapping["rear_value"], 5)
+            self.assertEqual(mapping["front_value"], 3)
+            self.assertEqual(mapping["source"], "sensor_enum_clinit")
 
     def test_sensor_enum_shape_diagnostic_reports_fields_and_clinit(self):
         with tempfile.TemporaryDirectory() as temp:
