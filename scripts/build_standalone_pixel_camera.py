@@ -264,6 +264,71 @@ def patch_manifest_with_apkeditor(
     }
 
 
+def verify_optional_opencl_manifest(
+    path: Path,
+    aapt2: str,
+) -> dict[str, Any]:
+    """Verify the final compiled manifest still exposes all OpenCL libraries."""
+
+    output = run(
+        [
+            aapt2,
+            "dump",
+            "xmltree",
+            os.fspath(path),
+            "--file",
+            "AndroidManifest.xml",
+        ]
+    )
+    lines = output.splitlines()
+    blocks: list[list[str]] = []
+    index = 0
+    while index < len(lines):
+        if "E: uses-native-library" not in lines[index]:
+            index += 1
+            continue
+        block = [lines[index]]
+        index += 1
+        while index < len(lines) and "E: " not in lines[index]:
+            block.append(lines[index])
+            index += 1
+        blocks.append(block)
+
+    verified: list[str] = []
+    for name in OPENCL_NATIVE_LIBRARIES:
+        matches = [
+            block
+            for block in blocks
+            if any(name in line for line in block)
+        ]
+        if len(matches) != 1:
+            raise BuildError(
+                "final manifest expected exactly one optional native library "
+                f"declaration for {name}; found {len(matches)}"
+            )
+        required_lines = [
+            line
+            for line in matches[0]
+            if "android:required" in line
+        ]
+        if len(required_lines) != 1:
+            raise BuildError(
+                f"final manifest has no unambiguous android:required for {name}"
+            )
+        required_line = required_lines[0]
+        if "0x0" not in required_line and '"false"' not in required_line:
+            raise BuildError(
+                f"final manifest does not mark {name} optional: {required_line.strip()}"
+            )
+        verified.append(name)
+
+    return {
+        "status": "verified",
+        "libraries": verified,
+        "required": False,
+    }
+
+
 def signing_certificates(verify_output: str) -> list[str]:
     result: list[str] = []
     for match in CERT_SHA256_RE.finditer(verify_output):
@@ -404,6 +469,7 @@ def build_standalone(
         )
         run([zipalign, "-c", "-P", "16", "-v", "4", os.fspath(signed)])
 
+        manifest_verification = verify_optional_opencl_manifest(signed, aapt2)
         metadata = aapt_badging(signed, aapt2)
         if metadata["package_name"] != expected_package:
             raise BuildError(
@@ -479,6 +545,7 @@ def build_standalone(
             "allow_native_heap_pointer_tagging_changed": False,
         },
         "manifest_compatibility_patch": manifest_patch,
+        "manifest_compatibility_verification": manifest_verification,
         "compatibility_patch": device_gate_patch,
         "runtime_validation": {
             "status": "not_run",
