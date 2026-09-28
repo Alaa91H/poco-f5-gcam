@@ -316,7 +316,11 @@ def verify_optional_opencl_manifest(
                 f"final manifest has no unambiguous android:required for {name}"
             )
         required_line = required_lines[0]
-        if "0x0" not in required_line and '"false"' not in required_line:
+        required_false = (
+            re.search(r"\(type 0x12\)0x0(?:\s|$)", required_line) is not None
+            or '"false"' in required_line
+        )
+        if not required_false:
             raise BuildError(
                 f"final manifest does not mark {name} optional: {required_line.strip()}"
             )
