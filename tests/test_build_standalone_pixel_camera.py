@@ -54,6 +54,73 @@ class StandaloneBuilderTests(unittest.TestCase):
         self.assertEqual(result["min_sdk"], "37")
         self.assertEqual(result["target_sdk"], "37")
 
+    def test_manifest_patch_declares_optional_opencl_libraries(self):
+        source = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.google.android.GoogleCamera">
+    <application android:label="Pixel Camera" />
+</manifest>
+"""
+        patched, metadata = builder.patch_manifest_xml_text(source)
+
+        root = builder.ET.fromstring(patched)
+        application = root.find("application")
+        self.assertIsNotNone(application)
+        declarations = {
+            element.get(builder.ANDROID_NAME): element.get(builder.ANDROID_REQUIRED)
+            for element in application.findall("uses-native-library")
+        }
+        self.assertEqual(
+            declarations,
+            {
+                "libOpenCL.so": "false",
+                "libOpenCL-car.so": "false",
+                "libOpenCL-pixel.so": "false",
+            },
+        )
+        self.assertEqual(
+            metadata["libraries"],
+            list(builder.OPENCL_NATIVE_LIBRARIES),
+        )
+        self.assertFalse(metadata["required"])
+        self.assertFalse(metadata["allow_native_heap_pointer_tagging_changed"])
+
+    def test_manifest_patch_makes_existing_opencl_declaration_optional(self):
+        source = """<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <uses-native-library android:name="libOpenCL.so" android:required="true" />
+    </application>
+</manifest>
+"""
+        patched, metadata = builder.patch_manifest_xml_text(source)
+        root = builder.ET.fromstring(patched)
+        application = root.find("application")
+        declarations = [
+            element
+            for element in application.findall("uses-native-library")
+            if element.get(builder.ANDROID_NAME) == "libOpenCL.so"
+        ]
+        self.assertEqual(len(declarations), 1)
+        self.assertEqual(declarations[0].get(builder.ANDROID_REQUIRED), "false")
+        self.assertEqual(metadata["forced_optional"], ["libOpenCL.so"])
+
+    def test_manifest_patch_fails_closed_on_duplicate_opencl_declaration(self):
+        source = """<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+    </application>
+</manifest>
+"""
+        with self.assertRaisesRegex(builder.BuildError, "duplicate OpenCL"):
+            builder.patch_manifest_xml_text(source)
+
+    def test_manifest_patch_fails_closed_without_single_application(self):
+        with self.assertRaisesRegex(builder.BuildError, "exactly one <application>"):
+            builder.patch_manifest_xml_text(
+                '<manifest xmlns:android="http://schemas.android.com/apk/res/android" />'
+            )
+
     def test_android_package_must_be_zip_based(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "broken.apkm"
