@@ -69,17 +69,20 @@ That path:
 
 1. merges the split bundle with pinned APKEditor;
 2. sanitizes split metadata during the merge;
-3. locates the exact `Device is not recognized or not supported` constructor guard in one DEX;
-4. disassembles only that DEX with checksum-pinned baksmali;
-5. redirects the rejection block to Pixel Camera's existing common constructor finalization path and fails closed if the bytecode shape is not exactly recognized;
-6. injects narrow guards into `klm.q(...)` and `klm.x(...)` so POCO F5 never selects feature names containing `use_tpu`, `darwinn`, or `edgetpu`, and disables the `camera.lasagna*` Tensor/GXP motion path;
-7. keeps the startup GCam InitParams provider from enabling `almond_use_tpu` and Tomte grain;
-8. verifies three exact AArch64 instruction sequences in `lib/arm64-v8a/libgcastartup.so` and redirects only the GXP/DarwiNN delegate-selection path to the library's existing CPU/TFLite fallback;
-9. does **not** bypass TFLite/model verification or PairIP;
-10. rebuilds the modified DEX files with checksum-pinned smali;
-11. aligns native libraries for 16 KiB page-size devices;
-12. replaces Google's signing identity with the project signing key;
-13. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
+3. declares `libOpenCL.so`, `libOpenCL-car.so`, and `libOpenCL-pixel.so`
+   as optional `<uses-native-library>` entries, then verifies those declarations
+   again in the final compiled manifest;
+5. locates the exact `Device is not recognized or not supported` constructor guard in one DEX;
+5. disassembles only that DEX with checksum-pinned baksmali;
+6. redirects the rejection block to Pixel Camera's existing common constructor finalization path and fails closed if the bytecode shape is not exactly recognized;
+7. injects narrow guards into `klm.q(...)` and `klm.x(...)` so POCO F5 never selects feature names containing `use_tpu`, `darwinn`, or `edgetpu`, and disables the `camera.lasagna*` Tensor/GXP motion path;
+8. keeps the startup GCam InitParams provider from enabling `almond_use_tpu` and Tomte grain;
+9. verifies three exact AArch64 instruction sequences in `lib/arm64-v8a/libgcastartup.so` and redirects only the GXP/DarwiNN delegate-selection path to the library's existing CPU/TFLite fallback;
+10. does **not** bypass TFLite/model verification or PairIP;
+11. rebuilds the modified DEX files with checksum-pinned smali;
+12. aligns native libraries for 16 KiB page-size devices;
+13. replaces Google's signing identity with the project signing key;
+14. verifies package name, SDK, ABI, APK signature, and ZIP alignment.
 
 The first compatibility patch removed the explicit unsupported-device startup
 exception. Real-device testing then progressed far enough to connect to
@@ -98,6 +101,14 @@ Java/native fatal exceptions, process death, or launcher failure.
 These checks still prove package structure and targeted bytecode
 transformations only. They do **not** prove the rest of Pixel Camera's runtime
 behavior on a non-Pixel camera HAL.
+
+The OpenCL manifest change is intentionally narrow. Android 12+ restricts
+visibility of non-NDK native libraries for apps targeting API 31+, so the
+compatibility build declares the known Android OpenCL library names as optional.
+No OpenCL library is bundled or replaced, and installation does not require any
+one of those names to exist. Native heap pointer tagging is left unchanged
+because current POCO F5 runtime evidence does not identify a pointer-tagging
+failure.
 
 For that reason the merged output is now explicitly recorded as:
 
