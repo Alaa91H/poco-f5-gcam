@@ -640,29 +640,149 @@ def find_gcam_init_dex(apk: Path) -> str:
     return matches[0]
 
 
+def _dex_u32(data: bytes, offset: int, *, what: str) -> int:
+    """Read one little-endian DEX uint32 while keeping malformed inputs fail-closed."""
+
+    if offset < 0 or offset + 4 > len(data):
+        raise PatchError(
+            f"DEX {what} uint32 at 0x{offset:x} exceeds file size {len(data)}"
+        )
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def _dex_uleb128_end(data: bytes, offset: int, *, what: str) -> int:
+    """Return the first byte after one DEX ULEB128 value."""
+
+    cursor = offset
+    for _ in range(5):
+        if cursor >= len(data):
+            raise PatchError(f"DEX {what} ULEB128 is truncated")
+        value = data[cursor]
+        cursor += 1
+        if (value & 0x80) == 0:
+            return cursor
+    raise PatchError(f"DEX {what} ULEB128 exceeds five bytes")
+
+
+def dex_defined_class_count(data: bytes, descriptor: str) -> int:
+    """Count actual class_def owners of one descriptor in a DEX file.
+
+    A descriptor string may appear in several DEX files merely because another
+    class references it. Ownership is defined by class_defs, whose class_idx
+    resolves through type_ids to a descriptor string. This distinction matters
+    for modern multidex Pixel Camera releases where short obfuscated class names
+    such as Lrp; are referenced across DEX boundaries.
+    """
+
+    if len(data) < 0x70 or data[:4] != b"dex\n":
+        raise PatchError("class-owner lookup received a malformed DEX header")
+
+    endian_tag = _dex_u32(data, 0x28, what="endian_tag")
+    if endian_tag != 0x12345678:
+        raise PatchError(
+            f"unsupported DEX endian tag 0x{endian_tag:08x}"
+        )
+
+    string_ids_size = _dex_u32(data, 0x38, what="string_ids_size")
+    string_ids_off = _dex_u32(data, 0x3C, what="string_ids_off")
+    type_ids_size = _dex_u32(data, 0x40, what="type_ids_size")
+    type_ids_off = _dex_u32(data, 0x44, what="type_ids_off")
+    class_defs_size = _dex_u32(data, 0x60, what="class_defs_size")
+    class_defs_off = _dex_u32(data, 0x64, what="class_defs_off")
+
+    tables = (
+        ("string_ids", string_ids_off, string_ids_size, 4),
+        ("type_ids", type_ids_off, type_ids_size, 4),
+        ("class_defs", class_defs_off, class_defs_size, 32),
+    )
+    for name, offset, count, item_size in tables:
+        if count == 0:
+            continue
+        if offset == 0 or offset + count * item_size > len(data):
+            raise PatchError(
+                f"DEX {name} table is outside the file: "
+                f"off=0x{offset:x}, count={count}, item_size={item_size}"
+            )
+
+    def string_at(index: int) -> str:
+        if index >= string_ids_size:
+            raise PatchError(
+                f"DEX descriptor string index {index} exceeds "
+                f"string_ids_size {string_ids_size}"
+            )
+        string_data_off = _dex_u32(
+            data,
+            string_ids_off + index * 4,
+            what=f"string_id[{index}]",
+        )
+        if string_data_off >= len(data):
+            raise PatchError(
+                f"DEX string_data_off 0x{string_data_off:x} exceeds file size"
+            )
+        payload_start = _dex_uleb128_end(
+            data,
+            string_data_off,
+            what=f"string_data[{index}]",
+        )
+        payload_end = data.find(b"\x00", payload_start)
+        if payload_end < 0:
+            raise PatchError(f"DEX string_data[{index}] is not NUL terminated")
+        try:
+            return data[payload_start:payload_end].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PatchError(
+                f"DEX descriptor string {index} is not valid UTF-8"
+            ) from exc
+
+    count = 0
+    for class_number in range(class_defs_size):
+        class_idx = _dex_u32(
+            data,
+            class_defs_off + class_number * 32,
+            what=f"class_def[{class_number}].class_idx",
+        )
+        if class_idx >= type_ids_size:
+            raise PatchError(
+                f"DEX class_def[{class_number}] class_idx {class_idx} exceeds "
+                f"type_ids_size {type_ids_size}"
+            )
+        descriptor_idx = _dex_u32(
+            data,
+            type_ids_off + class_idx * 4,
+            what=f"type_id[{class_idx}].descriptor_idx",
+        )
+        if string_at(descriptor_idx) == descriptor:
+            count += 1
+    return count
+
+
 def find_descriptor_dex(
     apk: Path,
     descriptor: str,
     *,
     description: str,
 ) -> str:
-    """Locate the unique dex containing an exact class descriptor string."""
+    """Locate the unique DEX that actually defines the requested class."""
 
-    needle = descriptor.encode("utf-8")
     with zipfile.ZipFile(apk, "r") as archive:
         matches: list[tuple[str, int]] = []
         for info in archive.infolist():
             if not DEX_NAME_RE.fullmatch(info.filename):
                 continue
-            data = archive.read(info)
-            count = data.count(needle)
+            count = dex_defined_class_count(archive.read(info), descriptor)
             if count:
                 matches.append((info.filename, count))
 
     if len(matches) != 1:
         rendered = ", ".join(f"{name}:{count}" for name, count in matches) or "none"
         raise PatchError(
-            f"expected {description} in exactly one classes*.dex; found {rendered}"
+            f"expected {description} class definition in exactly one "
+            f"classes*.dex; found {rendered}"
+        )
+    if matches[0][1] != 1:
+        raise PatchError(
+            f"expected one {description} class definition in {matches[0][0]}; "
+            f"found {matches[0][1]}"
         )
     return matches[0][0]
 
