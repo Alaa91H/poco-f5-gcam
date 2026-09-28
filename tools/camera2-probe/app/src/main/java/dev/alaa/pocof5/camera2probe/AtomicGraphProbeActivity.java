@@ -17,6 +17,7 @@ import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -331,6 +332,20 @@ public final class AtomicGraphProbeActivity extends Activity {
         return root;
     }
     private static ImageReader buildReader(
+            Size size, int format, int maxImages, long usage) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (usage >= 0L) {
+                throw new UnsupportedOperationException(
+                        "Custom ImageReader usage requires Android 13 / API 33+");
+            }
+            return ImageReader.newInstance(
+                    size.getWidth(), size.getHeight(), format, maxImages);
+        }
+        return buildReaderApi33(size, format, maxImages, usage);
+    }
+
+    @SuppressLint("NewApi")
+    private static ImageReader buildReaderApi33(
             Size size, int format, int maxImages, long usage) {
         ImageReader.Builder builder =
                 new ImageReader.Builder(size.getWidth(), size.getHeight())
