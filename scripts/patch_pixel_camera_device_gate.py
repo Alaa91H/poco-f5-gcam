@@ -4077,20 +4077,21 @@ def _sensor_enum_logical_mapping(
     descriptor = descriptors[0]
 
     class_re = re.compile(
-        r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$",
+        r"^\.class\s+.*" + re.escape(descriptor) + r"\s*\Z",
         re.MULTILINE,
     )
     matches: list[Path] = []
-    for path in root.rglob("*.smali"):
+    for candidate in root.rglob("*.smali"):
         try:
-            text = path.read_text(encoding="utf-8")
+            candidate_text = candidate.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if class_re.search(text):
-            matches.append(path)
+        if class_re.search(candidate_text):
+            matches.append(candidate)
+
     if len(matches) != 1:
         rendered = ", ".join(
-            os.fspath(path.relative_to(root)) for path in matches
+            os.fspath(candidate.relative_to(root)) for candidate in matches
         ) or "none"
         raise PatchError(
             f"expected sensor enum {descriptor} in exactly one smali file; "
@@ -4098,36 +4099,156 @@ def _sensor_enum_logical_mapping(
         )
 
     enum_path = matches[0]
-    lines = enum_path.read_text(encoding="utf-8").splitlines()
+    enum_lines = enum_path.read_text(encoding="utf-8").splitlines()
     clinit_start = next(
         (
             index
-            for index, line in enumerate(lines)
+            for index, line in enumerate(enum_lines)
             if line.strip().startswith(".method static constructor <clinit>()V")
         ),
         None,
     )
     if clinit_start is None:
         raise PatchError(f"sensor enum {descriptor} has no <clinit>")
+
     clinit_end = clinit_start + 1
-    while clinit_end < len(lines) and lines[clinit_end].strip() != ".end method":
+    while (
+        clinit_end < len(enum_lines)
+        and enum_lines[clinit_end].strip() != ".end method"
+    ):
         clinit_end += 1
-    if clinit_end >= len(lines):
+    if clinit_end >= len(enum_lines):
         raise PatchError(f"sensor enum {descriptor} <clinit> is unterminated")
 
     def resolve(name: str, expected_value: int) -> str:
         name_re = re.compile(
-            rf'^const-string\s+(?P<reg>v\d+),\s*"{re.escape(name)}"    matches: list[Path] = []
-    for path in root.rglob("*.smali"):
+            r'^const-string\s+(?P<reg>v\d+),\s*"'
+            + re.escape(name)
+            + r'"\s*\Z'
+        )
+        name_matches = [
+            (index, name_re.match(enum_lines[index].strip()))
+            for index in range(clinit_start, clinit_end)
+            if name_re.match(enum_lines[index].strip())
+        ]
+        if len(name_matches) != 1:
+            raise PatchError(
+                f"sensor enum {descriptor} expected one {name!r} constant; "
+                f"found {len(name_matches)}"
+            )
+
+        name_index, name_match = name_matches[0]
+        assert name_match is not None
+        string_reg = name_match.group("reg")
+
+        constructor_re = re.compile(
+            r"^invoke-direct\s+\{(?P<object>v\d+),\s*"
+            + re.escape(string_reg)
+            + r",\s*(?P<value>v\d+)\},\s*"
+            + re.escape(descriptor)
+            + r"-><init>\(Ljava/lang/String;I\)V\s*\Z"
+        )
+        constructors = [
+            (index, constructor_re.match(enum_lines[index].strip()))
+            for index in range(
+                name_index + 1,
+                min(clinit_end, name_index + 18),
+            )
+            if constructor_re.match(enum_lines[index].strip())
+        ]
+        if len(constructors) != 1:
+            raise PatchError(
+                f"sensor enum {name} constructor flow changed; "
+                f"found {len(constructors)} candidates"
+            )
+
+        constructor_index, constructor_match = constructors[0]
+        assert constructor_match is not None
+        object_reg = constructor_match.group("object")
+        value_reg = constructor_match.group("value")
+
+        const_re = re.compile(
+            r"^const(?:/4|/16)?\s+"
+            + re.escape(value_reg)
+            + r",\s*(?P<value>-?(?:0x[0-9a-fA-F]+|\d+))\s*\Z"
+        )
+        value_assignments = [
+            (index, const_re.match(enum_lines[index].strip()))
+            for index in range(name_index + 1, constructor_index)
+            if const_re.match(enum_lines[index].strip())
+        ]
+        if len(value_assignments) != 1:
+            raise PatchError(
+                f"sensor enum {name} numeric assignment changed; "
+                f"found {len(value_assignments)} candidates"
+            )
+
+        _, value_match = value_assignments[0]
+        assert value_match is not None
+        actual_value = int(value_match.group("value"), 0)
+        if actual_value != expected_value:
+            raise PatchError(
+                f"sensor enum {name} value changed: "
+                f"expected {expected_value}, got {actual_value}"
+            )
+
+        sput_re = re.compile(
+            r"^sput-object\s+"
+            + re.escape(object_reg)
+            + r",\s*"
+            + re.escape(descriptor)
+            + r"->(?P<field>[A-Za-z0-9_$]+):"
+            + re.escape(descriptor)
+            + r"\s*\Z"
+        )
+        sput_matches = [
+            (index, sput_re.match(enum_lines[index].strip()))
+            for index in range(
+                constructor_index + 1,
+                min(clinit_end, constructor_index + 8),
+            )
+            if sput_re.match(enum_lines[index].strip())
+        ]
+        if len(sput_matches) != 1:
+            raise PatchError(
+                f"sensor enum {name} field assignment changed; "
+                f"found {len(sput_matches)} candidates"
+            )
+
+        _, sput_match = sput_matches[0]
+        assert sput_match is not None
+        return sput_match.group("field")
+
+    rear_field = resolve("kRearLogical", 5)
+    front_field = resolve("kFrontLogical", 3)
+    if rear_field == front_field:
+        raise PatchError("rear/front logical sensor enum fields unexpectedly alias")
+
+    return {
+        "descriptor": descriptor,
+        "rear_field": rear_field,
+        "front_field": front_field,
+        "rear_value": 5,
+        "front_value": 3,
+        "source": "sensor_enum_clinit",
+        "smali_path": os.fspath(enum_path.relative_to(root)),
+    }
+
+
+def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
+    matches: list[Path] = []
+    for candidate in root.rglob("*.smali"):
         try:
-            text = path.read_text(encoding="utf-8")
+            candidate_text = candidate.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if _has_gcam_init_callsites(text):
-            matches.append(path)
+        if _has_gcam_init_callsites(candidate_text):
+            matches.append(candidate)
 
     if len(matches) != 1:
-        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        rendered = ", ".join(
+            os.fspath(candidate.relative_to(root)) for candidate in matches
+        ) or "none"
         raise PatchError(
             "expected native GCam InitParams callsites in exactly one smali file; "
             f"found {rendered}"
@@ -4144,6 +4265,7 @@ def _sensor_enum_logical_mapping(
     except PatchError as exc:
         diagnostic = _sensor_enum_shape_diagnostic(root, original)
         raise PatchError(f"{exc}\n{diagnostic}") from exc
+
     metadata["sensor_enum_mapping"] = sensor_enum_mapping
     target.write_text(patched, encoding="utf-8")
     metadata["smali_path"] = os.fspath(target.relative_to(root))
