@@ -43,8 +43,8 @@ CERT_SHA256_RE = re.compile(
     re.IGNORECASE,
 )
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
-ANDROID_NAME = f"{`{ANDROID_NS}`}name"
-ANDROID_REQUIRED = f"{`{ANDROID_NS}`}required"
+ANDROID_NAME = f"{{{ANDROID_NS}}}name"
+ANDROID_REQUIRED = f"{{{ANDROID_NS}}}required"
 OPENCL_NATIVE_LIBRARIES = (
     "libOpenCL.so",
     "libOpenCL-car.so",
