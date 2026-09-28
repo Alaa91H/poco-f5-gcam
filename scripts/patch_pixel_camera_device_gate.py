@@ -3779,6 +3779,97 @@ def find_and_patch_keepalive_receiver_smali_tree(root: Path) -> dict[str, Any]:
     return metadata
 
 
+def _sensor_enum_shape_diagnostic(root: Path, gcam_text: str) -> str:
+    """Render the bounded sensor-enum class shape used by StaticMetadata.g()."""
+
+    descriptors = sorted(
+        set(
+            re.findall(
+                r"Lcom/google/googlex/gcam/StaticMetadata;->g\(\)(L[^;]+;)",
+                gcam_text,
+            )
+        )
+    )
+    if len(descriptors) != 1:
+        return (
+            "sensor enum diagnostic unavailable: expected exactly one "
+            f"StaticMetadata.g() return descriptor, found {descriptors!r}"
+        )
+    descriptor = descriptors[0]
+
+    class_re = re.compile(
+        r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$",
+        re.MULTILINE,
+    )
+    matches: list[Path] = []
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_re.search(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(
+            os.fspath(path.relative_to(root)) for path in matches
+        ) or "none"
+        return (
+            f"sensor enum diagnostic unavailable for {descriptor}: "
+            f"expected one class file, found {rendered}"
+        )
+
+    target = matches[0]
+    text = target.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    fields = [
+        f"    {index + 1}: {line}"
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith(".field ") and descriptor in line
+    ]
+
+    clinit_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith(".method static constructor <clinit>()V")
+        ),
+        None,
+    )
+    clinit: list[str] = []
+    if clinit_start is not None:
+        clinit_end = clinit_start
+        while (
+            clinit_end < len(lines)
+            and lines[clinit_end].strip() != ".end method"
+        ):
+            clinit_end += 1
+        if clinit_end < len(lines):
+            # A sensor enum initializer should be compact. Keep diagnostics
+            # bounded even if a future build radically changes the class.
+            visible_end = min(clinit_end, clinit_start + 500)
+            clinit = [
+                f"    {index + 1}: {lines[index]}"
+                for index in range(clinit_start, visible_end + 1)
+            ]
+            if visible_end < clinit_end:
+                clinit.append(
+                    f"    ... clinit truncated at 500 lines; "
+                    f"actual end line {clinit_end + 1}"
+                )
+
+    sections = [
+        f"sensor enum descriptor: {descriptor}",
+        f"sensor enum smali: {target.relative_to(root)}",
+        "sensor enum static fields:",
+        *(fields or ["    none"]),
+        "sensor enum <clinit>:",
+        *(clinit or ["    unavailable"]),
+    ]
+    return "\n".join(sections)
+
+
 def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
     matches: list[Path] = []
     for path in root.rglob("*.smali"):
@@ -3798,7 +3889,11 @@ def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
 
     target = matches[0]
     original = target.read_text(encoding="utf-8")
-    patched, metadata = patch_gcam_init_smali_text(original)
+    try:
+        patched, metadata = patch_gcam_init_smali_text(original)
+    except PatchError as exc:
+        diagnostic = _sensor_enum_shape_diagnostic(root, original)
+        raise PatchError(f"{exc}\n{diagnostic}") from exc
     target.write_text(patched, encoding="utf-8")
     metadata["smali_path"] = os.fspath(target.relative_to(root))
     return metadata
