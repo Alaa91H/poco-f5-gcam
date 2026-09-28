@@ -879,8 +879,8 @@ def _logical_camera_shape_diagnostic(
     for anchor in anchors:
         selected.update(
             range(
-                max(method_start, anchor - 10),
-                min(method_end + 1, anchor + 11),
+                max(method_start, anchor - 24),
+                min(method_end + 1, anchor + 81),
             )
         )
 
