@@ -856,6 +856,52 @@ def _find_skip_branch_for_call(
     return branch_index, label
 
 
+def _logical_camera_shape_diagnostic(
+    lines: list[str],
+    *,
+    method_start: int,
+    method_end: int,
+) -> str:
+    """Render bounded semantic context for fail-closed GCam shape drift."""
+
+    stable_markers = (
+        "NativeMetadataConverter;",
+        "StaticMetadataVector;",
+        "Lcom/google/googlex/gcam/StaticMetadata;",
+        "Gcam_Create",
+    )
+    anchors = [
+        index
+        for index in range(method_start, method_end + 1)
+        if any(marker in lines[index] for marker in stable_markers)
+    ]
+    selected: set[int] = set()
+    for anchor in anchors:
+        selected.update(
+            range(
+                max(method_start, anchor - 10),
+                min(method_end + 1, anchor + 11),
+            )
+        )
+
+    if not selected:
+        selected.update(
+            range(
+                method_start,
+                min(method_end + 1, method_start + 80),
+            )
+        )
+
+    rendered: list[str] = []
+    previous = None
+    for index in sorted(selected):
+        if previous is not None and index != previous + 1:
+            rendered.append("    ...")
+        rendered.append(f"    {index + 1}: {lines[index]}")
+        previous = index
+    return "\n".join(rendered)
+
+
 def _patch_logical_camera_sensor_ids(
     lines: list[str],
     *,
@@ -897,9 +943,16 @@ def _patch_logical_camera_sensor_ids(
     for token in unique_camera_shape:
         count = method_text.count(token)
         if count != 1:
+            diagnostic = _logical_camera_shape_diagnostic(
+                lines,
+                method_start=method_start,
+                method_end=method_end,
+            )
             raise PatchError(
                 "top-level logical-camera metadata shape changed; expected one "
-                f"{token!r}, found {count}"
+                f"{token!r}, found {count}\n"
+                "semantic context:\n"
+                f"{diagnostic}"
             )
 
     converter_indexes = [
