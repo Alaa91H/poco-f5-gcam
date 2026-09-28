@@ -121,6 +121,53 @@ class StandaloneBuilderTests(unittest.TestCase):
                 '<manifest xmlns:android="http://schemas.android.com/apk/res/android" />'
             )
 
+    def test_final_manifest_verification_accepts_optional_opencl_entries(self):
+        sample = """
+E: manifest (line=1)
+  E: application (line=2)
+    E: uses-native-library (line=3)
+      A: android:name(0x01010003)="libOpenCL.so" (Raw: "libOpenCL.so")
+      A: android:required(0x0101028e)=(type 0x12)0x0
+    E: uses-native-library (line=4)
+      A: android:name(0x01010003)="libOpenCL-car.so" (Raw: "libOpenCL-car.so")
+      A: android:required(0x0101028e)=(type 0x12)0x0
+    E: uses-native-library (line=5)
+      A: android:name(0x01010003)="libOpenCL-pixel.so" (Raw: "libOpenCL-pixel.so")
+      A: android:required(0x0101028e)=(type 0x12)0x0
+"""
+        with mock.patch.object(builder, "run", return_value=sample):
+            result = builder.verify_optional_opencl_manifest(
+                Path("camera.apk"),
+                "aapt2",
+            )
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(
+            result["libraries"],
+            list(builder.OPENCL_NATIVE_LIBRARIES),
+        )
+        self.assertFalse(result["required"])
+
+    def test_final_manifest_verification_rejects_required_opencl_entry(self):
+        sample = """
+E: manifest (line=1)
+  E: application (line=2)
+    E: uses-native-library (line=3)
+      A: android:name(0x01010003)="libOpenCL.so" (Raw: "libOpenCL.so")
+      A: android:required(0x0101028e)=(type 0x12)0xffffffff
+    E: uses-native-library (line=4)
+      A: android:name(0x01010003)="libOpenCL-car.so" (Raw: "libOpenCL-car.so")
+      A: android:required(0x0101028e)=(type 0x12)0x0
+    E: uses-native-library (line=5)
+      A: android:name(0x01010003)="libOpenCL-pixel.so" (Raw: "libOpenCL-pixel.so")
+      A: android:required(0x0101028e)=(type 0x12)0x0
+"""
+        with mock.patch.object(builder, "run", return_value=sample):
+            with self.assertRaisesRegex(builder.BuildError, "does not mark"):
+                builder.verify_optional_opencl_manifest(
+                    Path("camera.apk"),
+                    "aapt2",
+                )
+
     def test_android_package_must_be_zip_based(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "broken.apkm"
