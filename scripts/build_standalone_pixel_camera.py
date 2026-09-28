@@ -205,62 +205,97 @@ def patch_manifest_with_apkeditor(
     apkeditor: Path,
     java: str,
 ) -> dict[str, Any]:
-    """Round-trip the merged APK with raw DEX preserved and patch its manifest."""
+    """Patch binary AndroidManifest.xml directly through APKEditor's ARSCLib.
 
-    with tempfile.TemporaryDirectory(prefix="poco-f5-manifest-") as temp:
+    The previous XML decode/rebuild approach expanded the full Pixel Camera
+    resource tree and exceeded hosted-runner disk quota. This helper uses the
+    ARSCLib classes already bundled in the checksum-pinned APKEditor fat JAR,
+    modifies only the binary manifest block, and streams the remaining APK
+    entries from the source archive without decoding resources or DEX files.
+    """
+
+    helper = (
+        Path(__file__).resolve().parents[1]
+        / "tools"
+        / "OpenClManifestPatcher.java"
+    )
+    if not helper.is_file():
+        raise BuildError(f"OpenCL manifest helper not found: {helper}")
+
+    java_path = Path(java)
+    javac_candidate = java_path.with_name(
+        "javac.exe" if java_path.name.lower().endswith(".exe") else "javac"
+    )
+    javac = (
+        os.fspath(javac_candidate)
+        if javac_candidate.is_file()
+        else shutil.which("javac")
+    )
+    if not javac:
+        raise BuildError("javac is required for the binary manifest patch helper")
+
+    with tempfile.TemporaryDirectory(prefix="poco-f5-manifest-helper-") as temp:
         root = Path(temp)
-        decoded = root / "decoded"
+        classes = root / "classes"
+        classes.mkdir(parents=True)
 
-        decode_output = run(
+        compile_output = run(
             [
-                java,
-                "-Xmx5g",
-                "-jar",
+                javac,
+                "-cp",
                 os.fspath(apkeditor),
-                "d",
-                "-i",
-                os.fspath(input_apk),
-                "-o",
-                os.fspath(decoded),
-                "-t",
-                "xml",
-                "-dex",
-                "-keep-res-path",
-                "-f",
+                "-d",
+                os.fspath(classes),
+                os.fspath(helper),
             ]
         )
 
-        manifest = decoded / "AndroidManifest.xml"
-        if not manifest.is_file():
-            raise BuildError("APKEditor decode did not produce AndroidManifest.xml")
-
-        patched_text, metadata = patch_manifest_xml_text(
-            manifest.read_text(encoding="utf-8")
-        )
-        manifest.write_text(patched_text, encoding="utf-8")
-
-        build_output = run(
+        patch_output = run(
             [
                 java,
-                "-Xmx5g",
-                "-jar",
-                os.fspath(apkeditor),
-                "b",
-                "-i",
-                os.fspath(decoded),
-                "-o",
+                "-Xmx3g",
+                "-cp",
+                os.pathsep.join(
+                    [os.fspath(classes), os.fspath(apkeditor)]
+                ),
+                "OpenClManifestPatcher",
+                os.fspath(input_apk),
                 os.fspath(output_apk),
-                "-t",
-                "xml",
-                "-f",
             ]
         )
         ensure_android_zip(output_apk)
 
+    values: dict[str, str] = {}
+    for line in patch_output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+
+    if values.get("status") != "patched":
+        raise BuildError(
+            "binary manifest helper did not report patched status: "
+            + patch_output[-2000:]
+        )
+
     return {
-        **metadata,
-        "apkeditor_decode_tail": "\n".join(decode_output.splitlines()[-30:]),
-        "apkeditor_build_tail": "\n".join(build_output.splitlines()[-30:]),
+        "status": "patched",
+        "implementation": "arsclib_binary_manifest",
+        "libraries": list(OPENCL_NATIVE_LIBRARIES),
+        "required": False,
+        "added": [
+            value
+            for value in values.get("added", "").split(",")
+            if value
+        ],
+        "forced_optional": [
+            value
+            for value in values.get("forced_optional", "").split(",")
+            if value
+        ],
+        "allow_native_heap_pointer_tagging_changed": False,
+        "javac_output_tail": "\n".join(compile_output.splitlines()[-20:]),
+        "arsclib_output_tail": "\n".join(patch_output.splitlines()[-30:]),
     }
 
 
@@ -419,6 +454,7 @@ def build_standalone(
             java=java,
         )
         ensure_android_zip(manifest_patched)
+        merged.unlink()
 
         device_gate_patch = patch_device_gate(
             manifest_patched,
@@ -428,6 +464,7 @@ def build_standalone(
             java=java,
         )
         ensure_android_zip(patched)
+        manifest_patched.unlink()
 
         run(
             [
@@ -441,6 +478,7 @@ def build_standalone(
                 os.fspath(aligned),
             ]
         )
+        patched.unlink()
 
         sign_env = os.environ.copy()
         run(
@@ -461,6 +499,7 @@ def build_standalone(
             ],
             env=sign_env,
         )
+        aligned.unlink()
 
         verify_output = run(
             [
@@ -563,11 +602,11 @@ def build_standalone(
         },
         "tooling": {
             "apkeditor_output_tail": "\n".join(merge_output.splitlines()[-40:]),
-            "manifest_apkeditor_decode_tail": manifest_patch[
-                "apkeditor_decode_tail"
+            "manifest_javac_output_tail": manifest_patch[
+                "javac_output_tail"
             ],
-            "manifest_apkeditor_build_tail": manifest_patch[
-                "apkeditor_build_tail"
+            "manifest_arsclib_output_tail": manifest_patch[
+                "arsclib_output_tail"
             ],
         },
     }
