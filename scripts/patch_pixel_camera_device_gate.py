@@ -4077,16 +4077,15 @@ def _sensor_enum_logical_mapping(
     descriptor = descriptors[0]
 
     class_re = re.compile(
-        r"^\.class\s+.*" + re.escape(descriptor) + r"\s*\Z",
-        re.MULTILINE,
+        r"^\\.class\\s+.*" + re.escape(descriptor) + r"\\s*\\Z"
     )
     matches: list[Path] = []
     for candidate in root.rglob("*.smali"):
         try:
-            candidate_text = candidate.read_text(encoding="utf-8")
+            candidate_lines = candidate.read_text(encoding="utf-8").splitlines()
         except UnicodeDecodeError:
             continue
-        if class_re.search(candidate_text):
+        if any(class_re.match(line.strip()) for line in candidate_lines):
             matches.append(candidate)
 
     if len(matches) != 1:
