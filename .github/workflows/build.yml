@@ -7,6 +7,7 @@ on:
     paths:
       - "tools/camera2-probe/**"
       - "tools/lens-verifier/**"
+      - "tools/OpenClManifestPatcher.java"
       - "scripts/**"
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
@@ -24,6 +25,7 @@ on:
     paths:
       - "tools/camera2-probe/**"
       - "tools/lens-verifier/**"
+      - "tools/OpenClManifestPatcher.java"
       - "scripts/**"
       - "tests/test_resolve_apkmirror_gcam.py"
       - "tests/test_download_latest_pixel_camera.py"
@@ -113,7 +115,7 @@ jobs:
             esac
 
             case "$file" in
-              scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              tools/OpenClManifestPatcher.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -276,6 +278,12 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Set up JDK 17 for manifest tooling
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - name: Run Pixel Camera pipeline tests
         run: |
@@ -492,9 +500,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      - name: Download pinned APKEditor
-        if: >-
-          steps.standalone.outputs.enabled == 'true'
+      - name: Verify pinned APKEditor and compile manifest helper
         shell: bash
         run: |
           set -euo pipefail
@@ -510,18 +516,24 @@ jobs:
           URL="${TOOL[0]}"
           EXPECTED_SHA256="${TOOL[1]}"
           JAR="$RUNNER_TEMP/APKEditor.jar"
+          CLASSES="$RUNNER_TEMP/opencl-manifest-helper-classes"
 
           curl --fail --location --silent --show-error --retry 3 \
             "$URL" --output "$JAR"
           echo "$EXPECTED_SHA256  $JAR" | sha256sum --check --strict
+
           HELP_OUTPUT="$(java -jar "$JAR" -h 2>&1 || true)"
           if ! grep -Fq "APKEditor - 1.4.9" <<< "$HELP_OUTPUT"; then
             echo "::error::Pinned APKEditor did not report the expected version."
             printf '%s\n' "$HELP_OUTPUT"
             exit 1
           fi
-          echo "Verified APKEditor 1.4.9 checksum and executable entry point."
 
+          rm -rf "$CLASSES"
+          mkdir -p "$CLASSES"
+          javac -cp "$JAR" -d "$CLASSES" tools/OpenClManifestPatcher.java
+
+          echo "Verified APKEditor 1.4.9 checksum and compiled binary-manifest helper."
           echo "APKEDITOR_JAR=$JAR" >> "$GITHUB_ENV"
 
       - name: Download pinned smali toolchain
