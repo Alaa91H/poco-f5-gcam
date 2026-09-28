@@ -121,6 +121,47 @@ class StandaloneBuilderTests(unittest.TestCase):
                 '<manifest xmlns:android="http://schemas.android.com/apk/res/android" />'
             )
 
+    def test_manifest_patch_uses_direct_arsclib_helper_without_xml_decode(self):
+        helper_output = "\n".join(
+            [
+                "status=patched",
+                "added=libOpenCL.so,libOpenCL-car.so,libOpenCL-pixel.so",
+                "forced_optional=",
+                "required=false",
+                "allow_native_heap_pointer_tagging_changed=false",
+            ]
+        )
+        with mock.patch.object(
+            builder.shutil,
+            "which",
+            return_value="/usr/bin/javac",
+        ), mock.patch.object(
+            builder,
+            "run",
+            side_effect=["", helper_output],
+        ) as run_mock, mock.patch.object(
+            builder,
+            "ensure_android_zip",
+        ):
+            result = builder.patch_manifest_with_apkeditor(
+                Path("input.apk"),
+                Path("output.apk"),
+                apkeditor=Path("APKEditor.jar"),
+                java="/usr/bin/java",
+            )
+
+        self.assertEqual(result["implementation"], "arsclib_binary_manifest")
+        self.assertEqual(
+            result["added"],
+            list(builder.OPENCL_NATIVE_LIBRARIES),
+        )
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        rendered = [" ".join(map(str, command)) for command in commands]
+        self.assertTrue(any("OpenClManifestPatcher.java" in item for item in rendered))
+        self.assertTrue(any("OpenClManifestPatcher" in item for item in rendered))
+        self.assertFalse(any(" -jar " in (" " + item + " ") for item in rendered))
+        self.assertFalse(any(" -t xml " in (" " + item + " ") for item in rendered))
+
     def test_final_manifest_verification_accepts_optional_opencl_entries(self):
         sample = """
 E: manifest (line=1)
