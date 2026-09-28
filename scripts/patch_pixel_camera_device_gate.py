@@ -148,6 +148,123 @@ class PatchError(RuntimeError):
     pass
 
 
+def _read_uleb128(data: bytes, offset: int) -> tuple[int, int]:
+    """Read one bounded 32-bit ULEB128 value from DEX data."""
+
+    if offset < 0 or offset >= len(data):
+        raise PatchError(f"DEX ULEB128 offset out of range: {offset}")
+
+    value = 0
+    shift = 0
+    for _ in range(5):
+        if offset >= len(data):
+            raise PatchError("DEX ULEB128 is truncated")
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if (byte & 0x80) == 0:
+            return value, offset
+        shift += 7
+
+    raise PatchError("DEX ULEB128 exceeds 32-bit encoding")
+
+
+def _dex_class_descriptors(data: bytes) -> list[str]:
+    """Return descriptors from the DEX class_def table, not string references.
+
+    A class descriptor can legitimately be referenced by multiple DEX files.
+    Only class_def_item.class_idx identifies the DEX that actually defines the
+    class, which is the one baksmali must patch.
+    """
+
+    if len(data) < 112 or not data.startswith(b"dex\n"):
+        raise PatchError("classes*.dex is not a standard DEX file")
+    if data[7] != 0:
+        raise PatchError("DEX magic is not NUL terminated")
+
+    file_size = struct.unpack_from("<I", data, 32)[0]
+    header_size = struct.unpack_from("<I", data, 36)[0]
+    endian_tag = struct.unpack_from("<I", data, 40)[0]
+    if header_size < 112:
+        raise PatchError(f"unexpected DEX header size: {header_size}")
+    if file_size > len(data) or file_size < header_size:
+        raise PatchError(
+            f"invalid DEX file size {file_size} for {len(data)} bytes"
+        )
+    if endian_tag != 0x12345678:
+        raise PatchError(
+            f"unsupported DEX endian tag: 0x{endian_tag:08x}"
+        )
+
+    string_ids_size, string_ids_off = struct.unpack_from("<II", data, 56)
+    type_ids_size, type_ids_off = struct.unpack_from("<II", data, 64)
+    class_defs_size, class_defs_off = struct.unpack_from("<II", data, 96)
+
+    def require_table(name: str, offset: int, count: int, item_size: int) -> None:
+        if count == 0:
+            return
+        if offset < header_size or offset > file_size:
+            raise PatchError(f"{name} offset out of DEX range: {offset}")
+        end = offset + count * item_size
+        if end < offset or end > file_size:
+            raise PatchError(
+                f"{name} table exceeds DEX file: offset={offset} count={count}"
+            )
+
+    require_table("string_ids", string_ids_off, string_ids_size, 4)
+    require_table("type_ids", type_ids_off, type_ids_size, 4)
+    require_table("class_defs", class_defs_off, class_defs_size, 32)
+
+    string_offsets = [
+        struct.unpack_from("<I", data, string_ids_off + index * 4)[0]
+        for index in range(string_ids_size)
+    ]
+    descriptor_indexes = [
+        struct.unpack_from("<I", data, type_ids_off + index * 4)[0]
+        for index in range(type_ids_size)
+    ]
+
+    descriptors: list[str] = []
+    for index in range(class_defs_size):
+        class_idx = struct.unpack_from(
+            "<I",
+            data,
+            class_defs_off + index * 32,
+        )[0]
+        if class_idx >= type_ids_size:
+            raise PatchError(
+                f"DEX class_def[{index}] class_idx {class_idx} exceeds "
+                f"type_ids_size {type_ids_size}"
+            )
+
+        descriptor_idx = descriptor_indexes[class_idx]
+        if descriptor_idx >= string_ids_size:
+            raise PatchError(
+                f"DEX type_id[{class_idx}] descriptor_idx {descriptor_idx} "
+                f"exceeds string_ids_size {string_ids_size}"
+            )
+
+        string_offset = string_offsets[descriptor_idx]
+        if string_offset >= file_size:
+            raise PatchError(
+                f"DEX string_data offset out of range: {string_offset}"
+            )
+
+        _utf16_size, cursor = _read_uleb128(data, string_offset)
+        terminator = data.find(b"\x00", cursor, file_size)
+        if terminator < 0:
+            raise PatchError("DEX string_data item is not NUL terminated")
+        try:
+            descriptor = data[cursor:terminator].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise PatchError(
+                "DEX class descriptor is not valid UTF-8/MUTF-8 ASCII"
+            ) from exc
+        descriptors.append(descriptor)
+
+    return descriptors
+
+
 def _sign_extend(value: int, bits: int) -> int:
     sign = 1 << (bits - 1)
     return (value ^ sign) - sign
@@ -646,47 +763,44 @@ def find_descriptor_dex(
     *,
     description: str,
 ) -> str:
-    """Locate the unique dex containing an exact class descriptor string."""
+    """Locate the unique DEX that *defines* an exact class descriptor.
 
-    needle = descriptor.encode("utf-8")
+    Descriptor strings may occur in several DEX files as type references.  The
+    previous byte-count heuristic therefore misidentified legitimate
+    cross-dex references as duplicate class definitions.  Read the DEX
+    class_def table instead and keep the lookup fail-closed if zero or multiple
+    actual definitions are present.
+    """
+
     with zipfile.ZipFile(apk, "r") as archive:
         matches: list[tuple[str, int]] = []
         for info in archive.infolist():
             if not DEX_NAME_RE.fullmatch(info.filename):
                 continue
-            data = archive.read(info)
-            count = data.count(needle)
+            descriptors = _dex_class_descriptors(archive.read(info))
+            count = descriptors.count(descriptor)
             if count:
                 matches.append((info.filename, count))
 
-    if len(matches) != 1:
-        rendered = ", ".join(f"{name}:{count}" for name, count in matches) or "none"
+    if len(matches) != 1 or matches[0][1] != 1:
+        rendered = ", ".join(
+            f"{name}:class_defs={count}" for name, count in matches
+        ) or "none"
         raise PatchError(
-            f"expected {description} in exactly one classes*.dex; found {rendered}"
+            f"expected {description} defined in exactly one classes*.dex; "
+            f"found {rendered}"
         )
     return matches[0][0]
 
 
 def find_keepalive_receiver_dex(apk: Path) -> str:
-    """Locate the dex that contains the Pixel-only keepalive receiver."""
+    """Locate the DEX that actually defines the Pixel-only keepalive receiver."""
 
-    with zipfile.ZipFile(apk, "r") as archive:
-        matches: list[tuple[str, int]] = []
-        for info in archive.infolist():
-            if not DEX_NAME_RE.fullmatch(info.filename):
-                continue
-            data = archive.read(info)
-            count = data.count(KEEPALIVE_RECEIVER_BYTES)
-            if count:
-                matches.append((info.filename, count))
-
-    if len(matches) != 1:
-        rendered = ", ".join(f"{name}:{count}" for name, count in matches) or "none"
-        raise PatchError(
-            "expected KeepAliveBroadcastReceiver in exactly one classes*.dex; "
-            f"found {rendered}"
-        )
-    return matches[0][0]
+    return find_descriptor_dex(
+        apk,
+        KEEPALIVE_RECEIVER_DESCRIPTOR,
+        description="KeepAliveBroadcastReceiver",
+    )
 
 
 def _find_skip_branch_for_call(
