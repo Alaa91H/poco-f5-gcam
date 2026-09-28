@@ -1596,7 +1596,11 @@ def _inject_sensor_vector_runtime_diagnostics(
     }
 
 
-def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
+def patch_gcam_init_smali_text(
+    text: str,
+    *,
+    sensor_enum_mapping: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
     """Keep startup off unsupported Pixel accelerator paths.
 
     Real-device evidence shows the POCO F5 reaches CameraService and creates a
@@ -1667,9 +1671,19 @@ def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
         lines,
         method_start=method_start,
         method_end=method_end,
+        sensor_enum_mapping=sensor_enum_mapping,
     )
-    lines, camera_source_diagnostics = _inject_camera_source_runtime_diagnostics(lines)
-    lines, sensor_vector_diagnostics = _inject_sensor_vector_runtime_diagnostics(lines)
+    lines, camera_source_diagnostics = _inject_camera_source_runtime_diagnostics(
+        lines,
+        logical_mapping_metadata,
+    )
+    sensor_descriptor = logical_mapping_metadata["semantic_shape"][
+        "sensor_enum_descriptor"
+    ]
+    lines, sensor_vector_diagnostics = _inject_sensor_vector_runtime_diagnostics(
+        lines,
+        sensor_descriptor,
+    )
 
     # Preserve Pixel Camera's native uniqueness check. The compatibility fix
     # changes only the misidentified logical entries before Gcam_Create.
