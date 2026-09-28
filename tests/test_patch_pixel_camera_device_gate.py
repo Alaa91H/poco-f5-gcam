@@ -531,6 +531,61 @@ GCAM_INIT_SAMPLE = r'''.class public final Lmjy;
 '''
 
 
+def _fake_dex(
+    descriptors: list[str],
+    *,
+    defined: list[str] | tuple[str, ...] = (),
+) -> bytes:
+    """Build the minimal DEX tables needed by the class-definition locator."""
+
+    ordered = list(dict.fromkeys(descriptors))
+    for descriptor in defined:
+        if descriptor not in ordered:
+            ordered.append(descriptor)
+
+    header_size = 112
+    string_ids_off = header_size
+    string_ids_size = len(ordered)
+    type_ids_off = string_ids_off + string_ids_size * 4
+    type_ids_size = len(ordered)
+    class_defs_off = type_ids_off + type_ids_size * 4
+    class_defs_size = len(defined)
+    data_off = class_defs_off + class_defs_size * 32
+
+    string_data = bytearray()
+    string_offsets: list[int] = []
+    for descriptor in ordered:
+        encoded = descriptor.encode("utf-8")
+        if len(encoded) >= 0x80:
+            raise AssertionError("test descriptor is too long for one-byte ULEB128")
+        string_offsets.append(data_off + len(string_data))
+        string_data.append(len(encoded))
+        string_data.extend(encoded)
+        string_data.append(0)
+
+    file_size = data_off + len(string_data)
+    data = bytearray(file_size)
+    data[:8] = b"dex\n035\x00"
+    struct.pack_into("<I", data, 32, file_size)
+    struct.pack_into("<I", data, 36, header_size)
+    struct.pack_into("<I", data, 40, 0x12345678)
+    struct.pack_into("<II", data, 56, string_ids_size, string_ids_off)
+    struct.pack_into("<II", data, 64, type_ids_size, type_ids_off)
+    struct.pack_into("<II", data, 96, class_defs_size, class_defs_off)
+    struct.pack_into("<II", data, 104, len(string_data), data_off)
+
+    for index, offset in enumerate(string_offsets):
+        struct.pack_into("<I", data, string_ids_off + index * 4, offset)
+    for index in range(type_ids_size):
+        struct.pack_into("<I", data, type_ids_off + index * 4, index)
+    for index, descriptor in enumerate(defined):
+        class_idx = ordered.index(descriptor)
+        struct.pack_into("<I", data, class_defs_off + index * 32, class_idx)
+
+    data[data_off:] = string_data
+    return bytes(data)
+
+
 class PixelCameraDeviceGatePatchTests(unittest.TestCase):
     def test_redirects_unsupported_device_throw_to_common_finalization(self):
         patched, metadata = patcher.patch_smali_text(SAMPLE)
@@ -1473,14 +1528,76 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         with self.assertRaisesRegex(patcher.PatchError, "exceeds native library size"):
             patcher.patch_native_bytes(b"short", patches=patches)
 
-    def test_finds_keepalive_receiver_dex(self):
+    def test_dex_class_descriptor_parser_ignores_reference_only_strings(self):
+        descriptor = patcher.ONECAMERA_SESSION_CONFIG_DESCRIPTOR
+        referenced = _fake_dex([descriptor], defined=[])
+        defined = _fake_dex([descriptor], defined=[descriptor])
+
+        self.assertEqual(patcher._dex_class_descriptors(referenced), [])
+        self.assertEqual(
+            patcher._dex_class_descriptors(defined),
+            [descriptor],
+        )
+
+    def test_descriptor_locator_uses_class_defs_not_cross_dex_references(self):
+        descriptor = patcher.ONECAMERA_SESSION_CONFIG_DESCRIPTOR
         with tempfile.TemporaryDirectory() as temp:
             apk = Path(temp) / "camera.apk"
             with zipfile.ZipFile(apk, "w") as archive:
-                archive.writestr("classes.dex", b"ordinary")
+                archive.writestr(
+                    "classes.dex",
+                    _fake_dex([descriptor], defined=[]),
+                )
+                archive.writestr(
+                    "classes2.dex",
+                    _fake_dex([descriptor], defined=[descriptor]),
+                )
+
+            self.assertEqual(
+                patcher.find_descriptor_dex(
+                    apk,
+                    descriptor,
+                    description="OneCamera session class Lrp;",
+                ),
+                "classes2.dex",
+            )
+
+    def test_descriptor_locator_rejects_duplicate_actual_class_definitions(self):
+        descriptor = patcher.ONECAMERA_SESSION_CONFIG_DESCRIPTOR
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(
+                    "classes.dex",
+                    _fake_dex([descriptor], defined=[descriptor]),
+                )
+                archive.writestr(
+                    "classes2.dex",
+                    _fake_dex([descriptor], defined=[descriptor]),
+                )
+
+            with self.assertRaisesRegex(
+                patcher.PatchError,
+                "defined in exactly one classes",
+            ):
+                patcher.find_descriptor_dex(
+                    apk,
+                    descriptor,
+                    description="OneCamera session class Lrp;",
+                )
+
+    def test_finds_keepalive_receiver_dex(self):
+        descriptor = patcher.KEEPALIVE_RECEIVER_DESCRIPTOR
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(
+                    "classes.dex",
+                    _fake_dex([descriptor], defined=[]),
+                )
                 archive.writestr(
                     "classes4.dex",
-                    b"dex\n035\x00" + patcher.KEEPALIVE_RECEIVER_BYTES,
+                    _fake_dex([descriptor], defined=[descriptor]),
                 )
             self.assertEqual(
                 patcher.find_keepalive_receiver_dex(apk),
