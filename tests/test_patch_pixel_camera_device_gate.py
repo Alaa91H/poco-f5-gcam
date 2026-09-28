@@ -8,6 +8,68 @@ from pathlib import Path
 from scripts import patch_pixel_camera_device_gate as patcher
 
 
+def build_test_dex(
+    defined_descriptors: tuple[str, ...],
+    *,
+    extra_strings: tuple[str, ...] = (),
+) -> bytes:
+    """Build the minimal table-correct DEX needed by class-owner tests."""
+
+    strings = list(defined_descriptors) + [
+        value for value in extra_strings if value not in defined_descriptors
+    ]
+    header_size = 0x70
+    string_ids_off = header_size
+    type_ids_off = string_ids_off + 4 * len(strings)
+    class_defs_off = type_ids_off + 4 * len(defined_descriptors)
+    data_off = class_defs_off + 32 * len(defined_descriptors)
+
+    def uleb128(value: int) -> bytes:
+        encoded = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            if value:
+                encoded.append(byte | 0x80)
+            else:
+                encoded.append(byte)
+                return bytes(encoded)
+
+    string_payload = bytearray()
+    string_offsets: list[int] = []
+    for value in strings:
+        string_offsets.append(data_off + len(string_payload))
+        raw = value.encode("utf-8")
+        string_payload.extend(uleb128(len(value)))
+        string_payload.extend(raw)
+        string_payload.append(0)
+
+    result = bytearray(data_off)
+    result[:8] = b"dex\n035\x00"
+    struct.pack_into("<I", result, 0x20, data_off + len(string_payload))
+    struct.pack_into("<I", result, 0x24, header_size)
+    struct.pack_into("<I", result, 0x28, 0x12345678)
+    struct.pack_into("<I", result, 0x38, len(strings))
+    struct.pack_into("<I", result, 0x3C, string_ids_off)
+    struct.pack_into("<I", result, 0x40, len(defined_descriptors))
+    struct.pack_into("<I", result, 0x44, type_ids_off)
+    struct.pack_into("<I", result, 0x60, len(defined_descriptors))
+    struct.pack_into("<I", result, 0x64, class_defs_off)
+    struct.pack_into("<I", result, 0x68, len(string_payload))
+    struct.pack_into("<I", result, 0x6C, data_off)
+
+    for index, offset in enumerate(string_offsets):
+        struct.pack_into("<I", result, string_ids_off + index * 4, offset)
+
+    for index, descriptor in enumerate(defined_descriptors):
+        descriptor_idx = strings.index(descriptor)
+        struct.pack_into("<I", result, type_ids_off + index * 4, descriptor_idx)
+        struct.pack_into("<I", result, class_defs_off + index * 32, index)
+
+    result.extend(string_payload)
+    return bytes(result)
+
+
 SAMPLE = r'''.method public constructor <init>(Luyv;Luyu;Lqxe;Lacku;Lklk;)V
     .locals 9
 
@@ -1472,6 +1534,62 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(patcher.PatchError, "exceeds native library size"):
             patcher.patch_native_bytes(b"short", patches=patches)
+
+    def test_descriptor_dex_uses_class_defs_not_reference_strings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(
+                    "classes.dex",
+                    build_test_dex(("Lrp;",)),
+                )
+                archive.writestr(
+                    "classes2.dex",
+                    build_test_dex(
+                        ("Lother;",),
+                        extra_strings=("Lrp;",),
+                    ),
+                )
+            self.assertEqual(
+                patcher.find_descriptor_dex(
+                    apk,
+                    "Lrp;",
+                    description="OneCamera session class Lrp;",
+                ),
+                "classes.dex",
+            )
+
+    def test_descriptor_dex_rejects_duplicate_class_definition_owners(self):
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr(
+                    "classes.dex",
+                    build_test_dex(("Lrp;",)),
+                )
+                archive.writestr(
+                    "classes2.dex",
+                    build_test_dex(("Lrp;",)),
+                )
+            with self.assertRaisesRegex(
+                patcher.PatchError,
+                "class definition in exactly one",
+            ):
+                patcher.find_descriptor_dex(
+                    apk,
+                    "Lrp;",
+                    description="OneCamera session class Lrp;",
+                )
+
+    def test_descriptor_class_count_fails_closed_on_bad_type_index(self):
+        data = bytearray(build_test_dex(("Lrp;",)))
+        class_defs_off = struct.unpack_from("<I", data, 0x64)[0]
+        struct.pack_into("<I", data, class_defs_off, 7)
+        with self.assertRaisesRegex(
+            patcher.PatchError,
+            "class_idx 7 exceeds type_ids_size",
+        ):
+            patcher.dex_defined_class_count(bytes(data), "Lrp;")
 
     def test_finds_keepalive_receiver_dex(self):
         with tempfile.TemporaryDirectory() as temp:
