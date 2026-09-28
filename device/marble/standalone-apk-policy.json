@@ -38,7 +38,8 @@
     "patch_unsupported_device_gate": true,
     "patch_tensor_gxp_tpu_feature_queries": true,
     "patch_native_gcam_startup_initparams": true,
-    "patch_native_gxp_cpu_fallback": true
+    "patch_native_gxp_cpu_fallback": true,
+    "declare_optional_opencl_native_libraries": true
   },
   "signing": {
     "preferred_mode": "repository-keystore",
@@ -60,7 +61,9 @@
     "POCO F5 runtime validation reached CameraService successfully but then showed libgxp.so/DarwiNN initialization failures followed by a null Gcam object; the non-Tensor guard prevents selecting those Pixel Tensor accelerator paths.",
     "PairIP is not removed or bypassed by this pipeline.",
     "Real-device validation after the klm feature-query guard still showed libgxp.so probing followed by Gcam.g() on a null native object. The current compatibility patch therefore also keeps the GCam InitParams provider from enabling almond TPU and Tomte grain during startup, preserving their default false state.",
-    "Real-device validation still showed libgxp.so loading after Java-side TPU/Tomte guards. For Pixel Camera 11.0.073.972752740.32 only, the pipeline now verifies and patches three exact AArch64 instructions in libgcastartup.so to select its existing CPU/TFLite fallback and avoid the DarwiNN/GXP delegate path. No model-verification bypass is applied."
+    "Real-device validation still showed libgxp.so loading after Java-side TPU/Tomte guards. For Pixel Camera 11.0.073.972752740.32 only, the pipeline now verifies and patches three exact AArch64 instructions in libgcastartup.so to select its existing CPU/TFLite fallback and avoid the DarwiNN/GXP delegate path. No model-verification bypass is applied.",
+    "The standalone manifest declares libOpenCL.so, libOpenCL-car.so, and libOpenCL-pixel.so as optional native libraries so Android 12+ linker namespaces can expose an available platform/vendor OpenCL implementation without making installation depend on any one library name.",
+    "Native heap pointer tagging remains unchanged because current POCO F5 evidence does not identify a pointer-tagging crash; compatibility workarounds are added only for reproduced failures."
   ],
   "runtime_validation": {
     "required_for_distribution": true,
