@@ -907,99 +907,179 @@ def _patch_logical_camera_sensor_ids(
     *,
     method_start: int,
     method_end: int,
+    sensor_enum_mapping: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Assign GCam logical sensor IDs to top-level multi-camera entries.
+    """Normalize top-level logical metadata using semantic bytecode shape.
 
-    Pixel Camera first adds each top-level camera to StaticMetadataVector, then
-    appends its physical camera IDs. On POCO F5 the Xiaomi converter can label
-    the top-level logical camera with the same physical GCam sensor ID as one of
-    its children. Native Gcam_AllSensorIdsUnique() then rejects the vector.
+    Pixel Camera 11.0 and 11.1 keep the same camera topology algorithm while
+    R8 renames the provider, camera descriptor, metadata wrapper, direction
+    enum, converter method and sensor enum.  Match the data flow around those
+    types instead of pinning their obfuscated names.
 
-    Luur.b is the top-level camera's physical-ID set. Only entries with a
-    non-empty set are remapped. The enclosing Luve array is verified as
-    BACK-first / FRONT-second, so v12 selects kRearLogical or kFrontLogical.
-    Physical cameras and synthetic binned/max-resolution entries remain intact.
-
-    Runtime Camera2 probing on marble confirms that exposed IDs 0, 1, 2 and 3
-    can deliver sustained YUV frames, while logical IDs 4/5 are not reliable
-    application-facing capture endpoints. Keep the mapping diagnostics active
-    so camera 3 can be classified before changing the retained-ID policy.
+    The compatibility change remains narrow:
+      * remap only top-level entries with non-empty physical-camera sets to
+        kRearLogical/kFrontLogical;
+      * omit Xiaomi alias IDs 3/4/5/6 from the native GCam metadata vector;
+      * leave Camera2 enumeration and all physical-camera processing intact.
     """
 
     method_text = "\n".join(lines[method_start : method_end + 1])
 
-    # Keep global checks only for camera-specific tokens that are expected to
-    # be unique in this provider method. Generic register operations such as
-    # move-result-object v7 can legitimately occur many times elsewhere in the
-    # same large synthetic method, so those are verified locally around the
-    # unique metadata converter call below.
-    unique_camera_shape = (
-        "sget-object v0, Luve;->b:Luve;",
-        "aput-object v0, v13, v12",
-        "sget-object v0, Luve;->a:Luve;",
-        "aput-object v0, v13, p0",
-        "aget-object v0, v13, v12",
-    )
-    for token in unique_camera_shape:
-        count = method_text.count(token)
-        if count != 1:
-            diagnostic = _logical_camera_shape_diagnostic(
-                lines,
-                method_start=method_start,
-                method_end=method_end,
-            )
-            raise PatchError(
-                "top-level logical-camera metadata shape changed; expected one "
-                f"{token!r}, found {count}\n"
-                "semantic context:\n"
-                f"{diagnostic}"
-            )
-
-    converter_indexes = [
-        i
-        for i in range(method_start, method_end)
-        if (
-            "Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->"
-            "C(Luus;)Lcom/google/googlex/gcam/StaticMetadata;" in lines[i]
-            and "{v5}" in lines[i]
-        )
-    ]
-    if len(converter_indexes) != 1:
-        raise PatchError(
-            "expected exactly one top-level NativeMetadataConverter.C(v5) call; "
-            f"found {len(converter_indexes)}"
-        )
-    converter_index = converter_indexes[0]
-
-    def _previous_code_line(index: int) -> int:
-        cursor = index - 1
-        while cursor >= method_start:
-            stripped = lines[cursor].strip()
-            if stripped and not stripped.startswith("#"):
-                return cursor
-            cursor -= 1
-        raise PatchError("metadata converter has no preceding code instruction")
-
-    def _next_code_line_local(index: int) -> int:
+    def _next_code(index: int, *, stop: int | None = None) -> int:
+        limit = method_end if stop is None else min(stop, method_end)
         cursor = index + 1
-        while cursor < method_end:
+        while cursor < limit:
             stripped = lines[cursor].strip()
             if stripped and not stripped.startswith("#"):
                 return cursor
             cursor += 1
-        raise PatchError("metadata converter sequence ended unexpectedly")
+        raise PatchError("logical-camera metadata sequence ended unexpectedly")
 
-    result_index = _next_code_line_local(converter_index)
+    def _code_indexes(start_index: int, stop_index: int) -> list[int]:
+        return [
+            i
+            for i in range(start_index, stop_index)
+            if lines[i].strip() and not lines[i].strip().startswith("#")
+        ]
+
+    # Direction enum: BACK first, FRONT second.  Only the obfuscated type name
+    # is allowed to vary.
+    direction_arrays: list[tuple[int, str]] = []
+    direction_array_re = re.compile(
+        r"^\s*new-array\s+v13,\s*v15,\s*\[(?P<desc>L[^;]+;)\s*$"
+    )
+    for i in range(method_start, method_end):
+        match = direction_array_re.match(lines[i])
+        if match:
+            direction_arrays.append((i, match.group("desc")))
+    if len(direction_arrays) != 1:
+        diagnostic = _logical_camera_shape_diagnostic(
+            lines,
+            method_start=method_start,
+            method_end=method_end,
+        )
+        raise PatchError(
+            "top-level logical-camera direction array changed; expected one "
+            f"semantic [L*; array, found {len(direction_arrays)}\n"
+            f"semantic context:\n{diagnostic}"
+        )
+
+    direction_array_index, direction_descriptor = direction_arrays[0]
+    direction_indexes = _code_indexes(
+        direction_array_index + 1,
+        min(method_end, direction_array_index + 32),
+    )
+    expected_direction_prefix = (
+        f"sget-object v0, {direction_descriptor}->b:{direction_descriptor}",
+        "aput-object v0, v13, v12",
+        f"sget-object v0, {direction_descriptor}->a:{direction_descriptor}",
+        "aput-object v0, v13, p0",
+    )
+    actual_direction_prefix = tuple(
+        lines[index].strip() for index in direction_indexes[:4]
+    )
+    if actual_direction_prefix != expected_direction_prefix:
+        raise PatchError(
+            "top-level logical-camera BACK/FRONT enum flow changed; expected "
+            f"{expected_direction_prefix!r}, got {actual_direction_prefix!r}"
+        )
+
+    direction_get_indexes = [
+        i
+        for i in range(direction_array_index, method_end)
+        if lines[i].strip() == "aget-object v0, v13, v12"
+    ]
+    if len(direction_get_indexes) != 1:
+        raise PatchError(
+            "expected exactly one top-level direction array read; "
+            f"found {len(direction_get_indexes)}"
+        )
+    direction_get_index = direction_get_indexes[0]
+
+    # Find the camera-ID read and immediately associated provider lookup.
+    top_candidates: list[dict[str, Any]] = []
+    top_id_re = re.compile(
+        r"^\s*iget-object\s+v7,\s*v5,\s*"
+        r"(?P<camera>L[^;]+;)->a:Ljava/lang/String;\s*$"
+    )
+    provider_re = re.compile(
+        r"^\s*invoke-interface\s+\{v2,\s*v5\},\s*"
+        r"(?P<provider>L[^;]+;)->a\("
+        r"(?P<camera>L[^;]+;)\)(?P<meta>L[^;]+;)\s*$"
+    )
+    for i in range(direction_get_index, method_end):
+        id_match = top_id_re.match(lines[i])
+        if not id_match:
+            continue
+        null_index = _next_code(i)
+        if not re.match(r"^if-eqz\s+v7,\s*:[A-Za-z0-9_.$-]+$", lines[null_index].strip()):
+            continue
+        call_index = _next_code(null_index)
+        call_match = provider_re.match(lines[call_index])
+        if not call_match:
+            continue
+        if call_match.group("camera") != id_match.group("camera"):
+            continue
+        top_candidates.append(
+            {
+                "id_index": i,
+                "null_index": null_index,
+                "call_index": call_index,
+                "camera_descriptor": id_match.group("camera"),
+                "provider_descriptor": call_match.group("provider"),
+                "metadata_descriptor": call_match.group("meta"),
+            }
+        )
+
+    if len(top_candidates) != 1:
+        diagnostic = _logical_camera_shape_diagnostic(
+            lines,
+            method_start=method_start,
+            method_end=method_end,
+        )
+        raise PatchError(
+            "top-level logical-camera ID/provider flow changed; expected one "
+            f"semantic candidate, found {len(top_candidates)}\n"
+            f"semantic context:\n{diagnostic}"
+        )
+    top = top_candidates[0]
+
+    # The metadata converter method name is allowed to change (C -> A in 11.1)
+    # but its source type and result remain semantically stable.
+    converter_re = re.compile(
+        r"^\s*invoke-static\s+\{v5\},\s*"
+        r"Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->"
+        r"(?P<method>[A-Za-z0-9_$]+)\("
+        + re.escape(top["metadata_descriptor"])
+        + r"\)Lcom/google/googlex/gcam/StaticMetadata;\s*$"
+    )
+    converter_indexes = [
+        i
+        for i in range(
+            top["call_index"] + 1,
+            min(method_end, top["call_index"] + 48),
+        )
+        if converter_re.match(lines[i])
+    ]
+    if len(converter_indexes) != 1:
+        raise PatchError(
+            "expected exactly one top-level NativeMetadataConverter call for "
+            f"{top['metadata_descriptor']}; found {len(converter_indexes)}"
+        )
+    converter_index = converter_indexes[0]
+    converter_match = converter_re.match(lines[converter_index])
+    assert converter_match is not None
+
+    result_index = _next_code(converter_index)
     if lines[result_index].strip() != "move-result-object v7":
         raise PatchError(
             "top-level metadata converter is no longer followed by "
             "'move-result-object v7'"
         )
-
-    saved_source_index = _next_code_line_local(result_index)
+    saved_source_index = _next_code(result_index)
     if lines[saved_source_index].strip() != "move-object/from16 v24, v5":
         raise PatchError(
-            "top-level metadata source is no longer preserved after conversion"
+            "top-level metadata source is no longer preserved in v24"
         )
 
     add_call = (
@@ -1009,7 +1089,10 @@ def _patch_logical_camera_sensor_ids(
     )
     add_indexes = [
         i
-        for i in range(saved_source_index + 1, min(method_end, saved_source_index + 40))
+        for i in range(
+            saved_source_index + 1,
+            min(method_end, saved_source_index + 48),
+        )
         if lines[i].strip() == add_call
     ]
     if len(add_indexes) != 1:
@@ -1019,20 +1102,76 @@ def _patch_logical_camera_sensor_ids(
         )
     add_index = add_indexes[0]
 
-    # Pixel Camera stamps package/version metadata and reads the converted
-    # sensor ID before adding the top-level metadata. Verify those operations
-    # in order without requiring them to be adjacent.
-    expected_pre_add_flow = (
-        "invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->q(Ljava/lang/String;)V",
-        "invoke-virtual {v7, v5}, Lcom/google/googlex/gcam/StaticMetadata;->r(Ljava/lang/String;)V",
-        "invoke-virtual {v7}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
+    # Derive the current sensor-enum descriptor from StaticMetadata.g().
+    sensor_get_re = re.compile(
+        r"^\s*invoke-virtual\s+\{v7\},\s*"
+        r"Lcom/google/googlex/gcam/StaticMetadata;->g\(\)"
+        r"(?P<sensor>L[^;]+;)\s*$"
+    )
+    sensor_gets = [
+        (i, sensor_get_re.match(lines[i]))
+        for i in range(saved_source_index + 1, add_index)
+        if sensor_get_re.match(lines[i])
+    ]
+    if len(sensor_gets) != 1:
+        raise PatchError(
+            "top-level metadata pre-add flow no longer has exactly one "
+            f"StaticMetadata.g() sensor read; found {len(sensor_gets)}"
+        )
+    sensor_index, sensor_match = sensor_gets[0]
+    assert sensor_match is not None
+    sensor_descriptor = sensor_match.group("sensor")
+
+    if sensor_enum_mapping is None:
+        known = {
+            "Lzoi;": {
+                "descriptor": "Lzoi;",
+                "rear_field": "s",
+                "front_field": "v",
+                "rear_value": 5,
+                "front_value": 3,
+                "source": "known_pixel_camera_11_0_fixture",
+            },
+            "Laaaj;": {
+                "descriptor": "Laaaj;",
+                "rear_field": "s",
+                "front_field": "v",
+                "rear_value": 5,
+                "front_value": 3,
+                "source": "verified_pixel_camera_11_1_enum",
+            },
+        }
+        sensor_enum_mapping = known.get(sensor_descriptor)
+    if not sensor_enum_mapping:
+        raise PatchError(
+            "no verified kRearLogical/kFrontLogical mapping for sensor enum "
+            f"{sensor_descriptor}"
+        )
+    if sensor_enum_mapping.get("descriptor") != sensor_descriptor:
+        raise PatchError(
+            "sensor enum mapping descriptor mismatch: "
+            f"{sensor_enum_mapping.get('descriptor')} vs {sensor_descriptor}"
+        )
+    if (
+        sensor_enum_mapping.get("rear_value") != 5
+        or sensor_enum_mapping.get("front_value") != 3
+    ):
+        raise PatchError(
+            "sensor enum logical values changed; expected rear=5/front=3"
+        )
+
+    # Package/version stamping and the sensor read must remain ordered before
+    # the vector add; method/type obfuscation outside this flow is irrelevant.
+    expected_pre_add = (
+        "Lcom/google/googlex/gcam/StaticMetadata;->q(Ljava/lang/String;)V",
+        "Lcom/google/googlex/gcam/StaticMetadata;->r(Ljava/lang/String;)V",
     )
     cursor = saved_source_index + 1
-    for token in expected_pre_add_flow:
+    for token in expected_pre_add:
         matches = [
             i
             for i in range(cursor, add_index)
-            if lines[i].strip() == token
+            if token in lines[i]
         ]
         if len(matches) != 1:
             raise PatchError(
@@ -1040,32 +1179,107 @@ def _patch_logical_camera_sensor_ids(
                 f"{token!r}, found {len(matches)}"
             )
         cursor = matches[0] + 1
+    if sensor_index < cursor:
+        raise PatchError("StaticMetadata.g() moved before package/version stamping")
 
-    physical_set_indexes = [
+    # Reuse the exact source-to-Set setup that Pixel Camera itself executes
+    # immediately after the vector add.  11.0 uses a concrete field; 11.1 uses
+    # an interface accessor.  Both converge on v5 as java.util.Set.
+    iterator_indexes = [
         i
-        for i in range(add_index + 1, min(method_end, add_index + 48))
-        if lines[i].strip() == "iget-object v5, v5, Luur;->b:Lyfm;"
+        for i in range(add_index + 1, min(method_end, add_index + 64))
+        if lines[i].strip()
+        == "invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;"
     ]
-    if len(physical_set_indexes) != 1:
+    if len(iterator_indexes) != 1:
         raise PatchError(
             "top-level metadata add is no longer followed by exactly one "
-            "physical-ID set in its local block"
+            f"physical-ID Set iterator; found {len(iterator_indexes)}"
         )
-    physical_set_index = physical_set_indexes[0]
-    post_add_window = "\n".join(
-        lines[add_index + 1 : min(method_end, physical_set_index + 10)]
-    )
-    for token in (
-        "move-object/from16 v5, v24",
-        "check-cast v5, Luur;",
-        "iget-object v5, v5, Luur;->b:Lyfm;",
-        "invoke-interface {v5}, Ljava/util/Set;->iterator()Ljava/util/Iterator;",
-    ):
-        count = post_add_window.count(token)
-        if count != 1:
+    iterator_index = iterator_indexes[0]
+    prior_code = _code_indexes(max(add_index + 1, iterator_index - 12), iterator_index)
+    stripped_prior = [lines[i].strip() for i in prior_code]
+
+    physical_profile = ""
+    physical_set_setup: list[str] = []
+    if len(stripped_prior) >= 2:
+        interface_match = re.match(
+            r"^invoke-interface(?:/range)?\s+\{v24(?:\s*\.\.\s*v24)?\},\s*"
+            + re.escape(top["metadata_descriptor"])
+            + r"->[A-Za-z0-9_$]+\(\)Ljava/util/Set;$",
+            stripped_prior[-2],
+        )
+        if interface_match and stripped_prior[-1] == "move-result-object v5":
+            physical_profile = "interface_set_accessor"
+            physical_set_setup = [
+                "    " + stripped_prior[-2],
+                "",
+                "    " + stripped_prior[-1],
+            ]
+
+    if not physical_set_setup and len(stripped_prior) >= 3:
+        move_line, cast_line, field_line = stripped_prior[-3:]
+        cast_match = re.match(r"^check-cast v5, (?P<holder>L[^;]+;)$", cast_line)
+        field_match = re.match(
+            r"^iget-object v5, v5, (?P<holder>L[^;]+;)->"
+            r"(?P<field>[A-Za-z0-9_$]+):(?P<set>L[^;]+;)$",
+            field_line,
+        )
+        if (
+            move_line == "move-object/from16 v5, v24"
+            and cast_match
+            and field_match
+            and cast_match.group("holder") == field_match.group("holder")
+        ):
+            physical_profile = "concrete_set_field"
+            physical_set_setup = [
+                "    " + move_line,
+                "",
+                "    " + cast_line,
+                "",
+                "    " + field_line,
+            ]
+
+    if not physical_set_setup:
+        raise PatchError(
+            "could not derive the top-level physical-camera Set accessor "
+            "from the post-add flow"
+        )
+
+    # v25/v26 are scratch registers in both verified provider shapes.  Prove
+    # that any later original use writes them before reading them.
+    register_lines = [
+        lines[i].strip()
+        for i in range(method_start + 1, method_end)
+        if re.match(r"^\.(?:locals|registers)\s+\d+\s*$", lines[i].strip())
+    ]
+    if len(register_lines) != 1:
+        raise PatchError("expected one register declaration in GCam provider")
+    register_count = int(register_lines[0].split()[1], 0)
+    if register_count < 27:
+        raise PatchError(
+            "GCam provider no longer exposes v25/v26 scratch registers"
+        )
+
+    def _first_later_use_is_write(register: str) -> bool:
+        reg_re = re.compile(rf"\b{re.escape(register)}\b")
+        write_re = re.compile(
+            rf"^(?:move(?:-object|-wide)?(?:/from16|/16)?|"
+            rf"move-result(?:-object|-wide)?|const(?:/\d+|/high16)?|"
+            rf"new-instance|sget-object|iget-object)\s+"
+            rf"{re.escape(register)}\b"
+        )
+        for i in range(add_index + 1, method_end):
+            stripped = lines[i].strip()
+            if not reg_re.search(stripped):
+                continue
+            return bool(write_re.match(stripped))
+        return True
+
+    for register in ("v25", "v26"):
+        if not _first_later_use_is_write(register):
             raise PatchError(
-                "top-level metadata physical-ID flow changed; expected one "
-                f"{token!r}, found {count}"
+                f"scratch register {register} is read before its next write"
             )
 
     labels = (
@@ -1077,13 +1291,12 @@ def _patch_logical_camera_sensor_ids(
     if any(f":{label}" in method_text for label in labels):
         raise PatchError("logical camera sensor-ID patch labels already exist")
 
+    rear_field = sensor_enum_mapping["rear_field"]
+    front_field = sensor_enum_mapping["front_field"]
+
     guard = [
         "    # POCO F5: logical camera must not reuse a physical GCam sensor ID.",
-        "    move-object/from16 v5, v24",
-        "",
-        "    check-cast v5, Luur;",
-        "",
-        "    iget-object v5, v5, Luur;->b:Lyfm;",
+        *physical_set_setup,
         "",
         "    invoke-interface {v5}, Ljava/util/Set;->isEmpty()Z",
         "",
@@ -1093,102 +1306,53 @@ def _patch_logical_camera_sensor_ids(
         "",
         "    if-nez v12, :poco_top_level_front_logical",
         "",
-        "    sget-object v5, Lzoi;->s:Lzoi;",
+        f"    sget-object v5, {sensor_descriptor}->{rear_field}:{sensor_descriptor}",
         "",
         "    goto :poco_top_level_set_logical",
         "",
         "    :poco_top_level_front_logical",
-        "    sget-object v5, Lzoi;->v:Lzoi;",
+        f"    sget-object v5, {sensor_descriptor}->{front_field}:{sensor_descriptor}",
         "",
         "    :poco_top_level_set_logical",
         "    invoke-virtual {v7, v5}, "
-        "Lcom/google/googlex/gcam/StaticMetadata;->u(Lzoi;)V",
+        f"Lcom/google/googlex/gcam/StaticMetadata;->u({sensor_descriptor})V",
         "",
         "    :poco_top_level_logical_done",
         "",
-        "    # POCO F5: exclude Camera2 aliases that collapse onto an existing",
-        "    # GCam sensor enum. Keep Android/Camera2 enumeration unchanged;",
-        "    # only omit the duplicate metadata entry from the native GCam vector.",
-        "    move-object/from16 v5, v24",
-        "",
-        "    check-cast v5, Luur;",
-        "",
-        "    iget-object v5, v5, Luur;->a:Luuv;",
-        "",
-        "    iget-object v5, v5, Luuv;->a:Ljava/lang/String;",
-        "",
-        "    # Diagnostic only: record the GCam sensor enum assigned to each",
-        "    # top-level Camera2 ID before compatibility filtering.",
-        "    move-object/from16 v26, v5",
-        "",
+        "    # POCO F5: omit Xiaomi duplicate/logical aliases only from the",
+        "    # native GCam vector. Camera2 enumeration and physical processing",
+        "    # continue unchanged after :poco_top_level_alias_done.",
         '    const-string v25, "GCamMappedCameraId"',
         "",
-        "    invoke-static/range {v25 .. v26}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
-        "",
-        "    invoke-virtual {v7}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
-        "",
-        "    move-result-object v5",
-        "",
-        "    invoke-virtual {v5}, Lzoi;->toString()Ljava/lang/String;",
-        "",
-        "    move-result-object v5",
-        "",
-        "    move-object/from16 v26, v5",
-        "",
-        '    const-string v25, "GCamMappedSensorId"',
-        "",
-        "    invoke-static/range {v25 .. v26}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
-        "",
-        "    # Recover the Camera2 ID after diagnostic logging.",
-        "    move-object/from16 v5, v24",
-        "",
-        "    check-cast v5, Luur;",
-        "",
-        "    iget-object v5, v5, Luur;->a:Luuv;",
-        "",
-        "    iget-object v5, v5, Luuv;->a:Ljava/lang/String;",
-        "",
-        "    move-object/from16 v26, v5",
-        "",
-        '    const-string v25, "3"',
-        "",
-        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
-        "",
-        "    move-result v5",
-        "",
-        "    if-nez v5, :poco_top_level_alias_done",
-        "",
-        "    # Camera2 ID 4 is Xiaomi's logical rear camera. Real-device logs",
-        "    # show its MultiCameraSAT graph cannot initialize for this app",
-        "    # (logical camera type 7 / invalid logical camera ID). Keep it",
-        "    # enumerated in Camera2 but omit it from the native GCam vector.",
-        '    const-string v25, "4"',
-        "",
-        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
-        "",
-        "    move-result v5",
-        "",
-        "    if-nez v5, :poco_top_level_alias_done",
-        "",
-        '    const-string v25, "5"',
-        "",
-        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
-        "",
-        "    move-result v5",
-        "",
-        "    if-nez v5, :poco_top_level_alias_done",
-        "",
-        '    const-string v25, "6"',
-        "",
-        "    invoke-virtual/range {v25 .. v26}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
-        "",
-        "    move-result v5",
-        "",
-        "    if-nez v5, :poco_top_level_alias_done",
+        "    invoke-static/range {v25 .. v26}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
+    for camera_id in ("3", "4", "5", "6"):
+        guard.extend(
+            [
+                f'    const-string v25, "{camera_id}"',
+                "",
+                "    invoke-virtual/range {v25 .. v26}, "
+                "Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+                "",
+                "    move-result v5",
+                "",
+                "    if-nez v5, :poco_top_level_alias_done",
+                "",
+            ]
+        )
+
+    capture = [
+        "",
+        "    # POCO F5: preserve Camera2 ID across metadata conversion.",
+        "    move-object/from16 v26, v7",
+    ]
+
     patched = (
-        lines[:add_index]
+        lines[: top["id_index"] + 1]
+        + capture
+        + lines[top["id_index"] + 1 : add_index]
         + guard
         + [
             lines[add_index],
@@ -1197,6 +1361,7 @@ def _patch_logical_camera_sensor_ids(
         ]
         + lines[add_index + 1 :]
     )
+
     return patched, {
         "status": "filtered_xiaomi_logical_and_duplicate_aliases",
         "predicate": "non_empty_physical_camera_id_set",
@@ -1210,96 +1375,104 @@ def _patch_logical_camera_sensor_ids(
         "physical_entries_preserved": True,
         "pre_filter_mapping_diagnostics": {
             "camera_id_tag": "GCamMappedCameraId",
-            "sensor_id_tag": "GCamMappedSensorId",
+            "sensor_id_tag": None,
             "behavior_changed": False,
+        },
+        "semantic_shape": {
+            "direction_enum_descriptor": direction_descriptor,
+            "camera_descriptor": top["camera_descriptor"],
+            "provider_descriptor": top["provider_descriptor"],
+            "metadata_descriptor": top["metadata_descriptor"],
+            "converter_method": converter_match.group("method"),
+            "sensor_enum_descriptor": sensor_descriptor,
+            "rear_logical_field": rear_field,
+            "front_logical_field": front_field,
+            "physical_set_profile": physical_profile,
         },
     }
 
 
 def _inject_camera_source_runtime_diagnostics(
     lines: list[str],
+    logical_mapping_metadata: dict[str, Any],
 ) -> tuple[list[str], dict[str, Any]]:
-    """Log Android Camera2 IDs in the same order metadata enters the GCam vector.
-
-    Top-level camera IDs are logged while Pixel Camera iterates Luut.h(Luve).
-    Physical IDs are logged later when the deduplicated Luuv list is converted.
-    The final GCamSensorIds dump therefore lets real-device reports correlate
-    Xiaomi camera IDs with the generated GCam sensor enums without changing
-    camera selection or sensor metadata.
-    """
+    """Log Camera2 IDs without pinning Pixel Camera's obfuscated type names."""
 
     method_text = "\n".join(lines)
     for tag in ("GCamTopCameraId", "GCamPhysicalCameraId"):
         if tag in method_text:
             raise PatchError(f"camera-source diagnostic tag already exists: {tag}")
 
-    top_id_get = "iget-object v7, v5, Luuv;->a:Ljava/lang/String;"
+    shape = logical_mapping_metadata.get("semantic_shape") or {}
+    camera_descriptor = shape.get("camera_descriptor")
+    provider_descriptor = shape.get("provider_descriptor")
+    metadata_descriptor = shape.get("metadata_descriptor")
+    if not all((camera_descriptor, provider_descriptor, metadata_descriptor)):
+        raise PatchError("camera-source diagnostics missing semantic camera shape")
+
+    top_id_get = (
+        f"iget-object v7, v5, {camera_descriptor}->a:Ljava/lang/String;"
+    )
     top_indexes = [i for i, line in enumerate(lines) if line.strip() == top_id_get]
     if len(top_indexes) != 1:
         raise PatchError(
-            "expected exactly one top-level Luuv camera-ID read; "
+            "expected exactly one semantic top-level camera-ID read; "
             f"found {len(top_indexes)}"
         )
     top_index = top_indexes[0]
 
-    top_null_index = top_index + 1
-    while top_null_index < len(lines) and not lines[top_null_index].strip():
-        top_null_index += 1
-    if top_null_index >= len(lines) or lines[top_null_index].strip() != "if-eqz v7, :cond_131":
-        raise PatchError("top-level Luuv camera-ID null guard changed")
-
-    top_call_index = top_null_index + 1
-    while top_call_index < len(lines) and not lines[top_call_index].strip():
-        top_call_index += 1
-    if (
-        top_call_index >= len(lines)
-        or lines[top_call_index].strip()
-        != "invoke-interface {v2, v5}, Luut;->a(Luuv;)Luus;"
-    ):
-        raise PatchError("top-level Luuv metadata lookup changed")
+    capture_indexes = [
+        i
+        for i in range(top_index + 1, min(len(lines), top_index + 8))
+        if lines[i].strip() == "move-object/from16 v26, v7"
+    ]
+    if len(capture_indexes) != 1:
+        raise PatchError("top-level Camera2 ID is not preserved in v26")
+    capture_index = capture_indexes[0]
 
     top_block = [
         "",
-        '    const-string v24, "GCamCompatRevision"',
+        '    const-string v25, "GCamTopCameraId"',
         "",
-        '    const-string v25, "xiaomi-client-v1"',
-        "",
-        "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
-        "",
-        '    const-string v24, "GCamTopCameraId"',
-        "",
-        "    move-object/from16 v25, v7",
-        "",
-        "    invoke-static/range {v24 .. v25}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    invoke-static/range {v25 .. v26}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
-    lines = lines[:top_call_index] + top_block + lines[top_call_index:]
+    lines = lines[: capture_index + 1] + top_block + lines[capture_index + 1 :]
 
-    physical_cast = "check-cast v0, Luuv;"
+    physical_cast = f"check-cast v0, {camera_descriptor}"
     physical_indexes = [i for i, line in enumerate(lines) if line.strip() == physical_cast]
     if len(physical_indexes) != 1:
         raise PatchError(
-            "expected exactly one physical Luuv conversion loop; "
+            "expected exactly one semantic physical-camera conversion loop; "
             f"found {len(physical_indexes)}"
         )
     physical_index = physical_indexes[0]
 
+    physical_call_re = re.compile(
+        r"^invoke-interface\s+\{v2,\s*v0\},\s*"
+        + re.escape(provider_descriptor)
+        + r"->[A-Za-z0-9_$]+\("
+        + re.escape(camera_descriptor)
+        + r"\)"
+        + re.escape(metadata_descriptor)
+        + r"$"
+    )
     physical_call_index = physical_index + 1
     while physical_call_index < len(lines) and not lines[physical_call_index].strip():
         physical_call_index += 1
     if (
         physical_call_index >= len(lines)
-        or lines[physical_call_index].strip()
-        != "invoke-interface {v2, v0}, Luut;->a(Luuv;)Luus;"
+        or not physical_call_re.match(lines[physical_call_index].strip())
     ):
-        raise PatchError("physical Luuv metadata lookup changed")
+        raise PatchError("physical-camera semantic metadata lookup changed")
 
     physical_block = [
         "",
-        "    # iget-object uses 4-bit registers; preserve a low temp explicitly.",
+        "    # iget-object uses a low register; preserve v3 explicitly.",
         "    move-object/from16 v24, v3",
         "",
-        "    iget-object v3, v0, Luuv;->a:Ljava/lang/String;",
+        f"    iget-object v3, v0, {camera_descriptor}->a:Ljava/lang/String;",
         "",
         "    move-object/from16 v26, v3",
         "",
@@ -1307,32 +1480,27 @@ def _inject_camera_source_runtime_diagnostics(
         "",
         '    const-string v25, "GCamPhysicalCameraId"',
         "",
-        "    invoke-static/range {v25 .. v26}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    invoke-static/range {v25 .. v26}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
     ]
     lines = lines[:physical_call_index] + physical_block + lines[physical_call_index:]
 
     return lines, {
         "status": "logged_android_camera_ids",
-        "compat_revision_tag": "GCamCompatRevision",
-        "compat_revision": "xiaomi-client-v1",
         "top_level_tag": "GCamTopCameraId",
         "physical_tag": "GCamPhysicalCameraId",
         "ordering": "top_level_then_physical_matches_StaticMetadataVector",
         "behavior_changed": False,
+        "semantic_camera_descriptor": camera_descriptor,
     }
 
 
 def _inject_sensor_vector_runtime_diagnostics(
     lines: list[str],
+    sensor_descriptor: str,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Log every StaticMetadata sensor enum immediately before Gcam_Create.
-
-    This is intentionally diagnostic-only. It does not mutate sensor IDs or
-    bypass Gcam_AllSensorIdsUnique. Real-device logs can then identify the exact
-    duplicate enum(s) produced by the Xiaomi camera topology before applying a
-    narrower compatibility fix.
-    """
+    """Log final StaticMetadata sensor enums using the detected enum type."""
 
     create_indexes = [
         i
@@ -1396,17 +1564,19 @@ def _inject_sensor_vector_runtime_diagnostics(
         "",
         "    move-result-object v2",
         "",
-        "    invoke-virtual {v2}, Lcom/google/googlex/gcam/StaticMetadata;->g()Lzoi;",
+        "    invoke-virtual {v2}, "
+        f"Lcom/google/googlex/gcam/StaticMetadata;->g(){sensor_descriptor}",
         "",
         "    move-result-object v2",
         "",
-        "    invoke-virtual {v2}, Lzoi;->toString()Ljava/lang/String;",
+        f"    invoke-virtual {{v2}}, {sensor_descriptor}->toString()Ljava/lang/String;",
         "",
         "    move-result-object v2",
         "",
         '    const-string v3, "GCamSensorIds"',
         "",
-        "    invoke-static {v3, v2}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
+        "    invoke-static {v3, v2}, "
+        "Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I",
         "",
         "    add-int/lit8 v0, v0, 0x1",
         "",
@@ -1422,6 +1592,7 @@ def _inject_sensor_vector_runtime_diagnostics(
         "tag": "GCamSensorIds",
         "location": "immediately_before_Gcam_Create",
         "behavior_changed": False,
+        "sensor_enum_descriptor": sensor_descriptor,
     }
 
 
