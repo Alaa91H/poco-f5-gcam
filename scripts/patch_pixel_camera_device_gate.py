@@ -4055,6 +4055,514 @@ def _sensor_enum_shape_diagnostic(root: Path, gcam_text: str) -> str:
     return "\n".join(sections)
 
 
+def _sensor_enum_logical_mapping(
+    root: Path,
+    gcam_text: str,
+) -> dict[str, Any]:
+    """Resolve kRearLogical/kFrontLogical fields from the enum's own <clinit>."""
+
+    descriptors = sorted(
+        set(
+            re.findall(
+                r"Lcom/google/googlex/gcam/StaticMetadata;->g\(\)(L[^;]+;)",
+                gcam_text,
+            )
+        )
+    )
+    if len(descriptors) != 1:
+        raise PatchError(
+            "expected exactly one StaticMetadata.g() sensor-enum descriptor; "
+            f"found {descriptors!r}"
+        )
+    descriptor = descriptors[0]
+
+    class_re = re.compile(
+        r"^\.class\s+.*" + re.escape(descriptor) + r"\s*$",
+        re.MULTILINE,
+    )
+    matches: list[Path] = []
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if class_re.search(text):
+            matches.append(path)
+    if len(matches) != 1:
+        rendered = ", ".join(
+            os.fspath(path.relative_to(root)) for path in matches
+        ) or "none"
+        raise PatchError(
+            f"expected sensor enum {descriptor} in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    enum_path = matches[0]
+    lines = enum_path.read_text(encoding="utf-8").splitlines()
+    clinit_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().startswith(".method static constructor <clinit>()V")
+        ),
+        None,
+    )
+    if clinit_start is None:
+        raise PatchError(f"sensor enum {descriptor} has no <clinit>")
+    clinit_end = clinit_start + 1
+    while clinit_end < len(lines) and lines[clinit_end].strip() != ".end method":
+        clinit_end += 1
+    if clinit_end >= len(lines):
+        raise PatchError(f"sensor enum {descriptor} <clinit> is unterminated")
+
+    def resolve(name: str, expected_value: int) -> str:
+        name_re = re.compile(
+            rf'^const-string\s+(?P<reg>v\d+),\s*"{re.escape(name)}"    matches: list[Path] = []
+    for path in root.rglob("*.smali"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if _has_gcam_init_callsites(text):
+            matches.append(path)
+
+    if len(matches) != 1:
+        rendered = ", ".join(os.fspath(p.relative_to(root)) for p in matches) or "none"
+        raise PatchError(
+            "expected native GCam InitParams callsites in exactly one smali file; "
+            f"found {rendered}"
+        )
+
+    target = matches[0]
+    original = target.read_text(encoding="utf-8")
+    try:
+        sensor_enum_mapping = _sensor_enum_logical_mapping(root, original)
+        patched, metadata = patch_gcam_init_smali_text(
+            original,
+            sensor_enum_mapping=sensor_enum_mapping,
+        )
+    except PatchError as exc:
+        diagnostic = _sensor_enum_shape_diagnostic(root, original)
+        raise PatchError(f"{exc}\n{diagnostic}") from exc
+    metadata["sensor_enum_mapping"] = sensor_enum_mapping
+    target.write_text(patched, encoding="utf-8")
+    metadata["smali_path"] = os.fspath(target.relative_to(root))
+    return metadata
+
+
+def replace_zip_members(
+    source: Path,
+    output: Path,
+    replacements: dict[str, Path],
+) -> None:
+    if source.resolve() == output.resolve():
+        raise PatchError("source and output APK paths must be different")
+    if not replacements:
+        raise PatchError("no APK members were supplied for replacement")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    found: set[str] = set()
+    with zipfile.ZipFile(source, "r") as src, zipfile.ZipFile(output, "w") as dst:
+        dst.comment = src.comment
+        for info in src.infolist():
+            replacement = replacements.get(info.filename)
+            if replacement is not None:
+                found.add(info.filename)
+                data = replacement.read_bytes()
+            else:
+                data = src.read(info)
+            dst.writestr(info, data, compress_type=info.compress_type)
+
+    missing = sorted(set(replacements) - found)
+    if missing:
+        raise PatchError(
+            "target dex disappeared from APK: " + ", ".join(missing)
+        )
+
+
+def replace_zip_member(source: Path, output: Path, member: str, replacement: Path) -> None:
+    replace_zip_members(source, output, {member: replacement})
+
+
+def patch_apk(
+    source: Path,
+    output: Path,
+    *,
+    baksmali: Path,
+    smali: Path,
+    java: str = "java",
+) -> dict[str, Any]:
+    source = source.resolve()
+    output = output.resolve()
+    baksmali = baksmali.resolve()
+    smali = smali.resolve()
+
+    if not source.is_file() or not zipfile.is_zipfile(source):
+        raise PatchError(f"source is not a valid APK/ZIP: {source}")
+    if not baksmali.is_file():
+        raise PatchError(f"baksmali jar not found: {baksmali}")
+    if not smali.is_file():
+        raise PatchError(f"smali jar not found: {smali}")
+
+    target_dex = find_target_dex(source)
+    gcam_init_dex = find_gcam_init_dex(source)
+    keepalive_dex = find_keepalive_receiver_dex(source)
+    session_config_dex = find_descriptor_dex(
+        source,
+        ONECAMERA_SESSION_CONFIG_DESCRIPTOR,
+        description="OneCamera session class Lrp;",
+    )
+    camcorder_request_dex = find_descriptor_dex(
+        source,
+        ONECAMERA_CAMCORDER_REQUEST_DESCRIPTOR,
+        description="OneCamera camcorder request provider Lopp;",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="poco-f5-device-gate-") as temp:
+        root = Path(temp)
+        replacements: dict[str, Path] = {}
+        dex_reports: dict[str, dict[str, Any]] = {}
+        command_tails: dict[str, dict[str, str]] = {}
+
+        with zipfile.ZipFile(source, "r") as archive:
+            for dex_name in sorted({
+                target_dex,
+                gcam_init_dex,
+                keepalive_dex,
+                session_config_dex,
+                camcorder_request_dex,
+            }):
+                safe_name = dex_name.replace(".", "_")
+                input_dex = root / dex_name
+                smali_dir = root / f"smali-{safe_name}"
+                rebuilt_dex = root / f"patched-{safe_name}"
+                input_dex.write_bytes(archive.read(dex_name))
+
+                disassemble_output = run(
+                    [
+                        java,
+                        "-jar",
+                        os.fspath(baksmali),
+                        "d",
+                        os.fspath(input_dex),
+                        "-o",
+                        os.fspath(smali_dir),
+                    ]
+                )
+
+                report_for_dex: dict[str, Any] = {}
+                if dex_name == target_dex:
+                    report_for_dex["device_gate"] = find_and_patch_smali_tree(smali_dir)
+                if dex_name == gcam_init_dex:
+                    report_for_dex["gcam_init"] = find_and_patch_gcam_init_smali_tree(
+                        smali_dir
+                    )
+                    report_for_dex["motion_stabilizer"] = (
+                        find_and_patch_motion_stabilizer_smali_tree(smali_dir)
+                    )
+                    report_for_dex["onecamera_optional"] = (
+                        find_and_patch_onecamera_optional_key_smali_tree(smali_dir)
+                    )
+                    report_for_dex["onecamera_missing_request_key"] = (
+                        find_and_patch_onecamera_missing_request_key_smali_tree(smali_dir)
+                    )
+                    report_for_dex["onecamera_open_camera_fallback"] = (
+                        find_and_patch_onecamera_open_camera_fallback_smali_tree(smali_dir)
+                    )
+                    report_for_dex["onecamera_odr_missing_request_key"] = (
+                        find_and_patch_onecamera_odr_missing_request_key_smali_tree(smali_dir)
+                    )
+                if dex_name == camcorder_request_dex:
+                    report_for_dex["onecamera_camcorder_lookahead_eis"] = (
+                        find_and_patch_onecamera_camcorder_lookahead_eis_smali_tree(
+                            smali_dir
+                        )
+                    )
+                if dex_name == keepalive_dex:
+                    report_for_dex["keepalive"] = (
+                        find_and_patch_keepalive_receiver_smali_tree(smali_dir)
+                    )
+                if dex_name == session_config_dex:
+                    report_for_dex["onecamera_session_parameter_logging"] = (
+                        find_and_patch_onecamera_session_parameter_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
+                    report_for_dex["onecamera_final_output_configuration_logging"] = (
+                        find_and_patch_onecamera_final_output_configuration_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
+                    report_for_dex["onecamera_output_configuration_logging"] = (
+                        find_and_patch_onecamera_output_configuration_logging_smali_tree(
+                            smali_dir
+                        )
+                    )
+
+                assemble_output = run(
+                    [
+                        java,
+                        "-jar",
+                        os.fspath(smali),
+                        "a",
+                        os.fspath(smali_dir),
+                        "-o",
+                        os.fspath(rebuilt_dex),
+                    ]
+                )
+                if not rebuilt_dex.is_file() or rebuilt_dex.stat().st_size == 0:
+                    tail = "\n".join(assemble_output.splitlines()[-80:])
+                    raise PatchError(
+                        f"smali did not produce rebuilt dex: {dex_name}\n{tail}"
+                    )
+                if dex_name == target_dex and MARKER_BYTES in rebuilt_dex.read_bytes():
+                    raise PatchError(
+                        "unsupported-device marker still exists in rebuilt dex"
+                    )
+
+                replacements[dex_name] = rebuilt_dex
+                dex_reports[dex_name] = report_for_dex
+                command_tails[dex_name] = {
+                    "baksmali_output_tail": "\n".join(
+                        disassemble_output.splitlines()[-20:]
+                    ),
+                    "smali_output_tail": "\n".join(
+                        assemble_output.splitlines()[-20:]
+                    ),
+                }
+
+            native_name, native_path, native_gxp_report = patch_gcastartup_cpu_fallback(
+                archive,
+                root,
+            )
+            replacements[native_name] = native_path
+
+        replace_zip_members(source, output, replacements)
+
+    with zipfile.ZipFile(output, "r") as archive:
+        remaining = []
+        for info in archive.infolist():
+            if DEX_NAME_RE.fullmatch(info.filename) and MARKER_BYTES in archive.read(info):
+                remaining.append(info.filename)
+    if remaining:
+        raise PatchError(
+            "unsupported-device marker still exists in patched dex: "
+            + ", ".join(remaining)
+        )
+
+    device_metadata = dex_reports[target_dex]["device_gate"]
+    gcam_metadata = dex_reports[gcam_init_dex]["gcam_init"]
+    motion_stabilizer_metadata = dex_reports[gcam_init_dex]["motion_stabilizer"]
+    onecamera_optional_metadata = dex_reports[gcam_init_dex]["onecamera_optional"]
+    onecamera_missing_request_key_metadata = dex_reports[gcam_init_dex][
+        "onecamera_missing_request_key"
+    ]
+    onecamera_open_camera_fallback_metadata = dex_reports[gcam_init_dex][
+        "onecamera_open_camera_fallback"
+    ]
+    onecamera_odr_missing_request_key_metadata = dex_reports[gcam_init_dex][
+        "onecamera_odr_missing_request_key"
+    ]
+    onecamera_camcorder_lookahead_eis_metadata = dex_reports[
+        camcorder_request_dex
+    ]["onecamera_camcorder_lookahead_eis"]
+    onecamera_session_parameter_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_session_parameter_logging"]
+    onecamera_final_output_configuration_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_final_output_configuration_logging"]
+    onecamera_output_configuration_logging_metadata = dex_reports[
+        session_config_dex
+    ]["onecamera_output_configuration_logging"]
+    keepalive_metadata = dex_reports[keepalive_dex]["keepalive"]
+
+    return {
+        "status": "patched",
+        "marker": MARKER,
+        "target_dex": target_dex,
+        **device_metadata,
+        "gcam_init_patch": {
+            "target_dex": gcam_init_dex,
+            **gcam_metadata,
+        },
+        "microvideo_motion_stabilizer_patch": {
+            "target_dex": gcam_init_dex,
+            **motion_stabilizer_metadata,
+        },
+        "onecamera_optional_key_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_optional_metadata,
+        },
+        "onecamera_missing_request_key_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_missing_request_key_metadata,
+        },
+        "onecamera_open_camera_fallback_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_open_camera_fallback_metadata,
+        },
+        "onecamera_odr_missing_request_key_patch": {
+            "target_dex": gcam_init_dex,
+            **onecamera_odr_missing_request_key_metadata,
+        },
+        "onecamera_camcorder_lookahead_eis_patch": {
+            "target_dex": camcorder_request_dex,
+            **onecamera_camcorder_lookahead_eis_metadata,
+        },
+        "onecamera_session_parameter_logging": {
+            "target_dex": session_config_dex,
+            **onecamera_session_parameter_logging_metadata,
+        },
+        "onecamera_final_output_configuration_logging": {
+            "target_dex": session_config_dex,
+            **onecamera_final_output_configuration_logging_metadata,
+        },
+        "onecamera_output_configuration_logging": {
+            "target_dex": session_config_dex,
+            **onecamera_output_configuration_logging_metadata,
+        },
+        "keepalive_receiver_patch": {
+            "target_dex": keepalive_dex,
+            **keepalive_metadata,
+        },
+        "native_gxp_cpu_fallback": native_gxp_report,
+        "dex_command_tails": command_tails,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--baksmali", required=True, type=Path)
+    parser.add_argument("--smali", required=True, type=Path)
+    parser.add_argument("--java", default="java")
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args()
+
+    try:
+        report = patch_apk(
+            args.input,
+            args.output,
+            baksmali=args.baksmali,
+            smali=args.smali,
+            java=args.java,
+        )
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+        )
+        name_matches = [
+            (index, name_re.match(lines[index].strip()))
+            for index in range(clinit_start, clinit_end)
+            if name_re.match(lines[index].strip())
+        ]
+        if len(name_matches) != 1:
+            raise PatchError(
+                f"sensor enum {descriptor} expected one {name!r} constant; "
+                f"found {len(name_matches)}"
+            )
+        name_index, name_match = name_matches[0]
+        assert name_match is not None
+        string_reg = name_match.group("reg")
+
+        constructor_re = re.compile(
+            r"^invoke-direct\s+\{"
+            r"(?P<object>v\d+),\s*"
+            + re.escape(string_reg)
+            + r",\s*(?P<value>v\d+)\},\s*"
+            + re.escape(descriptor)
+            + r"-><init>\(Ljava/lang/String;I\)V$"
+        )
+        constructors = [
+            (index, constructor_re.match(lines[index].strip()))
+            for index in range(name_index + 1, min(clinit_end, name_index + 18))
+            if constructor_re.match(lines[index].strip())
+        ]
+        if len(constructors) != 1:
+            raise PatchError(
+                f"sensor enum {name} constructor flow changed; "
+                f"found {len(constructors)} candidates"
+            )
+        constructor_index, constructor_match = constructors[0]
+        assert constructor_match is not None
+        object_reg = constructor_match.group("object")
+        value_reg = constructor_match.group("value")
+
+        const_re = re.compile(
+            rf"^const(?:/4|/16)?\s+{re.escape(value_reg)},\s*"
+            r"(?P<value>-?(?:0x[0-9a-fA-F]+|\d+))$"
+        )
+        value_assignments = [
+            (index, const_re.match(lines[index].strip()))
+            for index in range(name_index + 1, constructor_index)
+            if const_re.match(lines[index].strip())
+        ]
+        if len(value_assignments) != 1:
+            raise PatchError(
+                f"sensor enum {name} numeric assignment changed; "
+                f"found {len(value_assignments)} candidates"
+            )
+        _, value_match = value_assignments[0]
+        assert value_match is not None
+        actual_value = int(value_match.group("value"), 0)
+        if actual_value != expected_value:
+            raise PatchError(
+                f"sensor enum {name} value changed: "
+                f"expected {expected_value}, got {actual_value}"
+            )
+
+        sput_re = re.compile(
+            rf"^sput-object\s+{re.escape(object_reg)},\s*"
+            + re.escape(descriptor)
+            + r"->(?P<field>[A-Za-z0-9_$]+):"
+            + re.escape(descriptor)
+            + r"$"
+        )
+        sput_matches = [
+            (index, sput_re.match(lines[index].strip()))
+            for index in range(
+                constructor_index + 1,
+                min(clinit_end, constructor_index + 8),
+            )
+            if sput_re.match(lines[index].strip())
+        ]
+        if len(sput_matches) != 1:
+            raise PatchError(
+                f"sensor enum {name} field assignment changed; "
+                f"found {len(sput_matches)} candidates"
+            )
+        _, sput_match = sput_matches[0]
+        assert sput_match is not None
+        return sput_match.group("field")
+
+    rear_field = resolve("kRearLogical", 5)
+    front_field = resolve("kFrontLogical", 3)
+    if rear_field == front_field:
+        raise PatchError("rear/front logical sensor enum fields unexpectedly alias")
+
+    return {
+        "descriptor": descriptor,
+        "rear_field": rear_field,
+        "front_field": front_field,
+        "rear_value": 5,
+        "front_value": 3,
+        "source": "sensor_enum_clinit",
+        "smali_path": os.fspath(enum_path.relative_to(root)),
+    }
+
+
 def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
     matches: list[Path] = []
     for path in root.rglob("*.smali"):
