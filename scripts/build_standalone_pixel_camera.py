@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,15 @@ CERT_SHA256_RE = re.compile(
     r"Signer #\d+ certificate SHA-256 digest:\s*([0-9a-f:]{64,95})",
     re.IGNORECASE,
 )
+ANDROID_NS = "http://schemas.android.com/apk/res/android"
+ANDROID_NAME = f"{`{ANDROID_NS}`}name"
+ANDROID_REQUIRED = f"{`{ANDROID_NS}`}required"
+OPENCL_NATIVE_LIBRARIES = (
+    "libOpenCL.so",
+    "libOpenCL-car.so",
+    "libOpenCL-pixel.so",
+)
+ET.register_namespace("android", ANDROID_NS)
 
 
 class BuildError(RuntimeError):
@@ -129,6 +139,131 @@ def _match_or_none(pattern: re.Pattern[str], text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def patch_manifest_xml_text(text: str) -> tuple[str, dict[str, Any]]:
+    """Declare optional OpenCL libraries needed by modern Android linker namespaces."""
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise BuildError(f"decoded AndroidManifest.xml is not valid XML: {exc}") from exc
+
+    applications = root.findall("application")
+    if len(applications) != 1:
+        raise BuildError(
+            "expected exactly one <application> in decoded AndroidManifest.xml; "
+            f"found {len(applications)}"
+        )
+    application = applications[0]
+
+    existing: dict[str, ET.Element] = {}
+    for element in application.findall("uses-native-library"):
+        name = element.get(ANDROID_NAME)
+        if name not in OPENCL_NATIVE_LIBRARIES:
+            continue
+        if name in existing:
+            raise BuildError(
+                "duplicate OpenCL <uses-native-library> declaration for "
+                f"{name}"
+            )
+        existing[name] = element
+
+    added: list[str] = []
+    forced_optional: list[str] = []
+    for name in OPENCL_NATIVE_LIBRARIES:
+        element = existing.get(name)
+        if element is None:
+            element = ET.SubElement(application, "uses-native-library")
+            element.set(ANDROID_NAME, name)
+            added.append(name)
+        elif element.get(ANDROID_REQUIRED) != "false":
+            forced_optional.append(name)
+        element.set(ANDROID_REQUIRED, "false")
+
+    if hasattr(ET, "indent"):
+        ET.indent(root, space="    ")
+
+    rendered = ET.tostring(root, encoding="unicode")
+    if text.lstrip().startswith("<?xml"):
+        rendered = '<?xml version="1.0" encoding="utf-8"?>\n' + rendered
+    if not rendered.endswith("\n"):
+        rendered += "\n"
+
+    return rendered, {
+        "status": "patched",
+        "libraries": list(OPENCL_NATIVE_LIBRARIES),
+        "required": False,
+        "added": added,
+        "forced_optional": forced_optional,
+        "allow_native_heap_pointer_tagging_changed": False,
+    }
+
+
+def patch_manifest_with_apkeditor(
+    input_apk: Path,
+    output_apk: Path,
+    *,
+    apkeditor: Path,
+    java: str,
+) -> dict[str, Any]:
+    """Round-trip the merged APK with raw DEX preserved and patch its manifest."""
+
+    with tempfile.TemporaryDirectory(prefix="poco-f5-manifest-") as temp:
+        root = Path(temp)
+        decoded = root / "decoded"
+
+        decode_output = run(
+            [
+                java,
+                "-Xmx5g",
+                "-jar",
+                os.fspath(apkeditor),
+                "d",
+                "-i",
+                os.fspath(input_apk),
+                "-o",
+                os.fspath(decoded),
+                "-t",
+                "xml",
+                "-dex",
+                "-keep-res-path",
+                "-f",
+            ]
+        )
+
+        manifest = decoded / "AndroidManifest.xml"
+        if not manifest.is_file():
+            raise BuildError("APKEditor decode did not produce AndroidManifest.xml")
+
+        patched_text, metadata = patch_manifest_xml_text(
+            manifest.read_text(encoding="utf-8")
+        )
+        manifest.write_text(patched_text, encoding="utf-8")
+
+        build_output = run(
+            [
+                java,
+                "-Xmx5g",
+                "-jar",
+                os.fspath(apkeditor),
+                "b",
+                "-i",
+                os.fspath(decoded),
+                "-o",
+                os.fspath(output_apk),
+                "-t",
+                "xml",
+                "-f",
+            ]
+        )
+        ensure_android_zip(output_apk)
+
+    return {
+        **metadata,
+        "apkeditor_decode_tail": "\n".join(decode_output.splitlines()[-30:]),
+        "apkeditor_build_tail": "\n".join(build_output.splitlines()[-30:]),
+    }
+
+
 def signing_certificates(verify_output: str) -> list[str]:
     result: list[str] = []
     for match in CERT_SHA256_RE.finditer(verify_output):
@@ -185,6 +320,7 @@ def build_standalone(
     with tempfile.TemporaryDirectory(prefix="poco-f5-standalone-") as temp:
         root = Path(temp)
         merged = root / "merged.apk"
+        manifest_patched = root / "manifest-patched.apk"
         patched = root / "device-gate-patched.apk"
         aligned = root / "aligned.apk"
         signed = root / "signed.apk"
@@ -207,8 +343,16 @@ def build_standalone(
         )
         ensure_android_zip(merged)
 
-        device_gate_patch = patch_device_gate(
+        manifest_patch = patch_manifest_with_apkeditor(
             merged,
+            manifest_patched,
+            apkeditor=apkeditor,
+            java=java,
+        )
+        ensure_android_zip(manifest_patched)
+
+        device_gate_patch = patch_device_gate(
+            manifest_patched,
             patched,
             baksmali=baksmali,
             smali=smali,
@@ -312,6 +456,7 @@ def build_standalone(
         "transformations": [
             "merge_split_bundle_to_standalone_apk",
             "clean_obsolete_split_signature_metadata",
+            "declare_optional_opencl_native_libraries",
             "redirect_unsupported_device_gate_to_common_finalization",
             "disable_tensor_gxp_tpu_feature_queries_on_poco_f5",
             "disable_pixel_microvideo_motion_stabilizer_on_poco_f5",
@@ -330,7 +475,10 @@ def build_standalone(
             "native_model_verification_bypass_performed": False,
             "pairip_bypass_performed": False,
             "feature_splits_removed": False,
+            "opencl_native_library_visibility_declared": True,
+            "allow_native_heap_pointer_tagging_changed": False,
         },
+        "manifest_compatibility_patch": manifest_patch,
         "compatibility_patch": device_gate_patch,
         "runtime_validation": {
             "status": "not_run",
@@ -344,6 +492,12 @@ def build_standalone(
         },
         "tooling": {
             "apkeditor_output_tail": "\n".join(merge_output.splitlines()[-40:]),
+            "manifest_apkeditor_decode_tail": manifest_patch[
+                "apkeditor_decode_tail"
+            ],
+            "manifest_apkeditor_build_tail": manifest_patch[
+                "apkeditor_build_tail"
+            ],
         },
     }
 
