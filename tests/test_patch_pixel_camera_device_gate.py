@@ -1349,6 +1349,42 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
             metadata["sensor_vector_diagnostics"]["behavior_changed"],
         )
 
+    def test_sensor_enum_shape_diagnostic_reports_fields_and_clinit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            enum_path = root / "aaaj.smali"
+            enum_path.write_text(
+                """.class public final Laaaj;
+.super Ljava/lang/Object;
+
+.field public static final b:Laaaj;
+.field public static final q:Laaaj;
+
+.method static constructor <clinit>()V
+    .locals 3
+
+    new-instance v0, Laaaj;
+    const-string v1, "kRearLogical"
+    const/4 v2, 0x5
+    invoke-direct {v0, v1, v2}, Laaaj;-><init>(Ljava/lang/String;I)V
+    sput-object v0, Laaaj;->q:Laaaj;
+    return-void
+.end method
+""",
+                encoding="utf-8",
+            )
+            gcam = (
+                "invoke-virtual {v7}, "
+                "Lcom/google/googlex/gcam/StaticMetadata;->g()Laaaj;\n"
+            )
+
+            diagnostic = patcher._sensor_enum_shape_diagnostic(root, gcam)
+
+            self.assertIn("sensor enum descriptor: Laaaj;", diagnostic)
+            self.assertIn(".field public static final q:Laaaj;", diagnostic)
+            self.assertIn('const-string v1, "kRearLogical"', diagnostic)
+            self.assertIn("sput-object v0, Laaaj;->q:Laaaj;", diagnostic)
+
     def test_gcam_init_patch_fails_closed_when_sensor_id_guard_shape_changes(self):
         changed = GCAM_INIT_SAMPLE.replace(
             "invoke-virtual {v5}, Lcom/google/googlex/gcam/Gcam;->g()Z",
