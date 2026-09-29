@@ -18,7 +18,7 @@
   },
   "selection": "latest-compatible",
   "selected": {
-    "version": "11.0.073.972752740.32",
+    "version": "11.1.040.982810059.19",
     "min_api": 37,
     "min_android": "17",
     "architectures": [
@@ -27,7 +27,7 @@
     "dpis": [
       "nodpi"
     ],
-    "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-0-073-972752740-32-release/"
+    "release_url": "https://www.apkmirror.com/apk/google-inc/camera/pixel-camera-11-1-040-982810059-19-release/"
   },
-  "resolved_at": "2026-09-25T12:02:52Z"
+  "resolved_at": "2026-09-29T09:54:34Z"
 }
