@@ -14,6 +14,8 @@ on:
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
       - "tests/test_patch_pixel_camera_device_gate.py"
+      - "tests/test_patch_pixel_camera_opencl_guard.py"
+      - "tests/test_pixel_camera_session_identity.py"
       - "tests/test_analyze_pixel_camera_native.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
@@ -32,6 +34,8 @@ on:
       - "tests/test_inspect_apkm.py"
       - "tests/test_build_standalone_pixel_camera.py"
       - "tests/test_patch_pixel_camera_device_gate.py"
+      - "tests/test_patch_pixel_camera_opencl_guard.py"
+      - "tests/test_pixel_camera_session_identity.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
@@ -115,7 +119,7 @@ jobs:
             esac
 
             case "$file" in
-              tools/OpenClManifestPatcher.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              tools/OpenClManifestPatcher.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/patch_pixel_camera_opencl_guard.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_patch_pixel_camera_opencl_guard.py|tests/test_pixel_camera_session_identity.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -293,6 +297,7 @@ jobs:
           python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
           python -m unittest tests.test_patch_pixel_camera_device_gate -v
+          python -m unittest tests.test_patch_pixel_camera_opencl_guard tests.test_pixel_camera_session_identity -v
           python -m unittest tests.test_analyze_pixel_camera_native -v
 
       - name: Resolve newest compatible Pixel Camera
