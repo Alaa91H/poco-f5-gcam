@@ -297,6 +297,12 @@ public final class MainActivity extends Activity {
 
             camera.put("normalized", normalized);
 
+            JSONArray requestKeyNames = new JSONArray();
+            for (android.hardware.camera2.CaptureRequest.Key<?> key : c.getAvailableCaptureRequestKeys()) {
+                requestKeyNames.put(key.getName());
+            }
+            camera.put("captureRequestKeyNames", requestKeyNames);
+
             StreamConfigurationMap map =
                     c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             camera.put("streamConfiguration", buildStreamConfiguration(map));

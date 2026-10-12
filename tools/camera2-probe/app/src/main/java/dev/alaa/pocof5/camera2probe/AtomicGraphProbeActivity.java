@@ -6,17 +6,24 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
+import android.graphics.Rect;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureFailure;
+import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.InputConfiguration;
 import android.hardware.camera2.params.OutputConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
+import android.media.Image;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -40,6 +47,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Runs one fully parameterized Camera2 graph in an isolated app lifetime. */
 public final class AtomicGraphProbeActivity extends Activity {
@@ -98,6 +107,10 @@ public final class AtomicGraphProbeActivity extends Activity {
         ensureCameraThread();
         executor.execute(() -> {
             try {
+                File previousReport = new File(getFilesDir(), REPORT_NAME);
+                if (previousReport.exists() && !previousReport.delete()) {
+                    throw new IllegalStateException("Cannot clear previous atomic graph report");
+                }
                 JSONObject report = probe();
                 File output = new File(getFilesDir(), REPORT_NAME);
                 try (OutputStreamWriter writer = new OutputStreamWriter(
@@ -125,9 +138,30 @@ public final class AtomicGraphProbeActivity extends Activity {
 
         int previewWidth = getIntent().getIntExtra("previewWidth", 1280);
         int previewHeight = getIntent().getIntExtra("previewHeight", 720);
+        int yuvWidth = getIntent().getIntExtra("yuvWidth", previewWidth);
+        int yuvHeight = getIntent().getIntExtra("yuvHeight", previewHeight);
+        int jpegWidth = getIntent().getIntExtra("jpegWidth", 4624);
+        int jpegHeight = getIntent().getIntExtra("jpegHeight", 2600);
         int privateMax = getIntent().getIntExtra("privateMax", 11);
         int rawMax = getIntent().getIntExtra("rawMax", 30);
         int yuvMax = getIntent().getIntExtra("yuvMax", 52);
+        int targetFrames = getIntent().getIntExtra("targetFrames", 0);
+        if (targetFrames < 0 || targetFrames > 120) {
+            throw new IllegalArgumentException("targetFrames must be between 0 and 120");
+        }
+        int sceneMode = getIntent().getIntExtra("sceneMode", -1);
+        int controlMode = getIntent().getIntExtra("controlMode", CaptureRequest.CONTROL_MODE_AUTO);
+        int faceDetectMode = getIntent().getIntExtra("faceDetectMode", -1);
+        int lensShadingMode = getIntent().getIntExtra("lensShadingMode", -1);
+        int rawCbSourceType = getIntent().getIntExtra("rawCbSourceType", -1);
+        int idealRaw = getIntent().getIntExtra("idealRaw", -1);
+        int requestTemplate = getIntent().getIntExtra("requestTemplate", CameraDevice.TEMPLATE_PREVIEW);
+        int captureIntent = getIntent().getIntExtra("captureIntent", -1);
+        if (requestTemplate < 1 || requestTemplate > 6 || captureIntent < -1 || captureIntent > 6) {
+            throw new IllegalArgumentException("Invalid request template or capture intent");
+        }
+        boolean repeatRaw = getIntent().getBooleanExtra("repeatRaw", true);
+        boolean pixelCrop = getIntent().getBooleanExtra("pixelCrop", false);
         long privateUsage = getIntent().getLongExtra("privateUsage", -1L);
         long rawUsage = getIntent().getLongExtra("rawUsage", -1L);
         long yuvUsage = getIntent().getLongExtra("yuvUsage", -1L);
@@ -152,8 +186,10 @@ public final class AtomicGraphProbeActivity extends Activity {
         Size privateSize = findExact(map.getOutputSizes(ImageFormat.PRIVATE),
                 previewWidth, previewHeight);
         Size yuvSize = findExact(map.getOutputSizes(ImageFormat.YUV_420_888),
-                previewWidth, previewHeight);
-        Size rawSize = largest(map.getOutputSizes(ImageFormat.RAW10));
+                yuvWidth, yuvHeight);
+        Size jpegSize = findExact(map.getOutputSizes(ImageFormat.JPEG), jpegWidth, jpegHeight);
+        int rawFormat = streamNames.contains("raw16") ? ImageFormat.RAW_SENSOR : ImageFormat.RAW10;
+        Size rawSize = largest(map.getOutputSizes(rawFormat));
 
         JSONObject root = new JSONObject();
         root.put("cameraId", cameraId);
@@ -169,11 +205,31 @@ public final class AtomicGraphProbeActivity extends Activity {
         root.put("fps", fpsLower + "-" + fpsUpper);
         root.put("privateUsage", privateUsage);
         root.put("rawUsage", rawUsage);
+        root.put("rawCbSourceType", rawCbSourceType);
+        root.put("idealRaw", idealRaw);
+        root.put("requestTemplate", requestTemplate);
+        root.put("captureIntent", captureIntent);
+        root.put("repeatRaw", repeatRaw);
         root.put("yuvUsage", yuvUsage);
         root.put("inputFormat", inputFormatName == null ? JSONObject.NULL : inputFormatName);
         root.put("inputSize", inputWidth + "x" + inputHeight);
         List<ImageReader> readers = new ArrayList<>();
         List<Surface> surfaces = new ArrayList<>();
+        MediaCodec encoder = null;
+        Surface encoderSurface = null;
+        if (streamNames.contains("encoder-real")) {
+            if (targetFrames != 0) throw new IllegalArgumentException("Real encoder probe is configuration-only");
+            MediaFormat format = MediaFormat.createVideoFormat("video/hevc", previewWidth, previewHeight);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 8000000);
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+            encoder = MediaCodec.createEncoderByType("video/hevc");
+            encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            encoderSurface = encoder.createInputSurface();
+            encoder.start();
+            root.put("encoderName", encoder.getName());
+        }
         JSONArray actualStreams = new JSONArray();
 
         for (String streamName : streamNames) {
@@ -185,29 +241,60 @@ public final class AtomicGraphProbeActivity extends Activity {
                         privateSize,
                         ImageFormat.PRIVATE, privateMax, privateUsage);
                 actualStreams.put(streamJson("PRIVATE", privateSize, privateMax));
-            } else if ("raw10".equals(name)) {
+            } else if ("raw10".equals(name) || "raw16".equals(name)) {
                 requireSize("RAW10", rawSize);
                 reader = buildReader(
                         rawSize,
-                        ImageFormat.RAW10, rawMax, rawUsage);
-                actualStreams.put(streamJson("RAW10", rawSize, rawMax));
+                        rawFormat, rawMax, rawUsage);
+                actualStreams.put(streamJson(name.toUpperCase(), rawSize, rawMax));
             } else if ("yuv".equals(name)) {
                 requireSize("YUV", yuvSize);
                 reader = buildReader(
                         yuvSize,
                         ImageFormat.YUV_420_888, yuvMax, yuvUsage);
                 actualStreams.put(streamJson("YUV_420_888", yuvSize, yuvMax));
+            } else if ("jpeg".equals(name)) {
+                requireSize("JPEG", jpegSize);
+                reader = buildReader(jpegSize, ImageFormat.JPEG, 5, -1L);
+                actualStreams.put(streamJson("JPEG", jpegSize, 5));
+            } else if ("encoder-surrogate".equals(name) || "encoder-real".equals(name)) {
+                requireSize("encoder surrogate", privateSize);
+                reader = buildReader(privateSize, ImageFormat.PRIVATE, 4, 65536L);
+                actualStreams.put(streamJson("encoder-real".equals(name) ? "ENCODER_HEVC_SURFACE" : "ENCODER_SURROGATE_PRIVATE", privateSize, 4));
             } else {
                 throw new IllegalArgumentException("Unknown stream: " + streamName);
             }
             readers.add(reader);
-            surfaces.add(reader.getSurface());
+            surfaces.add("encoder-real".equals(name) ? encoderSurface : reader.getSurface());
         }
         root.put("actualStreams", actualStreams);
         AtomicReference<CameraDevice> deviceRef = new AtomicReference<>();
         AtomicReference<CameraCaptureSession> sessionRef = new AtomicReference<>();
+        AtomicBoolean sessionConfigured = new AtomicBoolean();
         AtomicReference<String> errorRef = new AtomicReference<>();
         CountDownLatch done = new CountDownLatch(1);
+        AtomicInteger captureResults = new AtomicInteger();
+        List<AtomicInteger> frameCounts = new ArrayList<>();
+        int targetReader = 0;
+        for (int i = 0; i < readers.size(); i++) {
+            if (readers.get(i).getImageFormat() == ImageFormat.YUV_420_888) targetReader = i;
+            frameCounts.add(new AtomicInteger());
+        }
+        final int countedReader = targetReader;
+        if (targetFrames > 0) {
+            for (int i = 0; i < readers.size(); i++) {
+                final int index = i;
+                readers.get(i).setOnImageAvailableListener(reader -> {
+                    try (Image image = reader.acquireNextImage()) {
+                        if (image != null && frameCounts.get(index).incrementAndGet() >= targetFrames
+                                && index == countedReader) done.countDown();
+                    } catch (Exception e) {
+                        errorRef.compareAndSet(null, "acquireImage: " + e);
+                        done.countDown();
+                    }
+                }, cameraHandler);
+            }
+        }
         long startNs = System.nanoTime();
         String finalCameraId = cameraId;
 
@@ -221,7 +308,54 @@ public final class AtomicGraphProbeActivity extends Activity {
                                 @Override
                                 public void onConfigured(CameraCaptureSession session) {
                                     sessionRef.set(session);
-                                    done.countDown();
+                                    sessionConfigured.set(true);
+                                    if (targetFrames == 0) {
+                                        done.countDown();
+                                        return;
+                                    }
+                                    try {
+                                        CaptureRequest.Builder request = camera.createCaptureRequest(
+                                                requestTemplate);
+                                        for (int i = 0; i < surfaces.size(); i++) {
+                                            int format = readers.get(i).getImageFormat();
+                                            if (format == ImageFormat.JPEG) continue;
+                                            if (repeatRaw || (format != ImageFormat.RAW10 && format != ImageFormat.RAW_SENSOR)) {
+                                                request.addTarget(surfaces.get(i));
+                                            }
+                                        }
+                                        request.set(CaptureRequest.CONTROL_MODE, controlMode);
+                                        if (captureIntent >= 0) request.set(CaptureRequest.CONTROL_CAPTURE_INTENT, captureIntent);
+                                        if (videoStab >= 0) request.set(
+                                                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStab);
+                                        if (fpsLower >= 0 && fpsUpper >= 0) request.set(
+                                                CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                                new Range<>(fpsLower, fpsUpper));
+                                        if (sceneMode >= 0) request.set(CaptureRequest.CONTROL_SCENE_MODE, sceneMode);
+                                        if (faceDetectMode >= 0) request.set(
+                                                CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceDetectMode);
+                                        if (lensShadingMode >= 0) request.set(
+                                                CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, lensShadingMode);
+                                        if (pixelCrop) request.set(CaptureRequest.SCALER_CROP_REGION,
+                                                new Rect(0, 2, 4624, 3470));
+                                        session.setRepeatingRequest(request.build(),
+                                                new CameraCaptureSession.CaptureCallback() {
+                                                    @Override
+                                                    public void onCaptureCompleted(CameraCaptureSession s,
+                                                            CaptureRequest r, TotalCaptureResult result) {
+                                                        captureResults.incrementAndGet();
+                                                    }
+                                                    @Override
+                                                    public void onCaptureFailed(CameraCaptureSession s,
+                                                            CaptureRequest r, CaptureFailure failure) {
+                                                        errorRef.compareAndSet(null,
+                                                                "captureFailed=" + failure.getReason());
+                                                        done.countDown();
+                                                    }
+                                                }, cameraHandler);
+                                    } catch (Exception e) {
+                                        errorRef.compareAndSet(null, "repeat: " + e);
+                                        done.countDown();
+                                    }
                                 }
 
                                 @Override
@@ -247,7 +381,7 @@ public final class AtomicGraphProbeActivity extends Activity {
                                 outputs,
                                 command -> cameraHandler.post(command),
                                 cb);
-                        if (clientName != null || videoStab >= 0
+                        if (clientName != null || videoStab >= 0 || rawCbSourceType >= 0 || idealRaw >= 0
                                 || (fpsLower >= 0 && fpsUpper >= 0)) {
                             CaptureRequest.Builder builder =
                                     camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
@@ -259,6 +393,14 @@ public final class AtomicGraphProbeActivity extends Activity {
                             if (videoStab >= 0) {
                                 builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
                                         videoStab);
+                            }
+                            if (rawCbSourceType >= 0) {
+                                builder.set(new CaptureRequest.Key<Integer>(
+                                        "org.codeaurora.qcamera3.sessionParameters.RawCbSourceType", Integer.class), rawCbSourceType);
+                            }
+                            if (idealRaw >= 0) {
+                                builder.set(new CaptureRequest.Key<Byte>(
+                                        "org.codeaurora.qcamera3.sessionParameters.EnableIdealRAW", Byte.class), (byte) idealRaw);
                             }
                             if (fpsLower >= 0 && fpsUpper >= 0) {
                                 builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -320,7 +462,19 @@ public final class AtomicGraphProbeActivity extends Activity {
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
         String error = errorRef.get();
         root.put("completed", completed);
-        root.put("configured", completed && error == null && sessionRef.get() != null);
+        root.put("configured", sessionConfigured.get());
+        root.put("targetFrames", targetFrames);
+        root.put("captureResults", captureResults.get());
+        root.put("capturePassed", targetFrames == 0 ? JSONObject.NULL :
+                completed && error == null && frameCounts.get(countedReader).get() >= targetFrames);
+        root.put("sceneMode", sceneMode);
+        root.put("controlMode", controlMode);
+        root.put("faceDetectMode", faceDetectMode);
+        root.put("lensShadingMode", lensShadingMode);
+        root.put("pixelCrop", pixelCrop);
+        for (int i = 0; i < frameCounts.size(); i++) {
+            actualStreams.getJSONObject(i).put("framesReceived", frameCounts.get(i).get());
+        }
         root.put("elapsedMs", elapsedMs);
         root.put("error", error == null ? JSONObject.NULL : error);
 
@@ -329,6 +483,11 @@ public final class AtomicGraphProbeActivity extends Activity {
         CameraDevice device = deviceRef.get();
         if (device != null) device.close();
         for (ImageReader reader : readers) reader.close();
+        if (encoder != null) {
+            encoder.stop();
+            encoder.release();
+            encoderSurface.release();
+        }
         return root;
     }
     private static ImageReader buildReader(

@@ -4,6 +4,8 @@ plugins {
 
 def probeApplicationId = providers.gradleProperty("probeApplicationId")
         .getOrElse("dev.alaa.pocof5.camera2probe")
+def probeVersionCode = providers.gradleProperty("probeVersionCode")
+        .map { it.toInteger() }.getOrElse(1)
 
 android {
     namespace "dev.alaa.pocof5.camera2probe"
@@ -13,7 +15,7 @@ android {
         applicationId probeApplicationId
         minSdk 23
         targetSdk 37
-        versionCode 1
+        versionCode probeVersionCode
         // Keep this in sync with scripts/run-camera2-probe.ps1.
         versionName "0.4.6"
     }

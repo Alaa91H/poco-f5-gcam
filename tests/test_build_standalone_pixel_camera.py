@@ -188,6 +188,21 @@ E: manifest (line=1)
         )
         self.assertFalse(result["required"])
 
+    def test_final_manifest_verification_handles_aapt2_boolean_literals(self):
+        sample = '\n'.join(
+            '    E: uses-native-library (line=3)\n'
+            f'      A: android:name(0x01010003)="{name}"\n'
+            '      A: http://schemas.android.com/apk/res/android:required(0x0101028e)=false'
+            for name in builder.OPENCL_NATIVE_LIBRARIES
+        )
+        with mock.patch.object(builder, "run", return_value=sample):
+            self.assertEqual(builder.verify_optional_opencl_manifest(
+                Path("camera.apk"), "aapt2")["status"], "verified")
+        for invalid in ('true', 'falsehood'):
+            with mock.patch.object(builder, "run", return_value=sample.replace('=false', '=' + invalid)):
+                with self.assertRaises(builder.BuildError):
+                    builder.verify_optional_opencl_manifest(Path("camera.apk"), "aapt2")
+
     def test_final_manifest_verification_rejects_required_opencl_entry(self):
         sample = """
 E: manifest (line=1)

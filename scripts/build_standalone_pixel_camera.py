@@ -354,6 +354,7 @@ def verify_optional_opencl_manifest(
         required_false = (
             re.search(r"\(type 0x12\)0x0(?:\s|$)", required_line) is not None
             or '"false"' in required_line
+            or re.search(r"=false\s*$", required_line) is not None
         )
         if not required_false:
             raise BuildError(
