@@ -16,10 +16,12 @@ on:
       - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_patch_pixel_camera_opencl_guard.py"
       - "tests/test_pixel_camera_session_identity.py"
+      - "tests/test_select_pixel_camera_build_source.py"
       - "tests/test_analyze_pixel_camera_native.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
+      - "device/marble/compatibility-source.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
@@ -36,9 +38,11 @@ on:
       - "tests/test_patch_pixel_camera_device_gate.py"
       - "tests/test_patch_pixel_camera_opencl_guard.py"
       - "tests/test_pixel_camera_session_identity.py"
+      - "tests/test_select_pixel_camera_build_source.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
+      - "device/marble/compatibility-source.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
       - ".github/workflows/build.yml"
@@ -119,7 +123,7 @@ jobs:
             esac
 
             case "$file" in
-              tools/OpenClManifestPatcher.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/patch_pixel_camera_opencl_guard.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_patch_pixel_camera_opencl_guard.py|tests/test_pixel_camera_session_identity.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              tools/OpenClManifestPatcher.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/patch_pixel_camera_opencl_guard.py|scripts/select_pixel_camera_build_source.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_patch_pixel_camera_opencl_guard.py|tests/test_pixel_camera_session_identity.py|tests/test_select_pixel_camera_build_source.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/compatibility-source.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -297,7 +301,7 @@ jobs:
           python -m unittest tests.test_plan_device_splits -v
           python -m unittest tests.test_build_standalone_pixel_camera -v
           python -m unittest tests.test_patch_pixel_camera_device_gate -v
-          python -m unittest tests.test_patch_pixel_camera_opencl_guard tests.test_pixel_camera_session_identity -v
+          python -m unittest tests.test_patch_pixel_camera_opencl_guard tests.test_pixel_camera_session_identity tests.test_select_pixel_camera_build_source -v
           python -m unittest tests.test_analyze_pixel_camera_native -v
 
       - name: Resolve newest compatible Pixel Camera
@@ -358,6 +362,13 @@ jobs:
           echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
           echo "- Rebuild compatibility-patched APK: `$ENABLED`" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Select download source for audit or compatibility build
+        id: source
+        shell: bash
+        run: |
+          python scripts/select_pixel_camera_build_source.py \
+            --standalone "${{ steps.standalone.outputs.enabled }}" >> "$GITHUB_OUTPUT"
+
       - name: Verify live APKMirror download path
         run: |
           python scripts/download_latest_pixel_camera.py \
@@ -365,7 +376,7 @@ jobs:
             --resolve-only \
             --json
 
-      - name: Download latest compatible Pixel Camera
+      - name: Download selected Pixel Camera source
         if: >-
           github.event_name == 'workflow_dispatch' ||
           steps.standalone.outputs.enabled == 'true' ||
@@ -376,7 +387,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pixel-camera"
 
           python scripts/download_latest_pixel_camera.py \
-            --lock device/marble/upstream/pixel-camera.json \
+            --lock "${{ steps.source.outputs.lock }}" \
             --output-dir "$RUNNER_TEMP/pixel-camera" \
             --json | tee "$RUNNER_TEMP/pixel-camera-download.json"
 
@@ -390,7 +401,7 @@ jobs:
             echo ""
             echo "### Download"
             echo ""
-            echo "Latest compatible Pixel Camera was downloaded and SHA-256 verified on the ephemeral GitHub runner."
+            echo "Selected Pixel Camera source was downloaded and SHA-256 verified on the ephemeral GitHub runner."
             echo "The proprietary APK/APKM is not committed to this repository."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -494,7 +505,7 @@ jobs:
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
-          name: poco-f5-pixel-camera-original-splits-${{ steps.selected.outputs.version }}
+          name: poco-f5-pixel-camera-original-splits-${{ steps.source.outputs.version }}
           path: |
             ${{ env.PIXEL_CAMERA_SOURCE }}
             ${{ runner.temp }}/pixel-camera-audit.json
@@ -654,7 +665,7 @@ jobs:
 
           META="$RUNNER_TEMP/pixel-camera-download.json"
           SOURCE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
-          VERSION="${{ steps.selected.outputs.version }}"
+          VERSION="${{ steps.source.outputs.version }}"
           OUT_DIR="$RUNNER_TEMP/poco-f5-standalone"
           APK="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.apk"
           REPORT="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.build.json"
@@ -715,7 +726,7 @@ jobs:
           steps.standalone.outputs.enabled == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: compatibility-patched-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
+          name: compatibility-patched-unvalidated-poco-f5-pixel-camera-${{ steps.source.outputs.version }}
           path: |
             ${{ env.STANDALONE_APK }}
             ${{ env.STANDALONE_REPORT }}
@@ -858,7 +869,7 @@ jobs:
           fi
 
           PACKAGE_PATH="$STANDALONE_APK"
-          VERSION="${{ steps.selected.outputs.version }}"
+          VERSION="${{ steps.source.outputs.version }}"
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
           SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
           SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
@@ -983,7 +994,7 @@ jobs:
           (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
         uses: actions/upload-artifact@v7
         with:
-          name: pixel-camera-audit-${{ steps.selected.outputs.version }}
+          name: pixel-camera-audit-${{ steps.source.outputs.version }}
           path: ${{ runner.temp }}/pixel-camera-audit.json
           if-no-files-found: error
 
