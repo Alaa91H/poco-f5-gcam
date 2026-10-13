@@ -630,7 +630,8 @@ class PixelCameraDeviceGatePatchTests(unittest.TestCase):
         self.assertIn(":poco_nontensor_orig_x", patched)
         self.assertEqual(
             metadata["forced_false_patterns"],
-            ["camera.micro_prestab", "camera.micro_ls_always_prestab",
+            ["camera.ddepth_front", "camera.ddepth_rear",
+             "camera.micro_prestab", "camera.micro_ls_always_prestab",
              "camera.lasagna*", "*use_tpu*", "*darwinn*", "*edgetpu*"],
         )
 
@@ -1700,6 +1701,14 @@ class MicrovideoMotionStabilizerPatchTests(unittest.TestCase):
 
 
 class MotionStabilizationGuardTests(unittest.TestCase):
+    def test_unsupported_dynamic_depth_cannot_be_reenabled_by_preferences(self):
+        patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
+        for method in ("q", "x"):
+            for flag in ("camera.ddepth_front", "camera.ddepth_rear"):
+                with self.subTest(method=method, flag=flag):
+                    self.assertFalse(execute_query(patched, method, flag))
+            self.assertTrue(execute_query(patched, method, "camera.ddepth_front_extra"))
+
     def test_disables_both_routes_to_pixel_motion_stabilizer(self):
         patched, _ = patcher.patch_nontensor_flag_queries(query_fixture())
         for method in ("q", "x"):

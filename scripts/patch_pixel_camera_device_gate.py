@@ -443,18 +443,38 @@ def patch_native_bytes(
     return bytes(mutable), report
 
 
+def native_patch_profile(data: bytes) -> dict[str, Any]:
+    """Select reviewed instructions by library identity, never by latest-version guess."""
+    digest = hashlib.sha256(data).hexdigest()
+    if digest == GCASTARTUP_11_0_073_SHA256:
+        return {'patches': GCASTARTUP_NATIVE_PATCHES,
+                'tuning_offset': 0x6924548, 'tuning_target': 'cbz 0x6924c20',
+                'flag_offset': 0x692453C, 'flag_bytes': bytes.fromhex('c9224b39'),
+                'aion_offset': 0x682E610, 'aion_target': 'tbnz 0x682e624'}
+    if digest == '142f699b735372c2b7dbf6f950bf9163c5cb5d9ccf9903592ca28673c2c6f434':
+        # 11.1: four sites retain identical surrounding instructions. The
+        # tuning branch now loads w8 then branches directly to the abort log;
+        # its fallthrough references the existing uncalibrated-tuning log.
+        offsets = (0x354E1B8, 0x320072C, 0x354E288, 0x69C38EC, 0x68C1A58)
+        patches = tuple(
+            (name, offset, bytes.fromhex('a8140034') if index == 3 else before, after)
+            for index, ((name, _, before, after), offset)
+            in enumerate(zip(GCASTARTUP_NATIVE_PATCHES, offsets))
+        )
+        return {'patches': patches,
+                'tuning_offset': 0x69C38EC, 'tuning_target': 'cbz 0x69c3b80',
+                'flag_offset': 0x69C38E8, 'flag_bytes': bytes.fromhex('c8224b39'),
+                'aion_offset': 0x68C1A58, 'aion_target': 'tbnz 0x68c1a6c'}
+    raise PatchError(f'libgcastartup SHA-256 changed; no reviewed native patch profile for {digest}')
+
+
 def _verify_uncalibrated_tuning_branch(data: bytes) -> dict[str, Any]:
     """Verify the exact unknown-device branch before enabling fallback."""
 
     digest = hashlib.sha256(data).hexdigest()
-    if digest != GCASTARTUP_11_0_073_SHA256:
-        raise PatchError(
-            "libgcastartup SHA-256 changed; refusing version-specific tuning "
-            f"fallback patch: expected {GCASTARTUP_11_0_073_SHA256}, found {digest}"
-        )
-
-    offset = TUNING_FALLBACK_PATCHES[0][1]
-    expected = TUNING_FALLBACK_PATCHES[0][2]
+    profile = native_patch_profile(data)
+    offset = profile['tuning_offset']
+    expected = profile['patches'][3][2]
     actual = data[offset : offset + len(expected)]
     if actual != expected:
         raise PatchError(
@@ -464,14 +484,14 @@ def _verify_uncalibrated_tuning_branch(data: bytes) -> dict[str, Any]:
 
     word = struct.unpack_from("<I", data, offset)[0]
     decoded = _decode_aarch64_branch(word, offset)
-    if decoded != "cbz 0x6924c20":
+    if decoded != profile['tuning_target']:
         raise PatchError(
             "unexpected unknown-device tuning branch semantics at "
             f"0x{offset:x}: {decoded!r}"
         )
 
-    load_offset = 0x692453C
-    expected_load = bytes.fromhex("c9224b39")
+    load_offset = profile['flag_offset']
+    expected_load = profile['flag_bytes']
     actual_load = data[load_offset : load_offset + 4]
     if actual_load != expected_load:
         raise PatchError(
@@ -495,13 +515,8 @@ def _verify_aion_nonfatal_branch(data: bytes) -> dict[str, Any]:
     """Verify AION's existing invalid-context non-fatal return path."""
 
     digest = hashlib.sha256(data).hexdigest()
-    if digest != GCASTARTUP_11_0_073_SHA256:
-        raise PatchError(
-            "libgcastartup SHA-256 changed; refusing version-specific AION "
-            f"fallback patch: expected {GCASTARTUP_11_0_073_SHA256}, found {digest}"
-        )
-
-    sequence_offset = 0x682E600
+    profile = native_patch_profile(data)
+    sequence_offset = profile['aion_offset'] - 16
     expected_sequence = bytes.fromhex(
         "1f000071"  # cmp w0, #0
         "e8179f1a"  # cset w8, eq
@@ -519,10 +534,10 @@ def _verify_aion_nonfatal_branch(data: bytes) -> dict[str, Any]:
             f"found {actual_sequence.hex()}"
         )
 
-    branch_offset = AION_FALLBACK_PATCHES[0][1]
+    branch_offset = profile['aion_offset']
     branch_word = struct.unpack_from("<I", data, branch_offset)[0]
     decoded = _decode_aarch64_branch(branch_word, branch_offset)
-    if decoded != "tbnz 0x682e624":
+    if decoded != profile['aion_target']:
         raise PatchError(
             "unexpected AION strict-failure branch semantics at "
             f"0x{branch_offset:x}: {decoded!r}"
@@ -555,7 +570,9 @@ def patch_gcastartup_cpu_fallback(
     tuning_diagnostics = analyze_libgcam_tuning(original)
     tuning_fallback_verification = _verify_uncalibrated_tuning_branch(original)
     aion_fallback_verification = _verify_aion_nonfatal_branch(original)
-    patched, instruction_report = patch_native_bytes(original)
+    patched, instruction_report = patch_native_bytes(
+        original, patches=native_patch_profile(original)['patches'],
+    )
     output = root / "libgcastartup-cpu-fallback.so"
     output.write_bytes(patched)
 
@@ -1245,7 +1262,9 @@ def _inject_camera_source_runtime_diagnostics(
     top_null_index = top_index + 1
     while top_null_index < len(lines) and not lines[top_null_index].strip():
         top_null_index += 1
-    if top_null_index >= len(lines) or lines[top_null_index].strip() != "if-eqz v7, :cond_131":
+    if top_null_index >= len(lines) or not re.fullmatch(
+        r"if-eqz v7, :[A-Za-z0-9_.$-]+", lines[top_null_index].strip()
+    ):
         raise PatchError("top-level Luuv camera-ID null guard changed")
 
     top_call_index = top_null_index + 1
@@ -1425,7 +1444,100 @@ def _inject_sensor_vector_runtime_diagnostics(
     }
 
 
-def patch_gcam_init_smali_text(text: str) -> tuple[str, dict[str, Any]]:
+def patch_gcam_init_smali_text(
+    text: str, *, metadata_interface_text: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve renamed metadata roles, retaining the existing data-flow checks."""
+    if 'sget-object v0, Luve;->b:Luve;' in text:
+        return _patch_gcam_init_canonical(text)
+
+    def one(pattern: str, role: str) -> tuple[str, ...]:
+        matches = set(re.findall(pattern, text))
+        if len(matches) != 1:
+            raise PatchError(f'Cannot resolve unique GCam {role}: {len(matches)} matches')
+        match = matches.pop()
+        return match if isinstance(match, tuple) else (match,)
+
+    facing, = one(r'sget-object v0, (L[^;]+;)->b:\1', 'lens facing')
+    provider, camera_id, metadata = one(
+        r'invoke-interface \{v2, v5\}, (L[^;]+;)->a\((L[^;]+;)\)(L[^;]+;)',
+        'metadata provider',
+    )
+    interface_set = re.findall(
+        r'invoke-interface/range \{v24 \.\. v24\}, ' + re.escape(metadata)
+        + r'->([A-Za-z0-9_$]+)\(\)Ljava/util/Set;\s+move-result-object v5', text
+    )
+    interface_id = None
+    if interface_set:
+        if len(interface_set) != 1 or metadata_interface_text is None:
+            raise PatchError('Cannot resolve unique physical-set interface accessor')
+        id_methods = re.findall(
+            r'\.method public abstract ([A-Za-z0-9_$]+)\(\)' + re.escape(camera_id),
+            metadata_interface_text,
+        )
+        if len(id_methods) != 1:
+            raise PatchError('Cannot resolve unique camera-ID interface accessor')
+        interface_id = id_methods[0]
+        physical, physical_set = 'Luur;', 'Lyfm;'
+    else:
+        physical, physical_set = one(
+            r'iget-object v5, v5, (L[^;]+;)->b:(L[^;]+;)', 'physical camera set'
+        )
+    sensor, = one(
+        r'Lcom/google/googlex/gcam/StaticMetadata;->g\(\)(L[^;]+;)', 'sensor enum'
+    )
+    converter, = one(
+        r'invoke-static \{v5\}, Lcom/google/googlex/gcam/hdrplus/'
+        r'NativeMetadataConverter;->([A-Za-z0-9_$]+)\('
+        + re.escape(metadata) + r'\)Lcom/google/googlex/gcam/StaticMetadata;',
+        'metadata converter',
+    )
+    roles = dict(zip(
+        (facing, provider, camera_id, metadata, physical, physical_set, sensor),
+        ('Luve;', 'Luut;', 'Luuv;', 'Luus;', 'Luur;', 'Lyfm;', 'Lzoi;'),
+    ))
+    if len(roles) != 7:
+        raise PatchError('GCam metadata roles are not distinct')
+    for actual, canonical in roles.items():
+        if actual != canonical and canonical in text:
+            raise PatchError(f'Ambiguous GCam role normalization: {canonical}')
+    type_pattern = re.compile(r'L[^;\s()]+;')
+    normalized = type_pattern.sub(lambda m: roles.get(m[0], m[0]), text)
+    converter_prefix = 'Lcom/google/googlex/gcam/hdrplus/NativeMetadataConverter;->'
+    actual_call = converter_prefix + converter + '(Luus;)'
+    canonical_call = converter_prefix + 'C(Luus;)'
+    normalized = normalized.replace(actual_call, canonical_call)
+    field_set_flow = (
+        'move-object/from16 v5, v24\n\n    check-cast v5, Luur;\n\n'
+        '    iget-object v5, v5, Luur;->b:Lyfm;'
+    )
+    if interface_id is not None:
+        normalized = re.sub(
+            r'invoke-interface/range \{v24 \.\. v24\}, Luus;->'
+            + re.escape(interface_set[0])
+            + r'\(\)Ljava/util/Set;\s+move-result-object v5',
+            lambda _: field_set_flow, normalized,
+        )
+    patched, report = _patch_gcam_init_canonical(normalized)
+    if interface_id is not None:
+        patched = patched.replace(
+            field_set_flow,
+            'invoke-interface/range {v24 .. v24}, Luus;->' + interface_set[0]
+            + '()Ljava/util/Set;\n\n    move-result-object v5',
+        )
+        patched = patched.replace(
+            field_set_flow.replace('->b:Lyfm;', '->a:Luuv;'),
+            'invoke-interface/range {v24 .. v24}, Luus;->' + interface_id
+            + '()Luuv;\n\n    move-result-object v5',
+        )
+    patched = patched.replace(canonical_call, actual_call)
+    reverse = {canonical: actual for actual, canonical in roles.items()}
+    patched = type_pattern.sub(lambda m: reverse.get(m[0], m[0]), patched)
+    report['resolved_metadata_roles'] = reverse
+    return patched, report
+
+
+def _patch_gcam_init_canonical(text: str) -> tuple[str, dict[str, Any]]:
     """Keep startup off unsupported Pixel accelerator paths.
 
     Real-device evidence shows the POCO F5 reaches CameraService and creates a
@@ -1623,6 +1735,33 @@ def _method_bounds(lines: list[str], index: int) -> tuple[int, int]:
 def patch_motion_stabilizer_startup_smali_text(
     text: str,
 ) -> tuple[str, dict[str, Any]]:
+    descriptors = re.findall(r'^\.class\s+.*\s(L[^;]+;)\s*$', text, re.MULTILINE)
+    if len(descriptors) != 1:
+        raise PatchError('Expected one motion stabilizer class')
+    descriptor = descriptors[0]
+    if descriptor == MOTION_STABILIZER_DESCRIPTOR:
+        return _patch_motion_stabilizer_canonical(text)
+    wrapper = re.findall(r'^\.field private G:(L[^;]+;)\s*$', text, re.MULTILINE)
+    provider = re.findall(r'^\.field private(?: final)? H:(L[^;]+;)\s*$', text, re.MULTILINE)
+    if len(wrapper) != 1 or len(provider) != 1:
+        raise PatchError('Motion stabilizer wrapper/profile fields changed')
+    methods = re.findall(r'\.method public final i\(\)V\n(.*?)\.end method', text, re.DOTALL)
+    if len(methods) != 1:
+        raise PatchError('Motion stabilizer startup method changed')
+    calls = re.findall(re.escape(provider[0]) + r'->[A-Za-z0-9_$]+\(\)L[^;]+;', methods[0])
+    if len(calls) != 4 or len(set(calls)) != 1:
+        raise PatchError('Expected four identical motion profile lookups')
+    normalized = text.replace(descriptor, 'Llio;').replace(wrapper[0], 'Lthi;')
+    normalized = normalized.replace(calls[0], MOTION_STABILIZER_PROFILE_CALL)
+    patched, report = _patch_motion_stabilizer_canonical(normalized)
+    patched = patched.replace(MOTION_STABILIZER_PROFILE_CALL, calls[0])
+    patched = patched.replace('Llio;', descriptor).replace('Lthi;', wrapper[0])
+    report['class'] = descriptor
+    report['profile_lookup'] = calls[0]
+    return patched, report
+
+
+def _patch_motion_stabilizer_canonical(text: str) -> tuple[str, dict[str, Any]]:
     """Disable Pixel-only microvideo/EIS startup on the POCO F5 build.
 
     Runtime evidence on marble reaches Llio.i() on MicrovideoQSharedStartup.
@@ -1798,6 +1937,7 @@ def _inject_nontensor_guard(
     *,
     signature: str,
     suffix: str,
+    name_field: str = "Lkix;->a:Ljava/lang/String;",
 ) -> tuple[str, dict[str, str]]:
     """Inject a narrow early-return guard into a klm boolean feature query.
 
@@ -1813,6 +1953,10 @@ def _inject_nontensor_guard(
         enable Pixel-only motion stabilization (Llio -> Lrdw.j), which throws
         "Device is not recognizable. Aborting." on marble. Disabling both
         lets the existing optional-stabilizer path remain absent.
+      * camera.ddepth_front / camera.ddepth_rear: the POCO F5 does not
+        advertise the dynamic-depth output format 4098 requested by this
+        path. An enabled saved depth preference otherwise aborts OneCamera
+        with "No supported output sizes found!!" before preview starts.
 
     Everything else falls through to the original method body.
     """
@@ -1879,9 +2023,19 @@ def _inject_nontensor_guard(
         "    # POCO F5: skip Pixel motion stabilization and Tensor accelerators.",
         f"    if-eqz p1, :{original_label}",
         "",
-        "    iget-object v0, p1, Lkix;->a:Ljava/lang/String;",
+        f"    iget-object v0, p1, {name_field}",
         "",
         f"    if-eqz v0, :{original_label}",
+        "",
+        '    const-string v1, "camera.ddepth_front"',
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "    move-result v1",
+        f"    if-nez v1, :{false_label}",
+        "",
+        '    const-string v1, "camera.ddepth_rear"',
+        "    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z",
+        "    move-result v1",
+        f"    if-nez v1, :{false_label}",
         "",
         '    const-string v1, "camera.micro_prestab"',
         "",
@@ -1955,19 +2109,51 @@ def _inject_nontensor_guard(
 
 
 def patch_nontensor_flag_queries(text: str) -> tuple[str, dict[str, Any]]:
+    signatures = {}
+    for method in ("q", "x"):
+        types = re.findall(
+            r"^\.method public final " + method + r"\((L[^;\s()]+;)\)Z\s*$",
+            text, re.MULTILINE,
+        )
+        if len(types) != 1:
+            raise PatchError(f"Expected exactly one boolean flag query {method}; found {len(types)}")
+        signatures[method] = types[0]
+    if signatures["q"] != signatures["x"]:
+        raise PatchError("Boolean flag queries use different key types")
+    key_type = signatures["q"]
+    if key_type == "Lkiz;":
+        name_field = "Lkix;->a:Ljava/lang/String;"
+    else:
+        q_body = re.search(
+            r"^\.method public final q\(" + re.escape(key_type)
+            + r"\)Z\s*\n(.*?)^\.end method", text, re.MULTILINE | re.DOTALL,
+        )
+        fields = set(re.findall(
+            r"iget-object\s+\w+,\s*p1,\s*(L[^;\s]+;->[A-Za-z0-9_$]+:Ljava/lang/String;)",
+            q_body[1] if q_body else "",
+        ))
+        if len(fields) != 1:
+            raise PatchError("Cannot resolve unique boolean flag name field")
+        name_field = fields.pop()
     patched, q_meta = _inject_nontensor_guard(
         text,
-        signature=".method public final q(Lkiz;)Z",
+        signature=f".method public final q({key_type})Z",
         suffix="q",
+        name_field=name_field,
     )
     patched, x_meta = _inject_nontensor_guard(
         patched,
-        signature=".method public final x(Lkiz;)Z",
+        signature=f".method public final x({key_type})Z",
         suffix="x",
+        name_field=name_field,
     )
     return patched, {
         "status": "patched",
+        "key_type": key_type,
+        "name_field": name_field,
         "forced_false_patterns": [
+            "camera.ddepth_front",
+            "camera.ddepth_rear",
             "camera.micro_prestab",
             "camera.micro_ls_always_prestab",
             "camera.lasagna*",
@@ -2022,7 +2208,7 @@ def find_and_patch_motion_stabilizer_smali_tree(
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if class_line_re.search(text):
+        if class_line_re.search(text) or 'processCameraMetadata called with a null eisNativeWrapper.' in text:
             matches.append(path)
 
     if len(matches) != 1:
@@ -3765,7 +3951,19 @@ def find_and_patch_gcam_init_smali_tree(root: Path) -> dict[str, Any]:
     target = matches[0]
     original = target.read_text(encoding="utf-8")
     try:
-        patched, metadata = patch_gcam_init_smali_text(original)
+        interface_text = None
+        descriptors = set(re.findall(
+            r'invoke-interface/range \{v24 \.\. v24\}, (L[A-Za-z0-9_$/]+;)'
+            r'->[A-Za-z0-9_$]+\(\)Ljava/util/Set;', original,
+        ))
+        if len(descriptors) == 1:
+            descriptor = descriptors.pop()
+            interface_path = root / (descriptor[1:-1] + '.smali')
+            if interface_path.is_file():
+                interface_text = interface_path.read_text(encoding='utf-8')
+        patched, metadata = patch_gcam_init_smali_text(
+            original, metadata_interface_text=interface_text,
+        )
     except PatchError as exc:
         diagnostic = _sensor_enum_shape_diagnostic(root, original)
         raise PatchError(f"{exc}\n{diagnostic}") from exc
