@@ -4,6 +4,7 @@ Latest upstream resolution remains independent. Unknown native/DEX layouts fail
 closed; this module never downloads an older version to make a build pass.
 """
 from pathlib import Path
+import hashlib
 import os
 import re
 import tempfile
@@ -22,6 +23,45 @@ except ModuleNotFoundError:
 def require(condition, message):
     if not condition:
         raise p.PatchError(message)
+
+
+# Exact 11.1.040 native wrapper reviewed against the original upstream library.
+# The extension is optional on marble; when absent, return the OpenCL error that
+# selects GCam's existing one-base-frame SpatialMerge fallback.
+OPENCL_111_SOURCE_SHA256 = '142f699b735372c2b7dbf6f950bf9163c5cb5d9ccf9903592ca28673c2c6f434'
+OPENCL_111_OFFSET = 0x6EABE80
+OPENCL_111_ORIGINAL = bytes.fromhex(
+    'ff8301d1fe6f01a9fa6702a9f85f03a9f65704a9f44f05a9fb3340f9fa0300aa'
+    'e0230091f30307aaf40306aaf503052af60304aaf70303aaf80302aaf90301aa'
+    '66452594a8e90290e0031aaae10319aa08b147f9e20318aae30317aae40316aa'
+    'e503152ae60314aae70313aafb0300f900013fd6f303002ae02300915f452594'
+    'e003132af44f45a9f65744a9f85f43a9fa6742a9fe6f41a9ff830191c0035fd6'
+)
+OPENCL_111_REPLACEMENT = bytes.fromhex(
+    'a8e9029008b147f9680000b540078012c0035fd6ffc301d1fe0700f9e00702a9'
+    'e20f03a9e41704a9e61f05a9e93b40f9e90300f9e083019168452594e00742a9'
+    'e20f43a9e41744a9e61f45a9a8e9029008b147f900013fd6e06b00b9e0830191'
+    '66452594e06b40b9fe0740f9ffc30191c0035fd6'
+)
+
+
+def patch_opencl_merge_fallback(data):
+    require(hashlib.sha256(data).hexdigest() == OPENCL_111_SOURCE_SHA256,
+            '11.1 OpenCL fallback source library SHA-256 changed')
+    end = OPENCL_111_OFFSET + len(OPENCL_111_ORIGINAL)
+    require(data[OPENCL_111_OFFSET:end] == OPENCL_111_ORIGINAL,
+            '11.1 OpenCL fallback wrapper instructions changed')
+    require(0 < len(OPENCL_111_REPLACEMENT) <= len(OPENCL_111_ORIGINAL),
+            '11.1 OpenCL fallback replacement exceeds reviewed wrapper')
+    # The reviewed replacement is a shorter wrapper. Preserve the original
+    # instructions after its return byte-for-byte, as in the validated review.
+    patched = (data[:OPENCL_111_OFFSET] + OPENCL_111_REPLACEMENT
+               + data[OPENCL_111_OFFSET + len(OPENCL_111_REPLACEMENT):])
+    return (patched,
+            {'behavior': 'return CL_INVALID_OPERATION when optional OpenCL entry is absent',
+             'offset': hex(OPENCL_111_OFFSET), 'original_wrapper_bytes_verified': len(OPENCL_111_ORIGINAL),
+             'replacement_bytes': len(OPENCL_111_REPLACEMENT), 'library_size_preserved': True,
+             'multi_frame_spatial_merge': False, 'runtime': 'NOT TESTED'})
 
 
 def normalize_patch(text, aliases, patch):
@@ -226,6 +266,7 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
             replacements[dex_name] = final
         report['native']['tuning'] = p._verify_uncalibrated_tuning_branch(native)
         report['native']['aion'] = p._verify_aion_nonfatal_branch(native)
+        native, report['native']['opencl_merge_fallback'] = patch_opencl_merge_fallback(native)
         native, report['native']['patches'] = p.patch_native_bytes(native, patches=profile['patches'])
         lib = root / 'libgcastartup.so'
         lib.write_bytes(native)

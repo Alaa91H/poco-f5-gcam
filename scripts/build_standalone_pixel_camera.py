@@ -557,6 +557,26 @@ def build_standalone(
 
         shutil.copy2(signed, output)
 
+    opencl_photo_fallback = bool(
+        device_gate_patch.get("native", {}).get("opencl_merge_fallback")
+    )
+    transformations = [
+        "merge_split_bundle_to_standalone_apk",
+        "clean_obsolete_split_signature_metadata",
+        "declare_optional_opencl_native_libraries",
+        "redirect_unsupported_device_gate_to_common_finalization",
+        "disable_tensor_gxp_tpu_feature_queries_on_poco_f5",
+        "disable_pixel_microvideo_motion_stabilizer_on_poco_f5",
+        "disable_tensor_native_gcam_startup_initparams_on_poco_f5",
+        "force_libgcastartup_gxp_delegate_to_cpu_fallback",
+        "zipalign_16k_native_libraries",
+        "resign_with_project_key",
+    ]
+    if opencl_photo_fallback:
+        transformations.append(
+            "use_single_frame_spatial_merge_when_optional_opencl_extension_is_missing"
+        )
+
     report = {
         "schema_version": 1,
         "source": {
@@ -578,18 +598,7 @@ def build_standalone(
             "signer_sha256": signing_certificates(verify_output),
             "zipalign_page_size": 16384,
         },
-        "transformations": [
-            "merge_split_bundle_to_standalone_apk",
-            "clean_obsolete_split_signature_metadata",
-            "declare_optional_opencl_native_libraries",
-            "redirect_unsupported_device_gate_to_common_finalization",
-            "disable_tensor_gxp_tpu_feature_queries_on_poco_f5",
-            "disable_pixel_microvideo_motion_stabilizer_on_poco_f5",
-            "disable_tensor_native_gcam_startup_initparams_on_poco_f5",
-            "force_libgcastartup_gxp_delegate_to_cpu_fallback",
-            "zipalign_16k_native_libraries",
-            "resign_with_project_key",
-        ],
+        "transformations": transformations,
         "security": {
             "original_google_signature_preserved": False,
             "unsupported_device_gate_patch_performed": True,
@@ -597,6 +606,7 @@ def build_standalone(
             "pixel_microvideo_motion_stabilizer_disabled": True,
             "tensor_native_gcam_startup_initparams_patch_performed": True,
             "native_gxp_cpu_fallback_patch_performed": True,
+            "opencl_missing_extension_photo_fallback_patch_performed": opencl_photo_fallback,
             "native_model_verification_bypass_performed": False,
             "pairip_bypass_performed": False,
             "feature_splits_removed": False,

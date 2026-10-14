@@ -1,10 +1,44 @@
 import unittest
 from scripts.pixel_camera_111_port import (patch_optional, patch_missing_key, patch_odr,
+                                           patch_opencl_merge_fallback,
                                            patch_video_mode_fallback, normalize_patch)
 from tests.test_patch_pixel_camera_device_gate import OFE_SAMPLE, MTA_SAMPLE, ODR_SAMPLE
 from scripts.patch_pixel_camera_device_gate import PatchError
 
 class Pixel111PortTests(unittest.TestCase):
+    def test_opencl_merge_fallback_rewrites_only_reviewed_wrapper(self):
+        import hashlib
+        from unittest.mock import patch
+        from scripts import pixel_camera_111_port as port
+
+        original = b'prefix' + port.OPENCL_111_ORIGINAL + b'suffix'
+        with patch.object(port, 'OPENCL_111_OFFSET', len(b'prefix')), \
+                patch.object(port, 'OPENCL_111_SOURCE_SHA256', hashlib.sha256(original).hexdigest()):
+            patched, report = patch_opencl_merge_fallback(original)
+        self.assertEqual(len(patched), len(original))
+        self.assertEqual(
+            patched,
+            b'prefix' + port.OPENCL_111_REPLACEMENT
+            + port.OPENCL_111_ORIGINAL[len(port.OPENCL_111_REPLACEMENT):] + b'suffix',
+        )
+        self.assertEqual(report['behavior'], 'return CL_INVALID_OPERATION when optional OpenCL entry is absent')
+
+    def test_opencl_merge_fallback_rejects_changed_source_or_wrapper(self):
+        import hashlib
+        from unittest.mock import patch
+        from scripts import pixel_camera_111_port as port
+
+        original = b'prefix' + port.OPENCL_111_ORIGINAL + b'suffix'
+        with patch.object(port, 'OPENCL_111_OFFSET', len(b'prefix')), \
+                patch.object(port, 'OPENCL_111_SOURCE_SHA256', '0' * 64):
+            with self.assertRaisesRegex(PatchError, 'SHA-256'):
+                patch_opencl_merge_fallback(original)
+        changed = original[:6] + b'!' + original[7:]
+        with patch.object(port, 'OPENCL_111_OFFSET', len(b'prefix')), \
+                patch.object(port, 'OPENCL_111_SOURCE_SHA256', hashlib.sha256(changed).hexdigest()):
+            with self.assertRaisesRegex(PatchError, 'wrapper instructions'):
+                patch_opencl_merge_fallback(changed)
+
     def test_empty_filtered_video_sizes_fall_back_to_safe_30fps_1080p(self):
         source = '''.class public Ljbw;
 .method public final a()Ljfz;
