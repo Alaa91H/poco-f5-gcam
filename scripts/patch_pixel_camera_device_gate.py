@@ -447,7 +447,7 @@ def native_patch_profile(data: bytes) -> dict[str, Any]:
     """Select reviewed instructions by library identity, never by latest-version guess."""
     digest = hashlib.sha256(data).hexdigest()
     if digest == GCASTARTUP_11_0_073_SHA256:
-        return {'patches': GCASTARTUP_NATIVE_PATCHES,
+        return {'name': '11.0.073', 'patches': GCASTARTUP_NATIVE_PATCHES,
                 'tuning_offset': 0x6924548, 'tuning_target': 'cbz 0x6924c20',
                 'flag_offset': 0x692453C, 'flag_bytes': bytes.fromhex('c9224b39'),
                 'aion_offset': 0x682E610, 'aion_target': 'tbnz 0x682e624'}
@@ -461,7 +461,7 @@ def native_patch_profile(data: bytes) -> dict[str, Any]:
             for index, ((name, _, before, after), offset)
             in enumerate(zip(GCASTARTUP_NATIVE_PATCHES, offsets))
         )
-        return {'patches': patches,
+        return {'name': '11.1.040', 'patches': patches,
                 'tuning_offset': 0x69C38EC, 'tuning_target': 'cbz 0x69c3b80',
                 'flag_offset': 0x69C38E8, 'flag_bytes': bytes.fromhex('c8224b39'),
                 'aion_offset': 0x68C1A58, 'aion_target': 'tbnz 0x68c1a6c'}

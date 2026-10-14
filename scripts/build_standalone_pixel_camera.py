@@ -29,8 +29,12 @@ from typing import Any
 
 try:
     from scripts.patch_pixel_camera_device_gate import patch_apk as patch_device_gate
+    from scripts.patch_pixel_camera_device_gate import GCASTARTUP_LIBRARY, native_patch_profile
+    from scripts.pixel_camera_111_port import patch_apk as patch_pixel_camera_111
 except ModuleNotFoundError:
     from patch_pixel_camera_device_gate import patch_apk as patch_device_gate
+    from patch_pixel_camera_device_gate import GCASTARTUP_LIBRARY, native_patch_profile
+    from pixel_camera_111_port import patch_apk as patch_pixel_camera_111
 
 SUPPORTED_SUFFIXES = {".apk", ".apkm", ".apks", ".xapk", ".zip"}
 PACKAGE_RE = re.compile(r"package:\s+name='([^']+)'")
@@ -457,13 +461,24 @@ def build_standalone(
         ensure_android_zip(manifest_patched)
         merged.unlink()
 
-        device_gate_patch = patch_device_gate(
-            manifest_patched,
-            patched,
-            baksmali=baksmali,
-            smali=smali,
-            java=java,
-        )
+        with zipfile.ZipFile(manifest_patched) as archive:
+            native_profile = native_patch_profile(archive.read(GCASTARTUP_LIBRARY))
+        if native_profile["name"].startswith("11.1"):
+            device_gate_patch = patch_pixel_camera_111(
+                manifest_patched,
+                patched,
+                baksmali=baksmali,
+                smali=smali,
+                java=java,
+            )
+        else:
+            device_gate_patch = patch_device_gate(
+                manifest_patched,
+                patched,
+                baksmali=baksmali,
+                smali=smali,
+                java=java,
+            )
         ensure_android_zip(patched)
         manifest_patched.unlink()
 

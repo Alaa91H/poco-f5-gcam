@@ -1,0 +1,193 @@
+"""Reviewed 11.1 DEX roles, selected only by the verified native input profile.
+
+Latest upstream resolution remains independent. Unknown native/DEX layouts fail
+closed; this module never downloads an older version to make a build pass.
+"""
+from pathlib import Path
+import os
+import re
+import tempfile
+import zipfile
+
+try:
+    from scripts import patch_pixel_camera_device_gate as p
+    from scripts import patch_pixel_camera_enumeration as enumeration
+    from scripts.patch_pixel_camera_raw_session import patch_raw_session_smali
+except ModuleNotFoundError:
+    import patch_pixel_camera_device_gate as p
+    import patch_pixel_camera_enumeration as enumeration
+    from patch_pixel_camera_raw_session import patch_raw_session_smali
+
+
+def require(condition, message):
+    if not condition:
+        raise p.PatchError(message)
+
+
+def normalize_patch(text, aliases, patch):
+    for actual, canonical in aliases:
+        require(canonical not in text, f'Canonical descriptor collision: {canonical}')
+        text = text.replace(actual, canonical)
+    text, report = patch(text)
+    for actual, canonical in reversed(aliases):
+        text = text.replace(canonical, actual)
+    return text, report
+
+
+def patch_optional(text):
+    return normalize_patch(text, [('Lopn;', 'Lofe;'), ('Ltpg;', 'Ltdn;')],
+                           p.patch_onecamera_optional_key_smali_text)
+
+
+def patch_missing_key(text):
+    key = '    sget-object v0, Ltpb;->a:Landroid/hardware/camera2/CaptureRequest$Key;'
+    require(text.count(key) == 1, '11.1 optional request key moved')
+    start = text.index(key)
+    end = text.index('    return-object v0', start)
+    value = 'invoke-static {v5}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;'
+    block = text[start:end]
+    require(block.count(value) == 1, '11.1 optional request value register changed')
+    # Normalize the shape check only; restore the actual v5 data flow afterward.
+    block = block.replace(value, value.replace('{v5}', '{v4}'))
+    normalized = text[:start] + block + text[end:]
+    aliases = [('Lnbw;', 'Lmta;'), ('Ltpb;', 'Ltdi;'), ('Lvaz;', 'Lupd;'),
+               ('Lyvd;', 'Lyjh;'), ('Lyuq;', 'Lyiu;')]
+    patched, report = normalize_patch(normalized, aliases, p.patch_onecamera_missing_request_key_smali_text)
+    start = patched.index(key)
+    end = patched.index('    return-object v0', start)
+    block = patched[start:end].replace(value.replace('{v5}', '{v4}'), value)
+    return patched[:start] + block + patched[end:], report
+
+
+def patch_odr(text):
+    return normalize_patch(text, [('Lptg;', 'Lodr;'), ('Ltpg;', 'Ltdn;'),
+                                 ('Lvaz;', 'Lupd;'), ('Lyrh;', 'Lyfm;'), ('Lvae;', 'Luoi;')],
+                           p.patch_onecamera_odr_missing_request_key_smali_text)
+
+
+def patch_qll(text):
+    key = '    sget-object v1, Ltpg;->a:Landroid/hardware/camera2/CaptureRequest$Key;'
+    require(text.count(key) == 1, '11.1 qll AWB case moved')
+    start = text.rfind('    :pswitch_', 0, text.index(key))
+    end = text.index('    return-void', text.index(key)) + len('    return-void')
+    require(start >= 0, '11.1 qll AWB case has no switch label')
+    block = text[start:end]
+    wrapper = '.class public final Lptg;\n.super Ljava/lang/Object;\n.method public final a(Ljava/lang/Object;)V\n    .registers 4\n'
+    patched, report = patch_odr(wrapper + block + '\n.end method\n')
+    patched = patched[patched.index('    :pswitch_'):patched.rfind('\n.end method')]
+    return text[:start] + patched + text[end:], report
+
+
+def patch_idy(text):
+    first = '    sget-object v1, Ltpg;->a:Landroid/hardware/camera2/CaptureRequest$Key;'
+    second = '    sget-object v0, Ltpg;->b:Landroid/hardware/camera2/CaptureRequest$Key;'
+    require(text.count(first) == text.count(second) == 1, '11.1 idy AWB keys moved')
+    start = text.index(first)
+    end = text.index('    return-void', text.index(second))
+    block = text[start:end]
+    call = '    invoke-static {v0, p1, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V'
+    require(block.count(call) == 1, '11.1 idy AWB apply call changed')
+    block = block.replace(first, first + '\n    if-eqz v1, :poco_manual_awb_done')
+    block = block.replace(second, second + '\n    if-eqz v0, :poco_manual_awb_done')
+    block = block.replace(call, call + '\n    :poco_manual_awb_done')
+    return text[:start] + block + text[end:], {'behavior': 'skip absent AWB keys locally, preserving first applied value'}
+
+
+def patch_lookahead(text):
+    key = '    sget-object p0, Ltpg;->g:Landroid/hardware/camera2/CaptureRequest$Key;'
+    require(text.count(key) == 1 and 'invoke-static {}, Lrdb;->n()Lpfy;' in text,
+            '11.1 lookahead empty-set factory changed')
+    require('Lvaz;-><init>(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;)V' in text,
+            '11.1 lookahead request-pair constructor changed')
+    block = '\n    if-nez p0, :poco_lookahead_present\n    invoke-static {}, Lrdb;->n()Lpfy;\n    move-result-object p0\n    return-object p0\n    :poco_lookahead_present\n'
+    return text.replace(key, key + block), {'behavior': 'existing empty request set for absent Ltpg.g'}
+
+
+def patch_yuv_usage(text):
+    anchor = '    invoke-virtual {v1, v2, v3}, Landroid/media/ImageReader$Builder;->setUsage(J)Landroid/media/ImageReader$Builder;'
+    require(text.count(anchor) == 1 and '.method public final a(Lvlo;)Lvlr;' in text
+            and 'iget-wide v2, p1, Lvlo;->e:J' in text, '11.1 ImageReader factory changed')
+    block = '    iget p0, p1, Lvlo;->c:I\n    const/16 v4, 0x23\n    if-ne p0, v4, :poco_usage_original\n    const-wide/16 v4, 0x103\n    cmp-long p0, v2, v4\n    if-nez p0, :poco_usage_original\n    const-wide/16 v2, 0x3\n    :poco_usage_original\n'
+    return text.replace(anchor, block + anchor), {'behavior': 'YUV35 usage259 only to3'}
+
+
+def patch_apk(source, output, *, baksmali, smali, java='java'):
+    with zipfile.ZipFile(source) as archive:
+        native = archive.read(p.GCASTARTUP_LIBRARY)
+    profile = p.native_patch_profile(native)
+    require(profile['name'].startswith('11.1'), 'Wrong input profile for 11.1 DEX roles')
+    groups = {
+        'classes.dex': ['msr', 'lrm', 'vgr', 'vhw', 'tk', 'ldg', 'ekw', 'opn', 'nbw', 'ptg', 'sb'],
+        'classes2.dex': ['ksf', 'hgn', 'rhe', 'vha', 'ojf', 'qll', 'idy'],
+    }
+    receiver = p.KEEPALIVE_RECEIVER_DESCRIPTOR
+    receiver_dex = p.find_keepalive_receiver_dex(source)
+    groups.setdefault(receiver_dex, []).append(receiver[1:-1])
+    report = {'profile': profile['name'], 'dex_roles': {}, 'native': {}}
+    with tempfile.TemporaryDirectory(prefix='pixel-camera-111-') as temp:
+        root = Path(temp)
+        replacements = {}
+        merger_source = Path(__file__).resolve().parents[1] / 'tools/MergeCompatibilityDex.java'
+        p.run(['javac', '-cp', os.fspath(smali), '-d', os.fspath(root), os.fspath(merger_source)])
+        for dex_name, names in groups.items():
+            original = root / dex_name
+            with zipfile.ZipFile(source) as archive:
+                original.write_bytes(archive.read(dex_name))
+            scope = root / (dex_name + '-scope')
+            scope.mkdir()
+            descriptors = ','.join('L' + name + ';' for name in names)
+            p.run([java, '-jar', os.fspath(baksmali), 'd', os.fspath(original), '--classes', descriptors, '-o', os.fspath(scope)])
+            changed = []
+            def save(name, patched, metadata):
+                path = scope / (name + '.smali')
+                path.write_text(patched, encoding='utf-8')
+                changed.append('L' + name + ';')
+                report['dex_roles'][name] = metadata
+            def read(name):
+                return (scope / (name + '.smali')).read_text(encoding='utf-8')
+            for name in names:
+                if name == receiver[1:-1]:
+                    patched, meta = p.patch_keepalive_receiver_smali_text(read(name))
+                elif name == 'msr':
+                    patched, meta = p.patch_gcam_init_smali_text(read(name), metadata_interface_text=read('vgr'))
+                elif name == 'vgr':
+                    # Interface needed for shape validation, not a patch target.
+                    (scope / 'vgr.smali').unlink()
+                    continue
+                elif name == 'lrm': patched, meta = p.patch_motion_stabilizer_startup_smali_text(read(name))
+                elif name == 'opn': patched, meta = patch_optional(read(name))
+                elif name == 'nbw': patched, meta = patch_missing_key(read(name))
+                elif name == 'ptg': patched, meta = patch_odr(read(name))
+                elif name == 'qll': patched, meta = patch_qll(read(name))
+                elif name == 'idy': patched, meta = patch_idy(read(name))
+                elif name == 'ojf': patched, meta = patch_lookahead(read(name))
+                elif name == 'vhw': patched, meta = patch_yuv_usage(read(name))
+                elif name == 'sb': patched, meta = patch_raw_session_smali(read(name))
+                elif name == 'ksf':
+                    patched, gate = p.patch_smali_text(read(name))
+                    patched, flags = p.patch_nontensor_flag_queries(patched)
+                    meta = {'device_gate': gate, 'flags': flags}
+                else:
+                    text = read(name)
+                    count = len(re.findall(r'invoke-virtual \{[vp]\d+\}, Landroid/hardware/camera2/CameraManager;->getCameraIdList', text))
+                    require(count > 0, f'Camera enumeration owner changed: {name}')
+                    patched = enumeration.patch_smali(text, 'L' + name + ';', count)
+                    meta = {'enumeration_calls': count}
+                save(name, patched, meta)
+            if dex_name == 'classes.dex':
+                (scope / 'CameraIds.smali').write_text(enumeration.HELPER, encoding='utf-8')
+                changed.append('Lpoco/CameraIds;')
+            patch_dex = root / (dex_name + '-patch.dex')
+            final = root / (dex_name + '-final.dex')
+            p.run([java, '-jar', os.fspath(smali), 'a', os.fspath(scope), '-o', os.fspath(patch_dex)])
+            p.run([java, '-cp', os.fspath(root) + os.pathsep + os.fspath(smali),
+                   'MergeCompatibilityDex', os.fspath(original), os.fspath(patch_dex), os.fspath(final), ','.join(changed)])
+            replacements[dex_name] = final
+        report['native']['tuning'] = p._verify_uncalibrated_tuning_branch(native)
+        report['native']['aion'] = p._verify_aion_nonfatal_branch(native)
+        native, report['native']['patches'] = p.patch_native_bytes(native, patches=profile['patches'])
+        lib = root / 'libgcastartup.so'
+        lib.write_bytes(native)
+        replacements[p.GCASTARTUP_LIBRARY] = lib
+        p.replace_zip_members(source, output, replacements)
+    return report
