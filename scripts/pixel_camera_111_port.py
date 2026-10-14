@@ -39,6 +39,46 @@ def patch_optional(text):
                            p.patch_onecamera_optional_key_smali_text)
 
 
+def patch_video_mode_fallback(text):
+    """Avoid crashing when a selected high-speed mode has no compatible size."""
+    require(re.search(r'^\.class\s+[^\n]*\s+Ljbw;$', text, re.M) is not None,
+            '11.1 video-mode configuration owner changed')
+    require('.method public final a()Ljfz;' in text,
+            '11.1 video-mode configuration method changed')
+    marker = 'poco_safe_fps_fallback_'
+    require(marker not in text, 'video-mode fallback already present')
+    gap = r'\n(?:[ \t]*\n)*'
+    pattern = re.compile(
+        r'    invoke-interface \{v4\}, Lj\$/util/stream/Stream;->findFirst\(\)Lj\$/util/Optional;'
+        + gap + r'    move-result-object v4'
+        + gap + r'    invoke-virtual \{v4\}, Lj\$/util/Optional;->get\(\)Ljava/lang/Object;'
+        + gap + r'    move-result-object v4'
+        + gap + r'    check-cast v4, Lusx;'
+        + gap + r'    goto :goto_24b')
+    matches = list(pattern.finditer(text))
+    require(len(matches) == 2,
+            f'expected two reviewed video-resolution selectors, found {len(matches)}')
+    for index, match in reversed(list(enumerate(matches, start=1))):
+        replacement = (
+            '    invoke-interface {v4}, Lj$/util/stream/Stream;->findFirst()Lj$/util/Optional;\n'
+            '    move-result-object v4\n'
+            '    invoke-virtual {v4}, Lj$/util/Optional;->isPresent()Z\n'
+            '    move-result v5\n'
+            f'    if-eqz v5, :poco_safe_fps_fallback_{index}\n'
+            '    invoke-virtual {v4}, Lj$/util/Optional;->get()Ljava/lang/Object;\n'
+            '    move-result-object v4\n'
+            '    check-cast v4, Lusx;\n'
+            '    goto :goto_24b\n'
+            f'    :poco_safe_fps_fallback_{index}\n'
+            '    sget-object v3, Lusv;->c:Lusv;\n'
+            '    sget-object v4, Lusx;->i:Lusx;\n'
+            '    goto :goto_24b')
+        text = text[:match.start()] + replacement + text[match.end():]
+    return text, {'empty_filter_fallback': '30fps_1080p',
+                  'selectors_guarded': len(matches),
+                  'scope': 'only empty filtered video-resolution options'}
+
+
 def patch_missing_key(text):
     key = '    sget-object v0, Ltpb;->a:Landroid/hardware/camera2/CaptureRequest$Key;'
     require(text.count(key) == 1, '11.1 optional request key moved')
@@ -118,7 +158,7 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
     require(profile['name'].startswith('11.1'), 'Wrong input profile for 11.1 DEX roles')
     groups = {
         'classes.dex': ['msr', 'lrm', 'vgr', 'vhw', 'tk', 'ldg', 'ekw', 'opn', 'nbw', 'ptg', 'sb'],
-        'classes2.dex': ['ksf', 'hgn', 'rhe', 'vha', 'ojf', 'qll', 'idy'],
+        'classes2.dex': ['ksf', 'hgn', 'rhe', 'vha', 'ojf', 'qll', 'idy', 'jbw'],
     }
     receiver = p.KEEPALIVE_RECEIVER_DESCRIPTOR
     receiver_dex = p.find_keepalive_receiver_dex(source)
@@ -163,6 +203,7 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
                 elif name == 'ojf': patched, meta = patch_lookahead(read(name))
                 elif name == 'vhw': patched, meta = patch_yuv_usage(read(name))
                 elif name == 'sb': patched, meta = patch_raw_session_smali(read(name))
+                elif name == 'jbw': patched, meta = patch_video_mode_fallback(read(name))
                 elif name == 'ksf':
                     patched, gate = p.patch_smali_text(read(name))
                     patched, flags = p.patch_nontensor_flag_queries(patched)

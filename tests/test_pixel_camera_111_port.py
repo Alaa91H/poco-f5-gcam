@@ -1,9 +1,48 @@
 import unittest
-from scripts.pixel_camera_111_port import patch_optional, patch_missing_key, patch_odr, normalize_patch
+from scripts.pixel_camera_111_port import (patch_optional, patch_missing_key, patch_odr,
+                                           patch_video_mode_fallback, normalize_patch)
 from tests.test_patch_pixel_camera_device_gate import OFE_SAMPLE, MTA_SAMPLE, ODR_SAMPLE
 from scripts.patch_pixel_camera_device_gate import PatchError
 
 class Pixel111PortTests(unittest.TestCase):
+    def test_empty_filtered_video_sizes_fall_back_to_safe_30fps_1080p(self):
+        source = '''.class public Ljbw;
+.method public final a()Ljfz;
+    invoke-interface {v4}, Lj$/util/stream/Stream;->findFirst()Lj$/util/Optional;
+    move-result-object v4
+    invoke-virtual {v4}, Lj$/util/Optional;->get()Ljava/lang/Object;
+    move-result-object v4
+    check-cast v4, Lusx;
+    goto :goto_24b
+    invoke-interface {v4}, Lj$/util/stream/Stream;->findFirst()Lj$/util/Optional;
+    move-result-object v4
+    invoke-virtual {v4}, Lj$/util/Optional;->get()Ljava/lang/Object;
+    move-result-object v4
+    check-cast v4, Lusx;
+    goto :goto_24b
+.end method
+'''
+        patched, report = patch_video_mode_fallback(source)
+        self.assertEqual(patched.count('Optional;->isPresent()Z'), 2)
+        self.assertEqual(patched.count('sget-object v3, Lusv;->c:Lusv;'), 2)
+        self.assertEqual(patched.count('sget-object v4, Lusx;->i:Lusx;'), 2)
+        self.assertEqual(patched.count('Optional;->get()Ljava/lang/Object;'), 2)
+        self.assertEqual(report['empty_filter_fallback'], '30fps_1080p')
+
+    def test_video_mode_fallback_fails_closed_if_upstream_shape_changes(self):
+        source = '''.class public Ljbw;
+.method public final a()Ljfz;
+    invoke-interface {v4}, Lj$/util/stream/Stream;->findFirst()Lj$/util/Optional;
+    move-result-object v4
+    invoke-virtual {v4}, Lj$/util/Optional;->get()Ljava/lang/Object;
+    move-result-object v4
+    check-cast v4, Lusx;
+    goto :goto_24b
+.end method
+'''
+        with self.assertRaises(PatchError):
+            patch_video_mode_fallback(source)
+
     def test_optional_vendor_key_keeps_111_types(self):
         source=OFE_SAMPLE.replace('Lofe;','Lopn;').replace('Ltdn;','Ltpg;')
         patched,_=patch_optional(source)
