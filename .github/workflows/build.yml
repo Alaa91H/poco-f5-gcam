@@ -879,10 +879,12 @@ jobs:
           PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
           SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
           SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
-          TELEGRAM_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
+          # Telegram Local Bot API documents a 2000 MB upload limit. Keep the
+          # guard at 2000 MiB so oversized APKs fail before a long upload.
+          TELEGRAM_MAX_BYTES=$((2000 * 1024 * 1024))
 
           if [ "$SIZE" -gt "$TELEGRAM_MAX_BYTES" ]; then
-            echo "::error::Modified Pixel Camera APK is too large for single-file Telegram delivery: $SIZE bytes."
+            echo "::error::Modified Pixel Camera APK exceeds the Telegram Local Bot API single-file limit of 2000 MiB: $SIZE bytes."
             exit 1
           fi
 
@@ -992,6 +994,8 @@ jobs:
             printf -- '- File: `%s`\n' "$PACKAGE_NAME"
             printf -- '- Size: `%s bytes`\n' "$SIZE"
             printf -- '- SHA-256: `%s`\n' "$SHA256"
+            printf -- '- Delivery: Telegram Local Bot API (source `%s`)\n' "$TELEGRAM_BOT_API_SOURCE_SHA"
+            printf -- '- Single-file limit: `2000 MiB`\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Pixel Camera audit report
