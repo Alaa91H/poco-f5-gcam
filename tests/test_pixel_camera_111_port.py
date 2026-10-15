@@ -1,11 +1,44 @@
 import unittest
 from scripts.pixel_camera_111_port import (patch_optional, patch_missing_key, patch_odr,
+                                           patch_manual_awb_fallback,
                                            patch_opencl_merge_fallback,
                                            patch_video_mode_fallback, normalize_patch)
 from tests.test_patch_pixel_camera_device_gate import OFE_SAMPLE, MTA_SAMPLE, ODR_SAMPLE
 from scripts.patch_pixel_camera_device_gate import PatchError
 
 class Pixel111PortTests(unittest.TestCase):
+    def test_manual_awb_fallback_uses_standard_camera2_gains(self):
+        source = '''.class public final Lidya;
+.method public final a(Ljava/lang/Object;)V
+    .registers 12
+    :pswitch_50
+    check-cast p1, Lqac;
+    iget v0, p1, Lqac;->a:I
+    sget-object v1, Ltpg;->a:Landroid/hardware/camera2/CaptureRequest$Key;
+    if-eqz v1, :cond_6e
+    invoke-static {v0}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
+    move-result-object v0
+    iget-object p1, p1, Lqac;->b:Lyqc;
+    sget-object v0, Ltpg;->b:Landroid/hardware/camera2/CaptureRequest$Key;
+    if-eqz v0, :cond_6e
+    invoke-static {p1}, Lyzu;->bq(Ljava/util/Collection;)[F
+    move-result-object p1
+    invoke-static {v0, p1, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V
+    :cond_6e
+    return-void
+.end method
+'''
+        patched, report = patch_manual_awb_fallback(source)
+        self.assertIn('CaptureRequest;->COLOR_CORRECTION_MODE', patched)
+        self.assertIn('CaptureRequest;->COLOR_CORRECTION_GAINS', patched)
+        self.assertIn('Ljava/lang/Float;->floatValue()F', patched)
+        self.assertIn('Landroid/hardware/camera2/params/RggbChannelVector;-><init>(FFFF)V', patched)
+        self.assertEqual(report['behavior'], 'use standard Camera2 AWB-off and RGGB gains when Pixel AWB keys are unavailable')
+
+    def test_manual_awb_fallback_rejects_unreviewed_callback_shape(self):
+        with self.assertRaises(PatchError):
+            patch_manual_awb_fallback('.class Lbroken;')
+
     def test_opencl_merge_fallback_rewrites_only_reviewed_wrapper(self):
         import hashlib
         from unittest.mock import patch

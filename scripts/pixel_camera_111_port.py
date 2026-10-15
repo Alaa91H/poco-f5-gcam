@@ -173,6 +173,69 @@ def patch_idy(text):
     return text[:start] + block + text[end:], {'behavior': 'skip absent AWB keys locally, preserving first applied value'}
 
 
+def patch_manual_awb_fallback(text):
+    """Translate the 11.1 manual-WB callback to standard Camera2 keys if Pixel keys are absent."""
+    first = '    sget-object v1, Ltpg;->a:Landroid/hardware/camera2/CaptureRequest$Key;'
+    second = '    sget-object v0, Ltpg;->b:Landroid/hardware/camera2/CaptureRequest$Key;'
+    apply = '    invoke-static {v0, p1, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V'
+    require(text.count(first) == text.count(second) == text.count(apply) == 1,
+            '11.1 idy manual AWB callback shape changed')
+    start = text.index(first)
+    end = text.index('    return-void', text.index(second))
+    block = text[start:end]
+    require('iget v0, p1, Lqac;->a:I' in text[:start] and
+            'iget-object p1, p1, Lqac;->b:Lyqc;' in block and
+            'invoke-static {p1}, Lyzu;->bq(Ljava/util/Collection;)[F' in block,
+            '11.1 manual AWB payload shape changed')
+    # Preserve Google's private-key path when available. Otherwise translate the
+    # selected channel factor into a standard RGGB gain vector and disable AWB.
+    fallback = '''    :poco_manual_awb_standard_fallback
+    const/4 v1, 0x0
+    sget-object v0, Landroid/hardware/camera2/CaptureRequest;->CONTROL_AWB_MODE:Landroid/hardware/camera2/CaptureRequest$Key;
+    invoke-static {v0, v1, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V
+    const/4 v1, 0x1
+    invoke-static {v1}, Ljava/lang/Integer;->valueOf(I)Ljava/lang/Integer;
+    move-result-object v1
+    sget-object v0, Landroid/hardware/camera2/CaptureRequest;->COLOR_CORRECTION_MODE:Landroid/hardware/camera2/CaptureRequest$Key;
+    invoke-static {v0, v1, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V
+    iget-object v0, p1, Lqac;->b:Lyqc;
+    const/4 v1, 0x0
+    invoke-interface {v0, v1}, Ljava/util/List;->get(I)Ljava/lang/Object;
+    move-result-object v0
+    check-cast v0, Ljava/lang/Float;
+    invoke-virtual {v0}, Ljava/lang/Float;->floatValue()F
+    move-result v0
+    # Keep all generated gains within Camera2's supported range [1, 8].
+    const/high16 v1, 0x3f800000    # 1.0f
+    const/high16 v2, 0x41000000    # 8.0f
+    cmpg-float v3, v0, v1
+    if-gez v3, :poco_awb_factor_max
+    move v0, v1
+    :poco_awb_factor_max
+    cmpl-float v3, v0, v2
+    if-lez v3, :poco_awb_factor_clamped
+    move v0, v2
+    :poco_awb_factor_clamped
+    div-float v2, v1, v0
+    new-instance v3, Landroid/hardware/camera2/params/RggbChannelVector;
+    invoke-direct {v3, v0, v1, v1, v2}, Landroid/hardware/camera2/params/RggbChannelVector;-><init>(FFFF)V
+    sget-object v0, Landroid/hardware/camera2/CaptureRequest;->COLOR_CORRECTION_GAINS:Landroid/hardware/camera2/CaptureRequest$Key;
+    invoke-static {v0, v3, p0}, Ljhq;->e(Landroid/hardware/camera2/CaptureRequest$Key;Ljava/lang/Object;Lvae;)V
+    return-void
+'''
+    # Callback's original .registers 12 includes v0-v11, sufficient for v0-v3.
+    block = block.replace(first + '\n    if-eqz v1, :cond_6e',
+                          first + '\n\n    if-eqz v1, :poco_manual_awb_standard_fallback')
+    block = block.replace(second + '\n    if-eqz v0, :cond_6e',
+                          second + '\n\n    if-eqz v0, :poco_manual_awb_standard_fallback')
+    require(':poco_manual_awb_standard_fallback' in block,
+            '11.1 manual AWB fallback branch labels changed')
+    block = block.replace('    :cond_6e\n', fallback + '    :cond_6e\n')
+    return text[:start] + block + text[end:], {
+        'behavior': 'use standard Camera2 AWB-off and RGGB gains when Pixel AWB keys are unavailable'
+    }
+
+
 def patch_lookahead(text):
     key = '    sget-object p0, Ltpg;->g:Landroid/hardware/camera2/CaptureRequest$Key;'
     require(text.count(key) == 1 and 'invoke-static {}, Lrdb;->n()Lpfy;' in text,
@@ -239,7 +302,7 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
                 elif name == 'nbw': patched, meta = patch_missing_key(read(name))
                 elif name == 'ptg': patched, meta = patch_odr(read(name))
                 elif name == 'qll': patched, meta = patch_qll(read(name))
-                elif name == 'idy': patched, meta = patch_idy(read(name))
+                elif name == 'idy': patched, meta = patch_manual_awb_fallback(read(name))
                 elif name == 'ojf': patched, meta = patch_lookahead(read(name))
                 elif name == 'vhw': patched, meta = patch_yuv_usage(read(name))
                 elif name == 'sb': patched, meta = patch_raw_session_smali(read(name))
