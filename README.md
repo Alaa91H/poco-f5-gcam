@@ -3,8 +3,8 @@
 ## Build and Telegram delivery
 
 The single workflow, `.github/workflows/build.yml`, validates the project and
-builds the modified Pixel Camera APK when relevant changes reach `main`. After
-a successful APK build it sends that signed APK to the configured Telegram chat.
+builds the four camera flavour APKs when relevant changes reach `main`. After a
+successful build it sends all four signed APKs to the configured Telegram chat.
 Manual runs on `main` also build and send by default; clear
 `build_experimental_standalone` for an upstream-only run. Pull requests validate
 changes without Telegram delivery. Scheduled runs check upstream availability.
@@ -16,6 +16,29 @@ Required repository secrets: `GCMOD_KEYSTORE_B64`, `GCMOD_KEY_ALIAS`,
 These are experimental compatibility builds. Successful CI and Telegram delivery
 do not prove camera functionality on the phone. See
 [the latest runtime findings](docs/RUNTIME_2026-09-27.md) for the remaining issues.
+
+## Four camera flavours
+
+The standalone build produces four labelled APKs:
+
+| Flavour | Base | Android install range | Treatment |
+|---|---|---|---|
+| `pixel-a17` | Pixel Camera 11.1 | Android 17+ / API 37 | Reviewed POCO F5 compatibility patches; upstream manifest `minSdkVersion` unchanged |
+| `pixel-a13` | Pixel Camera 11.1 | Android 13+ / API 33 | Same reviewed patches; manifest `minSdkVersion` lowered to 33 |
+| `pixel-manual-a17` | Pixel Camera 11.1 | Android 17+ / API 37 | Same patches plus clean-room manual focus, shutter, ISO, and lens selector |
+| `pixel-manual-a13` | Pixel Camera 11.1 | Android 13+ / API 33 | Same manual-controls profile with manifest `minSdkVersion` lowered to 33 |
+
+All four flavours share package `com.google.android.GoogleCamera`, so only one
+can be installed at a time; they replace each other. The manual-controls
+flavours contain no third-party code, resources, ads, or developer branding, and
+are signed only with the project key. They enable the manual UI that Pixel
+Camera already ships but disables on unrecognised devices. See
+[docs/MANUAL_CONTROLS.md](docs/MANUAL_CONTROLS.md).
+
+The manual profile is device-gated to `marble`/`marblein` and remains
+experimental: manual focus, shutter, ISO, and lens selection depend on the POCO
+F5 Camera2/HAL paths and require the real-device smoke test. The normal flavours
+do not enable the profile.
 
 Device-focused compatibility, configuration, testing, and optimization project for Google Camera mods on the **POCO F5 5G (marble)**.
 
@@ -131,9 +154,13 @@ For package-specific auxiliary-camera exposure tests, the Camera2 Probe can also
 The project automatically selects the numerically newest APKMirror Pixel Camera
 release matching the POCO F5 target:
 
-- Android 17 / API 37
+- Android 17 / API 37 (upstream requirement)
 - `arm64-v8a`
 - `nodpi`
+- Built standalone APKs: Android 17+ / API 37 (no manifest override) and
+  Android 13+ / API 33 (manifest minSdk override)
+- Manual-controls variants of both install ranges, built from the same Pixel
+  Camera source
 
 There is no runtime promotion gate or last-known-good fallback. The selected
 release is simply the newest release whose published variant metadata matches
@@ -175,7 +202,16 @@ is marked **experimental / runtime-unvalidated** and is delivered to the configu
 Telegram chat for testing. It must not be promoted until the real-device smoke test passes on POCO F5
 (Android 17 / API 37).
 
-See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md).
+The standalone build produces two install ranges: the Android 17+ variant keeps
+the upstream manifest `minSdkVersion` at 37, and the Android 13+ variant lowers
+it to 33. The 13+ change is install-level only: Pixel Camera 11.1 is still an
+Android 17 upstream build, and it has not been runtime-validated on Android
+13-16. Each range also has a manual-controls flavour. See
+[the standalone build notes](docs/STANDALONE_APK_BUILD.md#android-13-manifest-compatibility)
+for the limitations and for the supported Android 13 Pixel Camera base.
+
+See [docs/STANDALONE_APK_BUILD.md](docs/STANDALONE_APK_BUILD.md) and
+[docs/MANUAL_CONTROLS.md](docs/MANUAL_CONTROLS.md).
 
 ## Xiaomi camera-session ABI inspection
 

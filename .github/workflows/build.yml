@@ -1,4 +1,4 @@
-name: Build, validate and deliver modified Pixel Camera
+name: Build, validate and deliver POCO F5 camera flavours
 
 on:
   push:
@@ -20,6 +20,7 @@ on:
       - "tests/test_patch_pixel_camera_raw_session.py"
       - "tests/test_pixel_camera_111_port.py"
       - "scripts/patch_pixel_camera_raw_session.py"
+      - "scripts/patch_pixel_camera_manual_controls.py"
       - "scripts/pixel_camera_111_port.py"
       - "tools/MergeCompatibilityDex.java"
       - "tests/test_pixel_camera_session_identity.py"
@@ -27,8 +28,14 @@ on:
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
+      - "device/marble/build-flavors.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
+      - "scripts/build_flavor_matrix.py"
+      - "scripts/send_telegram_deliverables.py"
+      - "tests/test_build_flavor_matrix.py"
+      - "tests/test_patch_pixel_camera_manual_controls.py"
+      - "tests/test_send_telegram_deliverables.py"
       - ".github/workflows/build.yml"
   pull_request:
     paths:
@@ -47,21 +54,28 @@ on:
       - "tests/test_patch_pixel_camera_raw_session.py"
       - "tests/test_pixel_camera_111_port.py"
       - "scripts/patch_pixel_camera_raw_session.py"
+      - "scripts/patch_pixel_camera_manual_controls.py"
       - "scripts/pixel_camera_111_port.py"
       - "tools/MergeCompatibilityDex.java"
       - "tests/test_pixel_camera_session_identity.py"
       - "tests/test_plan_device_splits.py"
       - "device/marble/upstream-policy.json"
       - "device/marble/standalone-apk-policy.json"
+      - "device/marble/build-flavors.json"
       - "device/marble/apkm-audit-policy.json"
       - "device/marble/upstream/pixel-camera.json"
+      - "scripts/build_flavor_matrix.py"
+      - "scripts/send_telegram_deliverables.py"
+      - "tests/test_build_flavor_matrix.py"
+      - "tests/test_patch_pixel_camera_manual_controls.py"
+      - "tests/test_send_telegram_deliverables.py"
       - ".github/workflows/build.yml"
   schedule:
     - cron: "23 3 * * *"
   workflow_dispatch:
     inputs:
       build_experimental_standalone:
-        description: "Build the modified APK and send it to Telegram on main (device validation required)"
+        description: "Build the four camera flavour APKs and send them to Telegram on main (device validation required)"
         required: false
         type: boolean
         default: true
@@ -133,7 +147,7 @@ jobs:
             esac
 
             case "$file" in
-              tools/OpenClManifestPatcher.java|tools/MergeCompatibilityDex.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/patch_pixel_camera_opencl_guard.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|scripts/pixel_camera_111_port.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_patch_pixel_camera_opencl_guard.py|tests/test_gcam_init_obfuscation.py|tests/test_native_patch_profiles.py|tests/test_patch_pixel_camera_raw_session.py|tests/test_pixel_camera_111_port.py|scripts/patch_pixel_camera_raw_session.py|tests/test_pixel_camera_session_identity.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/upstream/pixel-camera.json|.github/workflows/build.yml)
+              tools/OpenClManifestPatcher.java|tools/MergeCompatibilityDex.java|scripts/resolve_apkmirror_gcam.py|scripts/download_latest_pixel_camera.py|scripts/inspect_apkm.py|scripts/plan_device_splits.py|scripts/patch_pixel_camera_device_gate.py|scripts/patch_pixel_camera_opencl_guard.py|scripts/analyze_pixel_camera_native.py|scripts/build_standalone_pixel_camera.py|scripts/pixel_camera_111_port.py|tests/test_resolve_apkmirror_gcam.py|tests/test_download_latest_pixel_camera.py|tests/test_inspect_apkm.py|tests/test_plan_device_splits.py|tests/test_build_standalone_pixel_camera.py|tests/test_patch_pixel_camera_device_gate.py|tests/test_patch_pixel_camera_opencl_guard.py|tests/test_gcam_init_obfuscation.py|tests/test_native_patch_profiles.py|tests/test_patch_pixel_camera_raw_session.py|tests/test_pixel_camera_111_port.py|scripts/patch_pixel_camera_raw_session.py|tests/test_pixel_camera_session_identity.py|tests/test_analyze_pixel_camera_native.py|device/marble/upstream-policy.json|device/marble/apkm-audit-policy.json|device/marble/standalone-apk-policy.json|device/marble/build-flavors.json|device/marble/upstream/pixel-camera.json|scripts/build_flavor_matrix.py|scripts/patch_pixel_camera_manual_controls.py|scripts/send_telegram_deliverables.py|tests/test_build_flavor_matrix.py|tests/test_patch_pixel_camera_manual_controls.py|tests/test_send_telegram_deliverables.py|.github/workflows/build.yml)
                 upstream=true
                 ;;
             esac
@@ -275,7 +289,7 @@ jobs:
           Write-Host "All PowerShell scripts passed syntax validation."
 
   upstream:
-    name: Refresh latest compatible Pixel Camera
+    name: Refresh Pixel Camera and build camera flavours
     needs: changes
     if: >-
       always() &&
@@ -314,6 +328,7 @@ jobs:
           python -m unittest tests.test_pixel_camera_111_port -v
           python -m unittest tests.test_patch_pixel_camera_opencl_guard tests.test_pixel_camera_session_identity tests.test_gcam_init_obfuscation tests.test_native_patch_profiles tests.test_patch_pixel_camera_raw_session -v
           python -m unittest tests.test_analyze_pixel_camera_native -v
+          python -m unittest tests.test_build_flavor_matrix tests.test_patch_pixel_camera_manual_controls tests.test_send_telegram_deliverables -v
 
       - name: Resolve newest compatible Pixel Camera
         if: github.event_name != 'pull_request'
@@ -349,7 +364,8 @@ jobs:
             echo "### Pixel Camera selection"
             echo ""
             printf -- '- Version: `%s`\n' "$VERSION"
-            echo "- Target: Android 17 / API 37, arm64-v8a, nodpi"
+            echo "- Upstream target: Android 17 / API 37, arm64-v8a, nodpi"
+            echo "- Flavour matrix: Pixel Camera 11.1 Android 17+ and Android 13+, each with a normal and a manual-controls variant"
             printf -- '- Selection changed: `%s`\n' "$CHANGED"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -373,7 +389,33 @@ jobs:
           fi
 
           echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
-          echo "- Rebuild compatibility-patched APK: `$ENABLED`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Build four camera flavour APKs: `$ENABLED`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free hosted-runner disk space
+        if: >-
+          steps.standalone.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android/sdk/ndk \
+            /usr/local/lib/android/sdk/emulator \
+            /usr/local/lib/android/sdk/system-images \
+            /usr/local/lib/android/sdk/sources \
+            /usr/local/lib/android/sdk/docs \
+            /usr/local/lib/android/sdk/samples \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            /usr/local/share/chromium \
+            /usr/local/.ghcup \
+            /opt/google/chrome \
+            /usr/share/swift \
+            /usr/share/gradle \
+            /usr/local/gradle
+          df -h
 
       - name: Verify live APKMirror download path
         run: |
@@ -662,7 +704,7 @@ jobs:
           echo "GCMOD_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
           echo "GCMOD_SIGNING_MODE=$SIGNING_MODE" >> "$GITHUB_ENV"
 
-      - name: Build standalone POCO F5 Pixel Camera APK
+      - name: Build four Pixel Camera flavours
         if: >-
           steps.standalone.outputs.enabled == 'true'
         shell: bash
@@ -671,17 +713,15 @@ jobs:
 
           META="$RUNNER_TEMP/pixel-camera-download.json"
           SOURCE="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["path"])' "$META")"
-          VERSION="${{ steps.selected.outputs.version }}"
-          OUT_DIR="$RUNNER_TEMP/poco-f5-standalone"
-          APK="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.apk"
-          REPORT="$OUT_DIR/PixelCamera-${VERSION}-POCO-F5-Android17.build.json"
+          OUT_DIR="$RUNNER_TEMP/poco-f5-flavors"
+          MANIFEST="$OUT_DIR/deliverables.json"
           BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
 
           mkdir -p "$OUT_DIR"
 
-          python scripts/build_standalone_pixel_camera.py \
-            --input "$SOURCE" \
-            --output "$APK" \
+          python scripts/build_flavor_matrix.py \
+            --pixel-source "$SOURCE" \
+            --output-dir "$OUT_DIR" \
             --apkeditor "$APKEDITOR_JAR" \
             --baksmali "$BAKSMALI_JAR" \
             --smali "$SMALI_JAR" \
@@ -690,52 +730,84 @@ jobs:
             --aapt2 "$BUILD_TOOLS/aapt2" \
             --keystore "$GCMOD_KEYSTORE_PATH" \
             --key-alias "$GCMOD_KEY_ALIAS" \
-            --expected-package com.google.android.GoogleCamera \
-            --expected-abi arm64-v8a \
-            --expected-min-sdk 37 \
-            --report "$REPORT" \
-            --json
+            --flavor pixel-a17 \
+            --flavor pixel-a13 \
+            --flavor pixel-manual-a17 \
+            --flavor pixel-manual-a13 \
+            --signing-mode "$GCMOD_SIGNING_MODE" \
+            --manifest "$MANIFEST" \
+            --json > "$RUNNER_TEMP/flavor-matrix.json"
 
-          test -s "$APK"
-          test -s "$REPORT"
+          test -s "$MANIFEST"
 
-          echo "STANDALONE_APK=$APK" >> "$GITHUB_ENV"
-          echo "STANDALONE_REPORT=$REPORT" >> "$GITHUB_ENV"
+          for report in "$OUT_DIR"/*.build.json; do
+            test -s "$report"
+          done
+          for apk in "$OUT_DIR"/*.apk; do
+            test -s "$apk"
+          done
 
-          APK_SIZE="$(stat -c '%s' "$APK")"
-          APK_SHA256="$(sha256sum "$APK" | awk '{print $1}')"
+          # The original bundle is no longer needed after all four outputs
+          # have been verified. Free runner disk before the artifact upload and
+          # Telegram delivery copy the large APKs.
+          rm -f "$SOURCE"
 
-          {
-            echo ""
-            echo "### POCO F5 compatibility-patched Pixel Camera APK"
-            echo ""
-            printf -- '- File: `%s`\n' "$(basename "$APK")"
-            printf -- '- Size: `%s bytes`\n' "$APK_SIZE"
-            printf -- '- SHA-256: `%s`\n' "$APK_SHA256"
-            printf -- '- Signing mode: `%s`\n' "$GCMOD_SIGNING_MODE"
-            printf '%s\n' '- Native library alignment: `16 KiB`'
-            printf '%s\n' '- PairIP bypass: `false`'
-            printf '%s\n' '- Feature splits removed: `false`'
-            printf '%s\n' '- Unsupported-device gate: `patched (fail-closed)`'
-            printf '%s\n' '- Non-Tensor feature guards: `GXP/TPU/DarwiNN disabled`'
-            printf '%s\n' '- Pixel microvideo/EIS startup: `disabled on POCO F5; no Pixel profile spoof`'
-            printf '%s\n' '- Native GCam startup: `almond TPU + Tomte grain disabled`'
-            printf '%s\n' '- Native GXP delegate: `forced to existing CPU/TFLite fallback`'
-            printf '%s\n' '- Native model verification bypass: `false`'
-            printf '%s\n' '- Patch target: `constructor + klm queries + Llio.i + GCam InitParams + libgcastartup`'
-            printf '%s\n' '- On-device runtime validation: `NOT RUN`'
-            printf '%s\n' '- Distribution status: `BLOCKED` until real-device runtime validation passes'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "STANDALONE_DIR=$OUT_DIR" >> "$GITHUB_ENV"
+          echo "DELIVERABLES_MANIFEST=$MANIFEST" >> "$GITHUB_ENV"
 
-      - name: Upload standalone Pixel Camera APK
+          python - "$MANIFEST" "$GITHUB_STEP_SUMMARY" "$GCMOD_SIGNING_MODE" <<'PY'
+          import json
+          import os
+          import sys
+
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          signing_mode = sys.argv[3]
+          lines = [
+              "",
+              "### POCO F5 camera flavour set",
+              "",
+              f"- Pixel Camera upstream: `{manifest.get('pixel_camera_version')}`",
+              f"- Flavours: `{len(manifest['flavors'])}`",
+              "",
+              "| Flavour | File | Size | SHA-256 | Package | Min API | Signing | Runtime |",
+              "|---|---|---:|---|---|---:|---|---|",
+          ]
+          for entry in manifest["flavors"]:
+              lines.append(
+                  "| `{id}` | `{file}` | {size} | `{sha}` | `{package}` | {min_sdk} | `{signing}` | `{runtime}` |".format(
+                      id=entry["id"],
+                      file=os.path.basename(entry["apk"]),
+                      size=entry["size_bytes"],
+                      sha=entry["sha256"],
+                      package=entry["package_name"],
+                      min_sdk=entry["min_sdk"],
+                      signing=entry["signing_mode"],
+                      runtime=entry["runtime_validation"],
+                  )
+              )
+          lines.extend(
+              [
+                  "",
+                  f"- Pixel Camera signing mode: `{signing_mode}`",
+                  "- All four are Pixel Camera 11.1 compatibility builds: `compatibility-patched-unvalidated`; on-device runtime validation `NOT RUN`.",
+                  "- The two manual-controls flavours add a clean-room, `marble`-gated wrapper for focus, shutter, ISO, and lens selection; no third-party code, ads, or branding is added.",
+                  "- Distribution remains blocked for stable promotion until real-device runtime validation passes.",
+                  "",
+              ]
+          )
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Upload camera flavour artifacts
         if: >-
           steps.standalone.outputs.enabled == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: compatibility-patched-unvalidated-poco-f5-pixel-camera-${{ steps.selected.outputs.version }}
+          name: poco-f5-camera-flavors-${{ steps.selected.outputs.version }}
           path: |
-            ${{ env.STANDALONE_APK }}
-            ${{ env.STANDALONE_REPORT }}
+            ${{ env.STANDALONE_DIR }}/*.apk
+            ${{ env.STANDALONE_DIR }}/*.json
             ${{ env.PIXEL_CAMERA_SPLIT_PLAN }}
           compression-level: 0
           retention-days: 14
@@ -839,7 +911,7 @@ jobs:
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
           echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      - name: Deliver modified POCO F5 Pixel Camera APK through Local Bot API
+      - name: Deliver four POCO F5 camera flavours through Local Bot API
         if: >-
           steps.standalone.outputs.enabled == 'true' &&
           github.ref == 'refs/heads/main'
@@ -874,19 +946,9 @@ jobs:
             exit 1
           fi
 
-          PACKAGE_PATH="$STANDALONE_APK"
-          VERSION="${{ steps.selected.outputs.version }}"
-          PACKAGE_NAME="$(basename "$PACKAGE_PATH")"
-          SIZE="$(stat -c '%s' "$PACKAGE_PATH")"
-          SHA256="$(sha256sum "$PACKAGE_PATH" | awk '{print $1}')"
           # Telegram Local Bot API documents a 2000 MB upload limit. Keep the
           # guard at 2000 MiB so oversized APKs fail before a long upload.
           TELEGRAM_MAX_BYTES=$((2000 * 1024 * 1024))
-
-          if [ "$SIZE" -gt "$TELEGRAM_MAX_BYTES" ]; then
-            echo "::error::Modified Pixel Camera APK exceeds the Telegram Local Bot API single-file limit of 2000 MiB: $SIZE bytes."
-            exit 1
-          fi
 
           curl --silent --show-error --max-time 30 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
@@ -948,55 +1010,42 @@ jobs:
             exit 1
           fi
 
-          CAPTION="$(printf 'POCO F5 Pixel Camera modified APK\nExperimental: device validation pending\nVersion: %s\nAndroid: 17 / API 37\nABI: arm64-v8a\nSize: %s bytes\nSHA-256: %s\nSigning: %s\nPackage: com.google.android.GoogleCamera\nInstall: single APK' "$VERSION" "$SIZE" "$SHA256" "$GCMOD_SIGNING_MODE")"
+          python "$GITHUB_WORKSPACE/scripts/send_telegram_deliverables.py" \
+            --manifest "$DELIVERABLES_MANIFEST" \
+            --api-url "http://127.0.0.1:8081" \
+            --max-bytes "$TELEGRAM_MAX_BYTES" \
+            --timeout 1800
 
-          curl --silent --show-error --fail-with-body \
-            --retry 3 --retry-all-errors --max-time 1800 \
-            --request POST \
-            --url "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-            --form "chat_id=${TELEGRAM_CHAT_ID}" \
-            --form "document=@${PACKAGE_PATH};type=application/vnd.android.package-archive" \
-            --form-string "caption=${CAPTION}" \
-            > "$RUNNER_TEMP/telegram-send-response.json"
-
-          python - "$RUNNER_TEMP/telegram-send-response.json" "$SIZE" "$PACKAGE_NAME" <<'PY'
+          python - "$DELIVERABLES_MANIFEST" "$GITHUB_STEP_SUMMARY" "$TELEGRAM_BOT_API_SOURCE_SHA" <<'PY'
           import json
+          import os
           import sys
 
-          response = json.load(open(sys.argv[1], encoding="utf-8"))
-          expected_size = int(sys.argv[2])
-          expected_name = sys.argv[3]
-
-          if response.get("ok") is not True:
-              raise SystemExit(f"Telegram rejected the document: {response}")
-
-          document = response.get("result", {}).get("document") or {}
-          delivered_size = document.get("file_size")
-          delivered_name = document.get("file_name")
-
-          if delivered_size is not None and int(delivered_size) != expected_size:
-              raise SystemExit(
-                  f"Telegram file size mismatch: expected {expected_size}, got {delivered_size}"
+          manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          lines = [
+              "",
+              "### Telegram camera flavour delivery",
+              "",
+          ]
+          for entry in manifest["flavors"]:
+              lines.append(
+                  "- `{id}`: `{file}` — {size} bytes — `{sha}`".format(
+                      id=entry["id"],
+                      file=os.path.basename(entry["apk"]),
+                      size=entry["size_bytes"],
+                      sha=entry["sha256"],
+                  )
               )
-          if delivered_name and delivered_name != expected_name:
-              raise SystemExit(
-                  f"Telegram file name mismatch: expected {expected_name}, got {delivered_name}"
-              )
-
-          print(f"Telegram accepted final APK: {delivered_name or expected_name}")
-          print(f"Telegram reported size: {delivered_size or expected_size} bytes")
+          lines.extend(
+              [
+                  f"- Delivery: Telegram Local Bot API (source `{sys.argv[3]}`)",
+                  "- Single-file limit: `2000 MiB`",
+                  "",
+              ]
+          )
+          with open(sys.argv[2], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
           PY
-
-          {
-            echo ""
-            echo "### Telegram modified standalone APK delivery"
-            echo ""
-            printf -- '- File: `%s`\n' "$PACKAGE_NAME"
-            printf -- '- Size: `%s bytes`\n' "$SIZE"
-            printf -- '- SHA-256: `%s`\n' "$SHA256"
-            printf -- '- Delivery: Telegram Local Bot API (source `%s`)\n' "$TELEGRAM_BOT_API_SOURCE_SHA"
-            printf -- '- Single-file limit: `2000 MiB`\n'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Pixel Camera audit report
         if: >-

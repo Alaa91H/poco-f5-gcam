@@ -9,6 +9,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Narrow binary-AXML patcher used by the POCO F5 standalone build.
@@ -16,6 +17,11 @@ import java.util.Map;
  * It loads the APK through the ARSCLib classes bundled in the pinned
  * APKEditor fat JAR, changes only AndroidManifest.xml, and streams a new APK.
  * Resources and DEX files are never decoded to an intermediate directory.
+ *
+ * Besides declaring the optional OpenCL libraries, it can lower the manifest
+ * minSdkVersion to an explicit target API. It never raises minSdkVersion and
+ * never changes targetSdkVersion, so compatibility behaviour is not widened
+ * silently.
  */
 public final class OpenClManifestPatcher {
     private static final int ID_ANDROID_NAME = 0x01010003;
@@ -30,9 +36,9 @@ public final class OpenClManifestPatcher {
     private OpenClManifestPatcher() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
+        if (args.length < 2 || args.length > 3) {
             throw new IllegalArgumentException(
-                    "usage: OpenClManifestPatcher <input.apk> <output.apk>");
+                    "usage: OpenClManifestPatcher <input.apk> <output.apk> [min-sdk]");
         }
 
         File input = new File(args[0]);
@@ -44,6 +50,20 @@ public final class OpenClManifestPatcher {
             throw new IllegalStateException("could not replace output APK: " + output);
         }
 
+        int requestedMinSdk = -1;
+        if (args.length == 3) {
+            try {
+                requestedMinSdk = Integer.parseInt(args[2]);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException(
+                        "min-sdk must be a decimal API level: " + args[2], exception);
+            }
+            if (requestedMinSdk < 1 || requestedMinSdk > 99) {
+                throw new IllegalArgumentException(
+                        "min-sdk must be between 1 and 99: " + requestedMinSdk);
+            }
+        }
+
         List<String> added = new ArrayList<>();
         List<String> forcedOptional = new ArrayList<>();
 
@@ -53,6 +73,21 @@ public final class OpenClManifestPatcher {
             AndroidManifestBlock manifest = module.getAndroidManifest();
             if (manifest == null) {
                 throw new IllegalStateException("APK has no AndroidManifest.xml");
+            }
+
+            Integer minSdkBefore = manifest.getMinSdkVersion();
+            Integer targetSdkBefore = manifest.getTargetSdkVersion();
+            if (requestedMinSdk > 0) {
+                if (minSdkBefore == null) {
+                    throw new IllegalStateException(
+                            "manifest has no numeric minSdkVersion to lower");
+                }
+                if (requestedMinSdk > minSdkBefore) {
+                    throw new IllegalStateException(
+                            "refusing to raise minSdkVersion from "
+                                    + minSdkBefore + " to " + requestedMinSdk);
+                }
+                manifest.setMinSdkVersion(requestedMinSdk);
             }
 
             ResXmlElement manifestElement = manifest.getManifestElement();
@@ -112,17 +147,36 @@ public final class OpenClManifestPatcher {
             }
 
             module.refreshManifest();
+
+            Integer minSdkAfter = manifest.getMinSdkVersion();
+            Integer targetSdkAfter = manifest.getTargetSdkVersion();
+            if (requestedMinSdk > 0 && !Objects.equals(minSdkAfter, requestedMinSdk)) {
+                throw new IllegalStateException(
+                        "minSdkVersion patch did not persist: expected "
+                                + requestedMinSdk + ", found " + minSdkAfter);
+            }
+            if (!Objects.equals(targetSdkBefore, targetSdkAfter)) {
+                throw new IllegalStateException(
+                        "targetSdkVersion changed unexpectedly: "
+                                + targetSdkBefore + " -> " + targetSdkAfter);
+            }
+
             // Any previous APK signing block is invalid after changing the manifest.
             // The standalone pipeline signs the result with the project key later.
             module.setApkSignatureBlock(null);
             module.writeApk(output);
-        }
 
-        System.out.println("status=patched");
-        System.out.println("added=" + String.join(",", added));
-        System.out.println("forced_optional=" + String.join(",", forcedOptional));
-        System.out.println("required=false");
-        System.out.println("allow_native_heap_pointer_tagging_changed=false");
+            System.out.println("status=patched");
+            System.out.println("added=" + String.join(",", added));
+            System.out.println("forced_optional=" + String.join(",", forcedOptional));
+            System.out.println("required=false");
+            System.out.println("allow_native_heap_pointer_tagging_changed=false");
+            System.out.println("min_sdk_before=" + minSdkBefore);
+            System.out.println("min_sdk_after=" + minSdkAfter);
+            System.out.println("target_sdk_before=" + targetSdkBefore);
+            System.out.println("target_sdk_after=" + targetSdkAfter);
+            System.out.println("min_sdk_requested=" + requestedMinSdk);
+        }
     }
 
     private static boolean isOpenClLibrary(String value) {

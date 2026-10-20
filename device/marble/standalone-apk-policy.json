@@ -8,6 +8,37 @@
     "package_name": "com.google.android.GoogleCamera",
     "abi": "arm64-v8a"
   },
+  "android_compatibility": {
+    "upstream_min_api": 37,
+    "manifest_min_api_override": 33,
+    "minimum_android_version": "13",
+    "minimum_api_level": 33,
+    "target_sdk_preserved": 37,
+    "runtime_validation_required_on_older_versions": true,
+    "supported_android_13_upstream": "APKMirror (arm64-v8a) (nodpi) (Android 13+) Pixel Camera 8.8.x"
+  },
+  "feature_profiles": {
+    "manual_controls": {
+      "enabled": true,
+      "description": "Clean-room profile that enables Pixel Camera's existing manual focus, shutter-speed, ISO, and lens-selector UI on marble. It adds no third-party code, resources, signing identity, ads, branding, or network endpoints.",
+      "flags": [
+        "camera.ark_enabled",
+        "camera.ark_focus_available",
+        "camera.ark_shutter_speed_available",
+        "camera.ark_ISO_available",
+        "camera.ark_lens_selector_available"
+      ],
+      "methods": [
+        "Lksf;->q(Lkps;)Z",
+        "Lksf;->x(Lkps;)Z"
+      ],
+      "device_gate": "android.os.Build.DEVICE starts with marble",
+      "requires_runtime_validation": true,
+      "third_party_code_added": false,
+      "ads_added": false,
+      "developer_branding_added": false
+    }
+  },
   "toolchain": {
     "apkeditor": {
       "version": "1.4.9",
@@ -54,6 +85,8 @@
   },
   "notes": [
     "The original Google signature cannot survive bundle merging or any later modification.",
+    "The Android 13+ flavours lower the merged manifest minSdkVersion from the upstream 37 to 33 (Android 13). The Android 17+ flavours preserve 37. targetSdkVersion stays 37 in all flavours, and the install-time change does not prove runtime compatibility on older releases.",
+    "Pixel Camera 11.1 remains an Android 17 upstream build; a real-device smoke test on each target Android version is still required. For a Google-supported Android 13 base, use the APKMirror Android 13+ Pixel Camera 8.8.x variant and add reviewed patches for it.",
     "Original Google-signed split APKs remain the preservation baseline, but Pixel Camera 11.0.073 rejects POCO F5 at runtime before the camera UI.",
     "A merged standalone APK is experimental until the real-device runtime smoke test passes on POCO F5 / API 37.",
     "The compatibility build patches the exact unsupported-device constructor throw and, based on POCO F5 runtime evidence, forces Tensor-only GXP/TPU/DarwiNN feature queries off while preserving all unrelated feature flags; both patches fail closed if the expected bytecode shape changes.",
@@ -63,7 +96,10 @@
     "Real-device validation after the klm feature-query guard still showed libgxp.so probing followed by Gcam.g() on a null native object. The current compatibility patch therefore also keeps the GCam InitParams provider from enabling almond TPU and Tomte grain during startup, preserving their default false state.",
     "Real-device validation still showed libgxp.so loading after Java-side TPU/Tomte guards. For Pixel Camera 11.0.073.972752740.32 only, the pipeline now verifies and patches three exact AArch64 instructions in libgcastartup.so to select its existing CPU/TFLite fallback and avoid the DarwiNN/GXP delegate path. No model-verification bypass is applied.",
     "The standalone manifest declares libOpenCL.so, libOpenCL-car.so, and libOpenCL-pixel.so as optional native libraries so Android 12+ linker namespaces can expose an available platform/vendor OpenCL implementation without making installation depend on any one library name.",
-    "Native heap pointer tagging remains unchanged because current POCO F5 evidence does not identify a pointer-tagging crash; compatibility workarounds are added only for reproduced failures."
+    "Native heap pointer tagging remains unchanged because current POCO F5 evidence does not identify a pointer-tagging crash; compatibility workarounds are added only for reproduced failures.",
+    "The manual-controls profile enables five existing Pixel Camera feature flags through a fail-closed wrapper around Lksf;->q and Lksf;->x. It adds a small Lpoco/ManualFeatures helper and no third-party code, resources, signing identity, ads, branding, or network endpoints.",
+    "The manual-controls profile is gated at runtime to Build.DEVICE values starting with marble. It remains experimental until the POCO F5 Camera2/HAL paths for focus, shutter, ISO, and lens selection pass the real-device smoke test.",
+    "Manual-controls flavours use the same Pixel Camera package as the normal flavours, so they replace each other. They do not implement third-party lib-patcher or XML-config features; those are outside this clean-room profile."
   ],
   "runtime_validation": {
     "required_for_distribution": true,

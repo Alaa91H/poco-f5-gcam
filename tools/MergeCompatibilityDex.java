@@ -47,9 +47,12 @@ public final class MergeCompatibilityDex {
             merged.add(replacement == null ? definition : replacement);
             if (replacement != null) replaced++;
         }
+        Set<String> allowedNewClasses = Set.of(
+                "Lpoco/CameraIds;",
+                "Lpoco/ManualFeatures;");
         int added = replacements.size();
         for (ClassDef definition : replacements.values()) {
-            if (!"Lpoco/CameraIds;".equals(definition.getType())) {
+            if (!allowedNewClasses.contains(definition.getType())) {
                 throw new IllegalArgumentException("unexpected new class: " + definition.getType());
             }
             merged.add(definition);

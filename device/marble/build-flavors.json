@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "target": {
+    "device": "POCO F5 5G (marble)",
+    "abi": "arm64-v8a",
+    "pixel_camera_package": "com.google.android.GoogleCamera"
+  },
+  "flavors": [
+    {
+      "id": "pixel-a17",
+      "kind": "pixel_camera_patched",
+      "label": "Pixel Camera 11.1 - Android 17+",
+      "description": "Reviewed POCO F5 compatibility patches, upstream manifest minSdkVersion 37.",
+      "manifest_min_sdk": 37,
+      "expected_min_sdk": 37,
+      "android_label": "17",
+      "output_template": "PixelCamera-{version}-POCO-F5-Android{android_label}plus.apk",
+      "runtime_validation": "not_run"
+    },
+    {
+      "id": "pixel-a13",
+      "kind": "pixel_camera_patched",
+      "label": "Pixel Camera 11.1 - Android 13+",
+      "description": "Reviewed POCO F5 compatibility patches with manifest minSdkVersion lowered to 33.",
+      "manifest_min_sdk": 33,
+      "expected_min_sdk": 33,
+      "android_label": "13",
+      "output_template": "PixelCamera-{version}-POCO-F5-Android{android_label}plus.apk",
+      "runtime_validation": "not_run"
+    },
+    {
+      "id": "pixel-manual-a17",
+      "kind": "pixel_camera_patched",
+      "label": "Pixel Camera 11.1 - Android 17+ (manual controls)",
+      "description": "Reviewed POCO F5 compatibility patches plus clean-room manual focus, shutter speed, ISO, and lens selector. No third-party code, ads, or branding.",
+      "feature_profile": "manual_controls",
+      "manifest_min_sdk": 37,
+      "expected_min_sdk": 37,
+      "android_label": "17",
+      "output_template": "PixelCamera-{version}-POCO-F5-Android{android_label}plus-Manual.apk",
+      "runtime_validation": "not_run"
+    },
+    {
+      "id": "pixel-manual-a13",
+      "kind": "pixel_camera_patched",
+      "label": "Pixel Camera 11.1 - Android 13+ (manual controls)",
+      "description": "Same reviewed patches and clean-room manual controls, with manifest minSdkVersion lowered to 33.",
+      "feature_profile": "manual_controls",
+      "manifest_min_sdk": 33,
+      "expected_min_sdk": 33,
+      "android_label": "13",
+      "output_template": "PixelCamera-{version}-POCO-F5-Android{android_label}plus-Manual.apk",
+      "runtime_validation": "not_run"
+    }
+  ]
+}

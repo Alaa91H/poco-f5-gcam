@@ -13,10 +13,12 @@ import zipfile
 try:
     from scripts import patch_pixel_camera_device_gate as p
     from scripts import patch_pixel_camera_enumeration as enumeration
+    from scripts import patch_pixel_camera_manual_controls as manual_controls
     from scripts.patch_pixel_camera_raw_session import patch_raw_session_smali
 except ModuleNotFoundError:
     import patch_pixel_camera_device_gate as p
     import patch_pixel_camera_enumeration as enumeration
+    import patch_pixel_camera_manual_controls as manual_controls
     from patch_pixel_camera_raw_session import patch_raw_session_smali
 
 
@@ -191,7 +193,9 @@ def patch_yuv_usage(text):
     return text.replace(anchor, block + anchor), {'behavior': 'YUV35 usage259 only to3'}
 
 
-def patch_apk(source, output, *, baksmali, smali, java='java'):
+def patch_apk(source, output, *, baksmali, smali, java='java', feature_profile=None):
+    if feature_profile not in (None, manual_controls.FEATURE_PROFILE):
+        raise p.PatchError(f'Unsupported 11.1 feature profile: {feature_profile}')
     with zipfile.ZipFile(source) as archive:
         native = archive.read(p.GCASTARTUP_LIBRARY)
     profile = p.native_patch_profile(native)
@@ -203,7 +207,13 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
     receiver = p.KEEPALIVE_RECEIVER_DESCRIPTOR
     receiver_dex = p.find_keepalive_receiver_dex(source)
     groups.setdefault(receiver_dex, []).append(receiver[1:-1])
-    report = {'profile': profile['name'], 'dex_roles': {}, 'native': {}}
+    report = {
+        'profile': profile['name'],
+        'feature_profile': feature_profile,
+        'dex_roles': {},
+        'native': {},
+    }
+    manual_meta = None
     with tempfile.TemporaryDirectory(prefix='pixel-camera-111-') as temp:
         root = Path(temp)
         replacements = {}
@@ -248,6 +258,18 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
                     patched, gate = p.patch_smali_text(read(name))
                     patched, flags = p.patch_nontensor_flag_queries(patched)
                     meta = {'device_gate': gate, 'flags': flags}
+                    if feature_profile == manual_controls.FEATURE_PROFILE:
+                        require(
+                            flags.get('key_type') == 'Lkps;',
+                            'manual-controls feature key type changed',
+                        )
+                        require(
+                            flags.get('name_field')
+                            == 'Lkpq;->a:Ljava/lang/String;',
+                            'manual-controls feature name field changed',
+                        )
+                        patched, manual_meta = manual_controls.patch_smali(patched)
+                        meta['manual_controls'] = manual_meta
                 else:
                     text = read(name)
                     count = len(re.findall(r'invoke-virtual \{[vp]\d+\}, Landroid/hardware/camera2/CameraManager;->getCameraIdList', text))
@@ -258,6 +280,18 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
             if dex_name == 'classes.dex':
                 (scope / 'CameraIds.smali').write_text(enumeration.HELPER, encoding='utf-8')
                 changed.append('Lpoco/CameraIds;')
+            if (
+                feature_profile == manual_controls.FEATURE_PROFILE
+                and dex_name == 'classes2.dex'
+            ):
+                require(
+                    manual_meta is not None,
+                    'manual-controls feature owner is not in classes2.dex',
+                )
+                (scope / 'ManualFeatures.smali').write_text(
+                    manual_controls.HELPER, encoding='utf-8'
+                )
+                changed.append('Lpoco/ManualFeatures;')
             patch_dex = root / (dex_name + '-patch.dex')
             final = root / (dex_name + '-final.dex')
             p.run([java, '-jar', os.fspath(smali), 'a', os.fspath(scope), '-o', os.fspath(patch_dex)])
@@ -272,4 +306,7 @@ def patch_apk(source, output, *, baksmali, smali, java='java'):
         lib.write_bytes(native)
         replacements[p.GCASTARTUP_LIBRARY] = lib
         p.replace_zip_members(source, output, replacements)
+    if feature_profile == manual_controls.FEATURE_PROFILE:
+        require(manual_meta is not None, 'manual-controls feature patch did not run')
+        report['manual_controls'] = manual_meta
     return report

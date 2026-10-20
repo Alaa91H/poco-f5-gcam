@@ -9,6 +9,10 @@ machine-readable report.
 Because any transformation invalidates Google's original signature, the output is
 signed with a project/user key. It therefore cannot update an installation that is
 signed by Google's key.
+
+The optional ``manual_controls`` feature profile adds only a clean-room,
+device-gated wrapper around Pixel Camera's existing manual-control flags. It does
+not import third-party code, ads, or branding.
 """
 
 from __future__ import annotations
@@ -43,7 +47,8 @@ VERSION_NAME_RE = re.compile(r"versionName='([^']+)'")
 SDK_RE = re.compile(r"sdkVersion:'([^']+)'")
 TARGET_SDK_RE = re.compile(r"targetSdkVersion:'([^']+)'")
 CERT_SHA256_RE = re.compile(
-    r"Signer #\d+ certificate SHA-256 digest:\s*([0-9a-f:]{64,95})",
+    r"(?:Signer #\d+|V\d+\.\d+ Signer):?\s*"
+    r"certificate SHA-256 digest:\s*([0-9a-f:]{64,95})",
     re.IGNORECASE,
 )
 ANDROID_NS = "http://schemas.android.com/apk/res/android"
@@ -54,6 +59,19 @@ OPENCL_NATIVE_LIBRARIES = (
     "libOpenCL-car.so",
     "libOpenCL-pixel.so",
 )
+DEFAULT_MIN_SDK = 33
+SUPPORTED_FEATURE_PROFILES = {None, "manual_controls"}
+API_TO_ANDROID_LABEL = {
+    29: "10",
+    30: "11",
+    31: "12",
+    32: "12L",
+    33: "13",
+    34: "14",
+    35: "15",
+    36: "16",
+    37: "17",
+}
 ET.register_namespace("android", ANDROID_NS)
 
 
@@ -87,6 +105,12 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> str:
             f"{completed.stdout[-6000:]}"
         )
     return completed.stdout
+
+
+def validate_feature_profile(value: str | None) -> str | None:
+    if value not in SUPPORTED_FEATURE_PROFILES:
+        raise BuildError(f"unsupported feature profile: {value}")
+    return value
 
 
 def resolve_tool(value: str | None, name: str) -> str:
@@ -141,6 +165,93 @@ def aapt_badging(path: Path, aapt2: str) -> dict[str, Any]:
 def _match_or_none(pattern: re.Pattern[str], text: str) -> str | None:
     match = pattern.search(text)
     return match.group(1) if match else None
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value is None or value == "" or value == "null":
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise BuildError(f"expected an integer manifest value, got {value!r}") from exc
+
+
+def _parse_sdk_attribute(line: str) -> tuple[str, int] | None:
+    if not line.lstrip().startswith("A:"):
+        return None
+    if "minSdkVersion" in line:
+        key = "minSdkVersion"
+    elif "targetSdkVersion" in line:
+        key = "targetSdkVersion"
+    else:
+        return None
+    if "=" not in line:
+        raise BuildError(f"SDK attribute has no value: {line.strip()}")
+    raw = line.split("=", 1)[1].strip()
+    if raw.startswith('"') and raw.endswith('"'):
+        raw = raw[1:-1]
+    raw = re.sub(r"^\(type 0x[0-9a-fA-F]+\)", "", raw).strip()
+    try:
+        return key, int(raw, 0)
+    except ValueError as exc:
+        raise BuildError(f"could not parse SDK attribute value: {line.strip()}") from exc
+
+
+def verify_manifest_sdk(
+    path: Path,
+    aapt2: str,
+    expected_min_sdk: int,
+) -> dict[str, Any]:
+    """Verify the compiled manifest exposes the intended minSdkVersion.
+
+    ``aapt2 dump badging`` on older build-tools can omit ``sdkVersion`` for an
+    APK whose upstream API level is newer than the tool. The XML tree dump is
+    stable for both numeric and hex-encoded attributes, so it is used here.
+    """
+
+    output = run(
+        [
+            aapt2,
+            "dump",
+            "xmltree",
+            os.fspath(path),
+            "--file",
+            "AndroidManifest.xml",
+        ]
+    )
+    values: dict[str, int] = {}
+    for line in output.splitlines():
+        parsed = _parse_sdk_attribute(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if key in values and values[key] != value:
+            raise BuildError(
+                f"manifest contains conflicting {key} values: "
+                f"{values[key]} and {value}"
+            )
+        values[key] = value
+
+    min_sdk = values.get("minSdkVersion")
+    target_sdk = values.get("targetSdkVersion")
+    if min_sdk is None:
+        raise BuildError("final manifest has no numeric minSdkVersion")
+    if min_sdk != expected_min_sdk:
+        raise BuildError(
+            f"final manifest minSdkVersion is {min_sdk}, "
+            f"expected {expected_min_sdk}"
+        )
+    if target_sdk is not None and target_sdk < min_sdk:
+        raise BuildError(
+            f"final manifest targetSdkVersion {target_sdk} "
+            f"is below minSdkVersion {min_sdk}"
+        )
+
+    return {
+        "status": "verified",
+        "min_sdk": min_sdk,
+        "target_sdk": target_sdk,
+    }
 
 
 def patch_manifest_xml_text(text: str) -> tuple[str, dict[str, Any]]:
@@ -208,6 +319,7 @@ def patch_manifest_with_apkeditor(
     *,
     apkeditor: Path,
     java: str,
+    min_sdk: int | None = None,
 ) -> dict[str, Any]:
     """Patch binary AndroidManifest.xml directly through APKEditor's ARSCLib.
 
@@ -216,6 +328,8 @@ def patch_manifest_with_apkeditor(
     ARSCLib classes already bundled in the checksum-pinned APKEditor fat JAR,
     modifies only the binary manifest block, and streams the remaining APK
     entries from the source archive without decoding resources or DEX files.
+    When ``min_sdk`` is provided, the manifest minSdkVersion is lowered to that
+    API level and the helper verifies the value persisted.
     """
 
     helper = (
@@ -254,19 +368,20 @@ def patch_manifest_with_apkeditor(
             ]
         )
 
-        patch_output = run(
-            [
-                java,
-                "-Xmx3g",
-                "-cp",
-                os.pathsep.join(
-                    [os.fspath(classes), os.fspath(apkeditor)]
-                ),
-                "OpenClManifestPatcher",
-                os.fspath(input_apk),
-                os.fspath(output_apk),
-            ]
-        )
+        patch_command = [
+            java,
+            "-Xmx3g",
+            "-cp",
+            os.pathsep.join(
+                [os.fspath(classes), os.fspath(apkeditor)]
+            ),
+            "OpenClManifestPatcher",
+            os.fspath(input_apk),
+            os.fspath(output_apk),
+        ]
+        if min_sdk is not None:
+            patch_command.append(str(min_sdk))
+        patch_output = run(patch_command)
         ensure_android_zip(output_apk)
 
     values: dict[str, str] = {}
@@ -280,6 +395,14 @@ def patch_manifest_with_apkeditor(
         raise BuildError(
             "binary manifest helper did not report patched status: "
             + patch_output[-2000:]
+        )
+
+    min_sdk_before = _optional_int(values.get("min_sdk_before"))
+    min_sdk_after = _optional_int(values.get("min_sdk_after"))
+    if min_sdk is not None and min_sdk_after != min_sdk:
+        raise BuildError(
+            "binary manifest helper did not persist the requested "
+            f"minSdkVersion {min_sdk}: {patch_output[-2000:]}"
         )
 
     return {
@@ -298,6 +421,11 @@ def patch_manifest_with_apkeditor(
             if value
         ],
         "allow_native_heap_pointer_tagging_changed": False,
+        "min_sdk_requested": min_sdk,
+        "min_sdk_before": min_sdk_before,
+        "min_sdk_after": min_sdk_after,
+        "target_sdk_before": _optional_int(values.get("target_sdk_before")),
+        "target_sdk_after": _optional_int(values.get("target_sdk_after")),
         "javac_output_tail": "\n".join(compile_output.splitlines()[-20:]),
         "arsclib_output_tail": "\n".join(patch_output.splitlines()[-30:]),
     }
@@ -382,9 +510,10 @@ def signing_certificates(verify_output: str) -> list[str]:
     return result
 
 
-def output_name(version: str) -> str:
+def output_name(version: str, min_sdk: int = DEFAULT_MIN_SDK) -> str:
     safe = re.sub(r"[^0-9A-Za-z._-]+", "-", version).strip("-") or "unknown"
-    return f"PixelCamera-{safe}-POCO-F5-Android17.apk"
+    label = API_TO_ANDROID_LABEL.get(min_sdk, f"API{min_sdk}")
+    return f"PixelCamera-{safe}-POCO-F5-Android{label}plus.apk"
 
 
 def build_standalone(
@@ -406,6 +535,10 @@ def build_standalone(
     expected_abi: str,
     expected_min_sdk: int,
     report_path: Path | None,
+    manifest_min_sdk: int | None = None,
+    flavor_id: str | None = None,
+    flavor_label: str | None = None,
+    feature_profile: str | None = None,
 ) -> dict[str, Any]:
     source = source.resolve()
     output = output.resolve()
@@ -415,6 +548,14 @@ def build_standalone(
     keystore = keystore.resolve()
 
     ensure_android_zip(source)
+    if manifest_min_sdk is None:
+        manifest_min_sdk = expected_min_sdk
+    if manifest_min_sdk != expected_min_sdk:
+        raise BuildError(
+            "manifest minSdkVersion override and expected minSdkVersion must "
+            f"match: {manifest_min_sdk} != {expected_min_sdk}"
+        )
+    validate_feature_profile(feature_profile)
     if not apkeditor.is_file():
         raise BuildError(f"APKEditor jar not found: {apkeditor}")
     if not keystore.is_file():
@@ -457,6 +598,7 @@ def build_standalone(
             manifest_patched,
             apkeditor=apkeditor,
             java=java,
+            min_sdk=manifest_min_sdk,
         )
         ensure_android_zip(manifest_patched)
         merged.unlink()
@@ -470,8 +612,14 @@ def build_standalone(
                 baksmali=baksmali,
                 smali=smali,
                 java=java,
+                feature_profile=feature_profile,
             )
         else:
+            if feature_profile is not None:
+                raise BuildError(
+                    "the manual-controls feature profile requires the 11.1 "
+                    "DEX/native layout"
+                )
             device_gate_patch = patch_device_gate(
                 manifest_patched,
                 patched,
@@ -526,25 +674,25 @@ def build_standalone(
                 os.fspath(signed),
             ]
         )
+        signers = signing_certificates(verify_output)
+        if not signers:
+            raise BuildError(
+                "apksigner verify did not report a signing certificate"
+            )
         run([zipalign, "-c", "-P", "16", "-v", "4", os.fspath(signed)])
 
         manifest_verification = verify_optional_opencl_manifest(signed, aapt2)
+        manifest_sdk_verification = verify_manifest_sdk(
+            signed,
+            aapt2,
+            expected_min_sdk,
+        )
         metadata = aapt_badging(signed, aapt2)
         if metadata["package_name"] != expected_package:
             raise BuildError(
                 "unexpected output package: "
                 f"{metadata['package_name']} (expected {expected_package})"
             )
-
-        if metadata["min_sdk"] is not None:
-            try:
-                min_sdk = int(metadata["min_sdk"])
-            except ValueError as exc:
-                raise BuildError(f"non-numeric minSdkVersion: {metadata['min_sdk']}") from exc
-            if min_sdk > expected_min_sdk:
-                raise BuildError(
-                    f"output minSdkVersion {min_sdk} exceeds target API {expected_min_sdk}"
-                )
 
         abis = apk_abis(signed)
         foreign_abis = [abi for abi in abis if abi != expected_abi]
@@ -560,25 +708,45 @@ def build_standalone(
     opencl_photo_fallback = bool(
         device_gate_patch.get("native", {}).get("opencl_merge_fallback")
     )
+    manual_controls_patch = device_gate_patch.get("manual_controls")
+    min_sdk_before = manifest_patch.get("min_sdk_before")
     transformations = [
         "merge_split_bundle_to_standalone_apk",
         "clean_obsolete_split_signature_metadata",
         "declare_optional_opencl_native_libraries",
-        "redirect_unsupported_device_gate_to_common_finalization",
-        "disable_tensor_gxp_tpu_feature_queries_on_poco_f5",
-        "disable_pixel_microvideo_motion_stabilizer_on_poco_f5",
-        "disable_tensor_native_gcam_startup_initparams_on_poco_f5",
-        "force_libgcastartup_gxp_delegate_to_cpu_fallback",
-        "zipalign_16k_native_libraries",
-        "resign_with_project_key",
     ]
+    if isinstance(min_sdk_before, int) and min_sdk_before != manifest_min_sdk:
+        transformations.append(
+            f"lower_manifest_min_sdk_from_{min_sdk_before}_to_{manifest_min_sdk}"
+        )
+    transformations.extend(
+        [
+            "redirect_unsupported_device_gate_to_common_finalization",
+            "disable_tensor_gxp_tpu_feature_queries_on_poco_f5",
+            "disable_pixel_microvideo_motion_stabilizer_on_poco_f5",
+            "disable_tensor_native_gcam_startup_initparams_on_poco_f5",
+            "force_libgcastartup_gxp_delegate_to_cpu_fallback",
+            "zipalign_16k_native_libraries",
+            "resign_with_project_key",
+        ]
+    )
     if opencl_photo_fallback:
         transformations.append(
             "use_single_frame_spatial_merge_when_optional_opencl_extension_is_missing"
         )
+    if manual_controls_patch:
+        transformations.append(
+            "enable_manual_focus_shutter_iso_and_lens_selector_on_poco_f5"
+        )
 
     report = {
         "schema_version": 1,
+        "flavor": {
+            "id": flavor_id or "pixel-camera",
+            "kind": "pixel_camera_patched",
+            "label": flavor_label or "Pixel Camera compatibility build",
+            "feature_profile": feature_profile,
+        },
         "source": {
             "path": os.fspath(source),
             "size_bytes": source.stat().st_size,
@@ -592,10 +760,15 @@ def build_standalone(
             "package_name": metadata["package_name"],
             "version_code": metadata["version_code"],
             "version_name": metadata["version_name"],
-            "min_sdk": metadata["min_sdk"],
-            "target_sdk": metadata["target_sdk"],
+            "min_sdk": manifest_sdk_verification["min_sdk"],
+            "target_sdk": (
+                manifest_sdk_verification["target_sdk"]
+                if manifest_sdk_verification["target_sdk"] is not None
+                else metadata["target_sdk"]
+            ),
+            "upstream_min_sdk": manifest_patch.get("min_sdk_before"),
             "abis": abis,
-            "signer_sha256": signing_certificates(verify_output),
+            "signer_sha256": signers,
             "zipalign_page_size": 16384,
         },
         "transformations": transformations,
@@ -607,20 +780,29 @@ def build_standalone(
             "tensor_native_gcam_startup_initparams_patch_performed": True,
             "native_gxp_cpu_fallback_patch_performed": True,
             "opencl_missing_extension_photo_fallback_patch_performed": opencl_photo_fallback,
+            "manual_controls_patch_performed": bool(manual_controls_patch),
+            "third_party_code_added": False,
+            "ads_added": False,
+            "developer_branding_added": False,
             "native_model_verification_bypass_performed": False,
             "pairip_bypass_performed": False,
             "feature_splits_removed": False,
             "opencl_native_library_visibility_declared": True,
             "allow_native_heap_pointer_tagging_changed": False,
         },
+        "manual_controls_patch": manual_controls_patch,
         "manifest_compatibility_patch": manifest_patch,
         "manifest_compatibility_verification": manifest_verification,
+        "manifest_sdk_verification": manifest_sdk_verification,
         "compatibility_patch": device_gate_patch,
         "runtime_validation": {
             "status": "not_run",
             "required_for_distribution": True,
             "target_device": "POCO F5 (marble/marblein)",
             "target_api": 37,
+            "manifest_min_api": manifest_sdk_verification["min_sdk"],
+            "minimum_install_api": manifest_sdk_verification["min_sdk"],
+            "old_android_runtime_validated": False,
         },
         "distribution": {
             "status": "compatibility-patched-unvalidated",
@@ -665,8 +847,29 @@ def main() -> int:
         default="com.google.android.GoogleCamera",
     )
     parser.add_argument("--expected-abi", default="arm64-v8a")
-    parser.add_argument("--expected-min-sdk", type=int, default=37)
+    parser.add_argument(
+        "--expected-min-sdk",
+        type=int,
+        default=DEFAULT_MIN_SDK,
+        help="Expected minSdkVersion in the final manifest (default: 33).",
+    )
+    parser.add_argument(
+        "--manifest-min-sdk",
+        type=int,
+        default=DEFAULT_MIN_SDK,
+        help=(
+            "Lower the upstream manifest minSdkVersion to this API level "
+            "(default: 33, Android 13). The patch never raises minSdkVersion."
+        ),
+    )
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--flavor-id")
+    parser.add_argument("--flavor-label")
+    parser.add_argument(
+        "--feature-profile",
+        choices=sorted(profile for profile in SUPPORTED_FEATURE_PROFILES if profile),
+        help="Optional clean-room feature profile applied after compatibility patches.",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -688,7 +891,11 @@ def main() -> int:
             expected_package=args.expected_package,
             expected_abi=args.expected_abi,
             expected_min_sdk=args.expected_min_sdk,
+            manifest_min_sdk=args.manifest_min_sdk,
             report_path=args.report,
+            flavor_id=args.flavor_id,
+            flavor_label=args.flavor_label,
+            feature_profile=args.feature_profile,
         )
         if args.json:
             print(json.dumps(report, indent=2))
