@@ -79,6 +79,11 @@ on:
         required: false
         type: boolean
         default: true
+      deliver_flavors:
+        description: "Optional comma-separated flavour IDs to deliver (blank sends all four)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -911,7 +916,7 @@ jobs:
           echo "TELEGRAM_BOT_API_BIN=$BIN" >> "$GITHUB_ENV"
           echo "TELEGRAM_BOT_API_SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
 
-      - name: Deliver four POCO F5 camera flavours through Local Bot API
+      - name: Deliver POCO F5 camera flavours through Local Bot API
         if: >-
           steps.standalone.outputs.enabled == 'true' &&
           github.ref == 'refs/heads/main'
@@ -921,6 +926,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          DELIVER_FLAVORS: ${{ inputs.deliver_flavors }}
         run: |
           set -euo pipefail
 
@@ -949,6 +955,16 @@ jobs:
           # Telegram Local Bot API documents a 2000 MB upload limit. Keep the
           # guard at 2000 MiB so oversized APKs fail before a long upload.
           TELEGRAM_MAX_BYTES=$((2000 * 1024 * 1024))
+
+          ONLY_ARGS=()
+          if [ -n "${DELIVER_FLAVORS:-}" ]; then
+            IFS=',' read -r -a ONLY_IDS <<< "$DELIVER_FLAVORS"
+            for flavor_id in "${ONLY_IDS[@]}"; do
+              flavor_id="$(printf '%s' "$flavor_id" | tr -d '[:space:]')"
+              [ -z "$flavor_id" ] && continue
+              ONLY_ARGS+=(--only "$flavor_id")
+            done
+          fi
 
           curl --silent --show-error --max-time 30 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/logOut" \
@@ -1014,7 +1030,8 @@ jobs:
             --manifest "$DELIVERABLES_MANIFEST" \
             --api-url "http://127.0.0.1:8081" \
             --max-bytes "$TELEGRAM_MAX_BYTES" \
-            --timeout 1800
+            --timeout 1800 \
+            "${ONLY_ARGS[@]}"
 
           python - "$DELIVERABLES_MANIFEST" "$GITHUB_STEP_SUMMARY" "$TELEGRAM_BOT_API_SOURCE_SHA" <<'PY'
           import json
@@ -1022,12 +1039,20 @@ jobs:
           import sys
 
           manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+          only = {
+              value.strip()
+              for value in os.environ.get("DELIVER_FLAVORS", "").split(",")
+              if value.strip()
+          }
+          entries = manifest["flavors"]
+          if only:
+              entries = [entry for entry in entries if entry["id"] in only]
           lines = [
               "",
               "### Telegram camera flavour delivery",
               "",
           ]
-          for entry in manifest["flavors"]:
+          for entry in entries:
               lines.append(
                   "- `{id}`: `{file}` — {size} bytes — `{sha}`".format(
                       id=entry["id"],

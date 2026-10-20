@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,17 @@ DEFAULT_TIMEOUT_SECONDS = 1800
 
 class DeliveryError(RuntimeError):
     pass
+
+
+def normalized_file_name(value: str) -> str:
+    """Normalize Telegram's safe-name substitutions for comparison.
+
+    Telegram occasionally replaces dots and hyphens with underscores when it
+    stores a long document name. The bytes and extension are unchanged, so
+    compare names with all three separators treated identically.
+    """
+
+    return re.sub(r"[._-]+", "_", value).lower()
 
 
 def sha256_path(path: Path) -> str:
@@ -107,7 +119,7 @@ def send_document(
         "--form",
         f"chat_id={chat_id}",
         "--form",
-        f"document=@{apk};type=application/vnd.android.package-archive",
+        f"document=@{apk};filename={apk.name};type=application/vnd.android.package-archive",
         "--form-string",
         f"caption={caption}",
     ]
@@ -144,7 +156,9 @@ def send_document(
             f"Telegram size mismatch for {apk.name}: "
             f"expected {apk.stat().st_size}, got {delivered_size}"
         )
-    if delivered_name and delivered_name != apk.name:
+    if delivered_name and normalized_file_name(delivered_name) != normalized_file_name(
+        apk.name
+    ):
         raise DeliveryError(
             f"Telegram name mismatch: expected {apk.name}, got {delivered_name}"
         )
@@ -159,10 +173,18 @@ def deliver_manifest(
     chat_id: str,
     max_bytes: int = DEFAULT_MAX_BYTES,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    only: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     manifest = load_manifest(manifest_path)
+    entries = manifest["flavors"]
+    if only:
+        entries = [entry for entry in entries if str(entry.get("id")) in only]
+        if not entries:
+            raise DeliveryError(
+                "no manifest flavour matched --only: " + ", ".join(sorted(only))
+            )
     delivered: list[dict[str, Any]] = []
-    for entry in manifest["flavors"]:
+    for entry in entries:
         apk = validate_entry(entry, max_bytes)
         document = send_document(
             api_url=api_url,
@@ -190,6 +212,12 @@ def main() -> int:
     parser.add_argument("--api-url", default="http://127.0.0.1:8081")
     parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="deliver only this flavour id; repeat for multiple ids",
+    )
     args = parser.parse_args()
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -209,6 +237,7 @@ def main() -> int:
             chat_id=chat_id,
             max_bytes=args.max_bytes,
             timeout=args.timeout,
+            only=set(args.only) if args.only else None,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -76,6 +76,83 @@ class TelegramDeliverablesTests(unittest.TestCase):
         self.assertIn("sendDocument", command[command.index("--url") + 1])
         self.assertIn("secret-token", command[command.index("--url") + 1])
         self.assertIn("--form-string", command)
+        document_form = next(
+            item for item in command if item.startswith("document=@")
+        )
+        self.assertIn("filename=camera.apk", document_form)
+
+    def test_send_document_accepts_telegram_safe_name(self):
+        response = {
+            "ok": True,
+            "result": {
+                "document": {
+                    "file_name": "camera_manual.apk",
+                    "file_size": len(b"apk-bytes"),
+                }
+            },
+        }
+        completed = mock.Mock(
+            returncode=0,
+            stdout=json.dumps(response),
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            apk = Path(temp) / "camera-manual.apk"
+            apk.write_bytes(b"apk-bytes")
+            with mock.patch.object(
+                telegram.subprocess,
+                "run",
+                return_value=completed,
+            ):
+                document = telegram.send_document(
+                    api_url="http://127.0.0.1:8081",
+                    bot_token="secret-token",
+                    chat_id="123",
+                    apk=apk,
+                    caption="camera",
+                    timeout=60,
+                )
+        self.assertEqual(document["file_name"], "camera_manual.apk")
+
+    def test_deliver_manifest_filters_to_requested_flavour(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = root / "deliverables.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "flavors": [
+                            {"id": "pixel-a13", "delivery_caption": "normal"},
+                            {
+                                "id": "pixel-manual-a13",
+                                "delivery_caption": "manual",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            apk = root / "camera.apk"
+            apk.write_bytes(b"apk-bytes")
+            with mock.patch.object(
+                telegram,
+                "validate_entry",
+                return_value=apk,
+            ), mock.patch.object(
+                telegram,
+                "send_document",
+                return_value={"file_name": "camera.apk", "file_size": 9},
+            ) as send_mock:
+                delivered = telegram.deliver_manifest(
+                    manifest,
+                    api_url="http://127.0.0.1:8081",
+                    bot_token="secret-token",
+                    chat_id="123",
+                    only={"pixel-manual-a13"},
+                )
+        self.assertEqual([entry["id"] for entry in delivered], ["pixel-manual-a13"])
+        self.assertEqual(send_mock.call_count, 1)
 
     def test_send_document_rejects_telegram_error(self):
         completed = mock.Mock(
