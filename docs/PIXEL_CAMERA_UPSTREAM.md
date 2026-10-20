@@ -61,15 +61,13 @@ The proprietary Google binary is intentionally excluded from Git.
 
 ## GitHub Actions
 
-`.github/workflows/refresh-pixel-camera-upstream.yml`:
+`.github/workflows/build.yml`:
 
-- runs every day
-- can be started manually
+- runs on relevant pushes to `main` and on manual dispatch; there is no scheduled build
 - runs resolver/downloader unit tests
 - resolves the current newest compatible release
 - verifies the live APKMirror download path
-- on a scheduled run, downloads only when the selected version changes
-- on a manual run, always downloads the current selected release
+- downloads the selected release for standalone builds
 - commits only the metadata lock when the selected version changes
 
 The downloaded binary exists only in the ephemeral runner unless a later build

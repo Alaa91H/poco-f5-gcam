@@ -85,5 +85,4 @@ The reported `validation_candidate_bytes` is a test pool, not a savings claim.
 No automatic split stripping is implemented.
 
 GitHub Actions generates both the APKM audit and split-plan JSON during a
-manual download, or on a scheduled run when the selected upstream version
-changes.
+manual or push-triggered standalone build.

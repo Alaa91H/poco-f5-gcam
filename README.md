@@ -7,7 +7,7 @@ builds the four camera flavour APKs when relevant changes reach `main`. After a
 successful build it sends all four signed APKs to the configured Telegram chat.
 Manual runs on `main` also build and send by default; clear
 `build_experimental_standalone` for an upstream-only run. Pull requests validate
-changes without Telegram delivery. Scheduled runs check upstream availability.
+changes without Telegram delivery. There is no scheduled build.
 
 Required repository secrets: `GCMOD_KEYSTORE_B64`, `GCMOD_KEY_ALIAS`,
 `GCMOD_KEYSTORE_PASSWORD`, `GCMOD_KEY_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
@@ -174,9 +174,9 @@ python .\scripts\download_latest_pixel_camera.py
 ```
 
 The binary is saved under `downloads/pixel-camera/` and is ignored by Git.
-GitHub Actions checks for a newer compatible release daily and downloads it when
-the selected version changes. A manual workflow run always downloads the current
-latest compatible release.
+GitHub Actions resolves the newest compatible release on relevant pushes and
+manual runs, and downloads the selected release when building. A manual workflow
+run can also perform an upstream-only check.
 
 See [docs/PIXEL_CAMERA_UPSTREAM.md](docs/PIXEL_CAMERA_UPSTREAM.md).
 

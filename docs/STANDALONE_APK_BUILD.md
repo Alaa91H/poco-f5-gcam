@@ -182,11 +182,11 @@ now build and send the modified APK. Manual runs default
 `build_experimental_standalone` to true. The artifact name includes
 `compatibility-patched-unvalidated`, and the Telegram caption states that device
 validation is pending. Real-device validation remains mandatory before treating
-the build as stable. Scheduled upstream refreshes do not send modified APKs.
+the build as stable. There is no scheduled build.
 
 ## CI behavior
 
-Scheduled or manually dispatched upstream refreshes continue to:
+Relevant push builds and manual runs continue to:
 
 1. resolve the newest API-37/arm64 compatible Pixel Camera release;
 2. download and checksum-verify the original package;
@@ -198,8 +198,7 @@ Scheduled or manually dispatched upstream refreshes continue to:
    `deliverables.json` with each APK's size and SHA-256;
 6. on a standalone build triggered by a relevant push or manual run on `main`,
    deliver all four flavour APKs to Telegram through the Local Bot API; missing
-   Telegram credentials fail the delivery step. Scheduled upstream refreshes do
-   not distribute the modified APKs. All four remain experimental and
+   Telegram credentials fail the delivery step. All four remain experimental and
    runtime-unvalidated.
 
 `.github/workflows/build.yml` is the only active workflow. Historical one-off

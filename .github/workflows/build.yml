@@ -70,8 +70,6 @@ on:
       - "tests/test_patch_pixel_camera_manual_controls.py"
       - "tests/test_send_telegram_deliverables.py"
       - ".github/workflows/build.yml"
-  schedule:
-    - cron: "23 3 * * *"
   workflow_dispatch:
     inputs:
       build_experimental_standalone:
@@ -299,7 +297,6 @@ jobs:
     if: >-
       always() &&
       (
-        github.event_name == 'schedule' ||
         github.event_name == 'workflow_dispatch' ||
         (needs.changes.result == 'success' && needs.changes.outputs.upstream == 'true')
       )
@@ -387,8 +384,6 @@ jobs:
           ENABLED=false
           if [ "$EVENT_NAME" = "push" ] && [ "$UPSTREAM_AFFECTED" = "true" ]; then
             ENABLED=true
-          elif [ "$EVENT_NAME" = "schedule" ]; then
-            ENABLED=true
           elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$DISPATCH_STANDALONE" = "true" ]; then
             ENABLED=true
           fi
@@ -432,8 +427,7 @@ jobs:
       - name: Download latest compatible Pixel Camera
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          steps.standalone.outputs.enabled == 'true' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -461,8 +455,7 @@ jobs:
       - name: Install APK signature verifier
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          steps.standalone.outputs.enabled == 'true' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -476,8 +469,7 @@ jobs:
       - name: Audit downloaded Pixel Camera bundle
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          steps.standalone.outputs.enabled == 'true' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -508,8 +500,7 @@ jobs:
       - name: Validate split dependency graph
         if: >-
           github.event_name == 'workflow_dispatch' ||
-          steps.standalone.outputs.enabled == 'true' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+          steps.standalone.outputs.enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -553,9 +544,7 @@ jobs:
           PY
 
       - name: Upload original Google-signed Pixel Camera bundle
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: poco-f5-pixel-camera-original-splits-${{ steps.selected.outputs.version }}
@@ -1073,9 +1062,7 @@ jobs:
           PY
 
       - name: Upload Pixel Camera audit report
-        if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.selected.outputs.changed == 'true')
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: pixel-camera-audit-${{ steps.selected.outputs.version }}
